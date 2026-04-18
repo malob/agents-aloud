@@ -3,17 +3,16 @@ import SwiftUI
 import Textual
 
 struct TranscriptMarkdownView: View, Equatable {
-    let markdown: String
-    let renderingMode: TranscriptMessage.RenderingMode
+    let content: TranscriptMessage.Content
 
     @ViewBuilder
     var body: some View {
-        switch renderingMode {
+        switch content {
         case .literal:
             literalContent
         case .plainText:
             plainTextContent
-        case .markdown:
+        case let .markdown(markdown):
             StructuredText(markdown, parser: CachedMarkdownParser())
                 .font(.body)
                 .foregroundStyle(.primary)
@@ -23,7 +22,7 @@ struct TranscriptMarkdownView: View, Equatable {
     }
 
     private var literalContent: some View {
-        Text(verbatim: markdown)
+        Text(verbatim: content.text)
             .font(.system(.body, design: .monospaced))
             .foregroundStyle(.primary)
             .lineSpacing(4)
@@ -33,7 +32,7 @@ struct TranscriptMarkdownView: View, Equatable {
     }
 
     private var plainTextContent: some View {
-        Text(verbatim: markdown)
+        Text(verbatim: content.text)
             .font(.body)
             .foregroundStyle(.primary)
             .multilineTextAlignment(.leading)
@@ -47,7 +46,14 @@ private final class MarkdownAttributedStringCache {
     static let shared = MarkdownAttributedStringCache()
 
     private let parser = AttributedStringMarkdownParser(baseURL: nil)
-    private let cache = NSCache<NSString, AttributedStringBox>()
+    private let cache: NSCache<NSString, AttributedStringBox>
+
+    init() {
+        let cache = NSCache<NSString, AttributedStringBox>()
+        cache.name = "ClaudeMarkdown"
+        cache.countLimit = 1024
+        self.cache = cache
+    }
 
     func attributedString(for input: String) throws -> AttributedString {
         let cacheKey = input as NSString
@@ -142,7 +148,7 @@ private extension InlineStyle {
         .code(
             .monospaced,
             .fontScale(0.9),
-            .backgroundColor(Color(nsColor: .controlBackgroundColor)),
+            .backgroundColor(Color.secondary.opacity(0.14)),
             .foregroundColor(.primary)
         )
         .strong(.fontWeight(.semibold))

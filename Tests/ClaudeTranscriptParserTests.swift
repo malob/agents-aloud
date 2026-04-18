@@ -20,7 +20,10 @@ struct ClaudeTranscriptParserTests {
             "Tell me what happened.",
             "First paragraph.\n\nSecond paragraph.",
         ])
-        #expect(messages.map(\.renderingMode) == [.plainText, .plainText])
+        #expect(messages.map(\.content) == [
+            .plainText("Tell me what happened."),
+            .plainText("First paragraph.\n\nSecond paragraph."),
+        ])
         #expect(messages.allSatisfy { $0.sessionID == "session-123" })
     }
 
@@ -36,7 +39,13 @@ struct ClaudeTranscriptParserTests {
         #expect(messages.count == 2)
         #expect(messages[0].text == "Fractional time")
         #expect(messages[1].text == "Standard time")
-        #expect(messages.allSatisfy { $0.renderingMode == .plainText })
+        #expect(messages.allSatisfy {
+            if case .plainText = $0.content {
+                return true
+            }
+
+            return false
+        })
     }
 
     @Test
@@ -48,7 +57,31 @@ struct ClaudeTranscriptParserTests {
 
         let messages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
 
-        #expect(messages.map(\.renderingMode) == [.literal, .markdown])
+        #expect(messages.map(\.content) == [
+            .literal("<task-notification>Task output</task-notification>"),
+            .markdown("# Heading\n\n- one\n- two"),
+        ])
+    }
+
+    @Test
+    func parseTranscriptRecognizesLiteralPrefixesAndMarkdownEdges() {
+        let rawTranscript = """
+        {"type":"user","uuid":"user-1","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-123","message":{"role":"user","content":"<command-message>test</command-message>"}}
+        {"type":"user","uuid":"user-2","timestamp":"2026-04-17T17:00:01Z","sessionId":"session-123","message":{"role":"user","content":"<local-command-caveat>Heads up</local-command-caveat>"}}
+        {"type":"assistant","uuid":"assistant-1","timestamp":"2026-04-17T17:00:02Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"1. item"}]}}
+        {"type":"assistant","uuid":"assistant-2","timestamp":"2026-04-17T17:00:03Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"1.item"}]}}
+        {"type":"assistant","uuid":"assistant-3","timestamp":"2026-04-17T17:00:04Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"Normal prose paragraph."}]}}
+        """
+
+        let messages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
+
+        #expect(messages.map(\.content) == [
+            .literal("<command-message>test</command-message>"),
+            .literal("<local-command-caveat>Heads up</local-command-caveat>"),
+            .markdown("1. item"),
+            .plainText("1.item"),
+            .plainText("Normal prose paragraph."),
+        ])
     }
 
     @Test

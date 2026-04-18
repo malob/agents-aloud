@@ -72,7 +72,10 @@ actor ClaudeStorageService {
         }
 
         let validPaths = Set(sortedCandidates.prefix(limit).map { $0.url.path })
+        let validProjectPaths = Set(validPaths.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path })
         sessionSummaryCache = sessionSummaryCache.filter { validPaths.contains($0.key) }
+        transcriptCache = transcriptCache.filter { validPaths.contains($0.key) }
+        projectMetadataCache = projectMetadataCache.filter { validProjectPaths.contains($0.key) }
 
         logger.info(
             "Loaded \(sessions.count, privacy: .public) session summaries from \(sortedCandidates.count, privacy: .public) candidates in \(startedAt.duration(to: .now).components.seconds, privacy: .public)s"

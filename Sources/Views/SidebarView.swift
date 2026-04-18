@@ -21,14 +21,18 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .overlay {
-            if model.isLoading && model.sessions.isEmpty {
+            switch model.sessionsState {
+            case let .loading(sessions) where sessions.isEmpty:
                 ProgressView("Loading Claude sessions…")
-            } else if model.sessions.isEmpty {
+            case let .loaded(sessions) where sessions.isEmpty,
+                let .failed(sessions, _) where sessions.isEmpty:
                 ContentUnavailableView(
                     "No Claude Sessions",
                     systemImage: "bubble.left.and.bubble.right",
                     description: Text("Recent Claude Code sessions will appear here once transcripts are available.")
                 )
+            default:
+                EmptyView()
             }
         }
     }

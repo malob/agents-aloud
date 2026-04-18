@@ -4,12 +4,21 @@ import Testing
 
 @MainActor
 private final class FakeSpeechBackendDriver: SpeechBackendDriver {
+    struct StartFailure: LocalizedError {
+        let description: String
+
+        var errorDescription: String? {
+            description
+        }
+    }
+
     let availableVoices: [SpeechVoiceOption]
     let wordsPerMinute: Int?
     private(set) var startedRequests: [SpeechRequest] = []
     private(set) var pauseCallCount = 0
     private(set) var resumeCallCount = 0
     private(set) var stopCallCount = 0
+    var startError: Error?
     private var eventHandler: (@MainActor @Sendable (SpeechDriverEvent) -> Void)?
 
     init(
@@ -32,6 +41,10 @@ private final class FakeSpeechBackendDriver: SpeechBackendDriver {
         request: SpeechRequest,
         eventHandler: @escaping @MainActor @Sendable (SpeechDriverEvent) -> Void
     ) throws {
+        if let startError {
+            throw startError
+        }
+
         self.eventHandler = eventHandler
         startedRequests.append(request)
     }
@@ -171,6 +184,93 @@ struct SpeechControllerTests {
 
         #expect(avDriver.stopCallCount == 1)
         #expect(systemDriver.stopCallCount == 0)
+        #expect(controller.currentMessageID == nil)
+    }
+
+    @Test
+    @MainActor
+    func startFailureSurfacesPlaybackError() {
+        let avDriver = FakeSpeechBackendDriver(
+            availableVoices: [
+                SpeechVoiceOption(
+                    id: "voice-1",
+                    name: "Voice One",
+                    language: "en-US",
+                    quality: .default
+                )
+            ]
+        )
+        avDriver.startError = FakeSpeechBackendDriver.StartFailure(description: "Voice not available")
+        let controller = SpeechController(
+            avSpeechDriver: avDriver,
+            systemVoiceDriver: FakeSpeechBackendDriver(wordsPerMinute: 400)
+        )
+
+        controller.playNow(text: "First", messageID: "m1", voiceIdentifier: nil, rate: 0.4)
+
+        #expect(controller.currentMessageID == nil)
+        #expect(controller.playbackError?.message == "Voice not available")
+    }
+
+    @Test
+    @MainActor
+    func driverFailureSurfacesPlaybackErrorAndAdvancesQueue() throws {
+        let avDriver = FakeSpeechBackendDriver(
+            availableVoices: [
+                SpeechVoiceOption(
+                    id: "voice-1",
+                    name: "Voice One",
+                    language: "en-US",
+                    quality: .default
+                )
+            ]
+        )
+        let controller = SpeechController(
+            avSpeechDriver: avDriver,
+            systemVoiceDriver: FakeSpeechBackendDriver(wordsPerMinute: 400)
+        )
+
+        controller.playNow(text: "First", messageID: "m1", voiceIdentifier: nil, rate: 0.4)
+        controller.enqueue(text: "Second", messageID: "m2", voiceIdentifier: nil, rate: 0.4)
+
+        let firstPlaybackID = try #require(avDriver.startedRequests.first?.playbackID)
+        avDriver.emit(.didFail(firstPlaybackID, description: "Playback failed."))
+
+        #expect(controller.playbackError?.message == "Playback failed.")
+        #expect(controller.currentMessageID == "m2")
+        #expect(avDriver.startedRequests.count == 2)
+    }
+
+    @Test
+    @MainActor
+    func staleEventsAreIgnoredAfterPlaybackReplacement() throws {
+        let avDriver = FakeSpeechBackendDriver(
+            availableVoices: [
+                SpeechVoiceOption(
+                    id: "voice-1",
+                    name: "Voice One",
+                    language: "en-US",
+                    quality: .default
+                )
+            ]
+        )
+        let controller = SpeechController(
+            avSpeechDriver: avDriver,
+            systemVoiceDriver: FakeSpeechBackendDriver(wordsPerMinute: 400)
+        )
+
+        controller.playNow(text: "First", messageID: "m1", voiceIdentifier: nil, rate: 0.4)
+        let firstPlaybackID = try #require(avDriver.startedRequests.first?.playbackID)
+
+        controller.playNow(text: "Second", messageID: "m2", voiceIdentifier: nil, rate: 0.4)
+        let secondPlaybackID = try #require(avDriver.startedRequests.last?.playbackID)
+
+        avDriver.emit(.didFinish(firstPlaybackID))
+
+        #expect(controller.currentMessageID == "m2")
+
+        avDriver.emit(.didFinish(secondPlaybackID))
+
         #expect(controller.currentMessageID == nil)
     }
 }

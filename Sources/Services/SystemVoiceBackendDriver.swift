@@ -63,6 +63,14 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         }
     }
 
+    private struct SystemVoiceStartError: LocalizedError {
+        let description: String
+
+        var errorDescription: String? {
+            description
+        }
+    }
+
     private var eventHandler: (@MainActor @Sendable (SpeechDriverEvent) -> Void)?
     private var currentJob: SystemVoiceJob?
 
@@ -70,7 +78,8 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         []
     }
 
-    // This matches the speed the user preferred while prototyping against `say`.
+    // We keep `say` fixed at 400 WPM for the experimental backend because that is the only
+    // speed the user found consistently acceptable during local-voice prototyping.
     var wordsPerMinute: Int? {
         Self.defaultWordsPerMinute
     }
@@ -87,6 +96,7 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
 
         let process = Process()
         let inputPipe = Pipe()
+        let errorPipe = Pipe()
         let job = SystemVoiceJob(
             playbackID: request.playbackID,
             process: process,
@@ -99,15 +109,18 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
         process.arguments = ["-r", String(wordsPerMinute ?? Self.defaultWordsPerMinute)]
         process.standardInput = inputPipe
+        process.standardError = errorPipe
         process.terminationHandler = { [weak self] process in
             let terminationStatus = process.terminationStatus
             let terminationReason = process.terminationReason
+            let standardErrorOutput = Self.standardErrorOutput(from: errorPipe)
 
             Task { @MainActor in
                 self?.handleTermination(
                     playbackID: request.playbackID,
                     terminationReason: terminationReason,
-                    terminationStatus: terminationStatus
+                    terminationStatus: terminationStatus,
+                    standardErrorOutput: standardErrorOutput
                 )
             }
         }
@@ -117,12 +130,16 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
             emit(.didStart(request.playbackID))
             try job.write(request.text)
         } catch {
+            let standardErrorOutput = process.isRunning ? nil : Self.standardErrorOutput(from: errorPipe)
+            let failureDescription = Self.failureDescription(
+                standardErrorOutput: standardErrorOutput,
+                fallback: error.localizedDescription
+            )
             job.terminate()
             if currentJob?.playbackID == request.playbackID {
                 currentJob = nil
             }
-            emit(.didFail(request.playbackID, description: error.localizedDescription))
-            throw error
+            throw SystemVoiceStartError(description: failureDescription)
         }
     }
 
@@ -152,7 +169,8 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
     private func handleTermination(
         playbackID: UUID,
         terminationReason: Process.TerminationReason,
-        terminationStatus: Int32
+        terminationStatus: Int32,
+        standardErrorOutput: String?
     ) {
         guard let currentJob, currentJob.playbackID == playbackID else {
             return
@@ -170,7 +188,10 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
             emit(
                 .didFail(
                     playbackID,
-                    description: "System voice playback exited with reason \(String(describing: terminationReason)) and status \(terminationStatus)"
+                    description: Self.failureDescription(
+                        standardErrorOutput: standardErrorOutput,
+                        fallback: "Playback failed."
+                    )
                 )
             )
         }
@@ -178,5 +199,28 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
 
     private func emit(_ event: SpeechDriverEvent) {
         eventHandler?(event)
+    }
+
+    nonisolated private static func standardErrorOutput(from pipe: Pipe) -> String? {
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !output.isEmpty else {
+            return nil
+        }
+
+        return output.replacingOccurrences(of: "\n", with: " ")
+    }
+
+    nonisolated private static func failureDescription(
+        standardErrorOutput: String?,
+        fallback: String
+    ) -> String {
+        if let standardErrorOutput {
+            return standardErrorOutput
+        }
+
+        let trimmedFallback = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedFallback.isEmpty ? "Playback failed." : trimmedFallback
     }
 }

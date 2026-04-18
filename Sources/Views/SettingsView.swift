@@ -1,3 +1,4 @@
+import AVFoundation
 import SwiftUI
 
 struct SettingsView: View {
@@ -41,7 +42,10 @@ struct SettingsView: View {
 
             if model.preferredSpeechBackend == .avSpeech {
                 Section("Speech Rate") {
-                    Slider(value: $model.preferredSpeechRate, in: 0.2...0.6)
+                    Slider(
+                        value: $model.preferredSpeechRate,
+                        in: Double(AVSpeechUtteranceMinimumSpeechRate)...Double(AVSpeechUtteranceMaximumSpeechRate)
+                    )
 
                     Text(String(format: "Current rate: %.2f", model.preferredSpeechRate))
                         .font(.caption)

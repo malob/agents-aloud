@@ -30,8 +30,7 @@ struct MessageRowView: View {
             }
 
             TranscriptMarkdownView(
-                markdown: message.text,
-                renderingMode: message.renderingMode
+                content: message.content
             )
                 .equatable()
                 .padding(12)

@@ -5,6 +5,11 @@ import OSLog
 @MainActor
 @Observable
 final class SpeechController {
+    struct PlaybackError: Identifiable, Equatable {
+        let id = UUID()
+        let message: String
+    }
+
     private struct ActivePlayback {
         let request: SpeechRequest
         let backend: SpeechBackend
@@ -47,6 +52,7 @@ final class SpeechController {
 
     @ObservationIgnored private let logger = Logger(subsystem: "local.claudecodevoice", category: "Speech")
     @ObservationIgnored private var queuedRequests: [SpeechRequest] = []
+    @ObservationIgnored private var playbackErrorDismissTask: Task<Void, Never>?
     @ObservationIgnored private let avSpeechDriver: any SpeechBackendDriver
     @ObservationIgnored private let systemVoiceDriver: any SpeechBackendDriver
     private var playbackState: PlaybackState = .idle
@@ -58,7 +64,7 @@ final class SpeechController {
             }
 
             queuedRequests.removeAll()
-            stopPlayback(using: driver(for: oldValue))
+            driver(for: oldValue).stop()
             playbackState = .idle
         }
     }
@@ -69,6 +75,10 @@ final class SpeechController {
     ) {
         self.avSpeechDriver = avSpeechDriver
         self.systemVoiceDriver = systemVoiceDriver
+    }
+
+    deinit {
+        playbackErrorDismissTask?.cancel()
     }
 
     var isSpeaking: Bool {
@@ -95,6 +105,8 @@ final class SpeechController {
         avSpeechDriver.resolveVoiceIdentifier(nil)
     }
 
+    var playbackError: PlaybackError?
+
     func resolveVoiceIdentifier(_ identifier: String?) -> String? {
         avSpeechDriver.resolveVoiceIdentifier(identifier)
     }
@@ -110,7 +122,7 @@ final class SpeechController {
 
         if playbackState.activePlayback != nil {
             queuedRequests = [request]
-            stopPlayback(using: activeDriver ?? currentDriver)
+            (activeDriver ?? currentDriver).stop()
             playbackState = .idle
             playNextQueuedRequestIfNeeded()
             return
@@ -145,8 +157,12 @@ final class SpeechController {
 
     func stop() {
         queuedRequests.removeAll()
-        stopPlayback(using: activeDriver ?? currentDriver)
+        (activeDriver ?? currentDriver).stop()
         playbackState = .idle
+    }
+
+    func dismissPlaybackError() {
+        clearPlaybackError()
     }
 
     private func speak(_ request: SpeechRequest) {
@@ -163,6 +179,7 @@ final class SpeechController {
             logger.error(
                 "Playback failed to start for \(request.messageID, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
+            showPlaybackError(error.localizedDescription)
             playbackState = .idle
             playNextQueuedRequestIfNeeded()
         }
@@ -199,8 +216,29 @@ final class SpeechController {
         }
     }
 
-    private func stopPlayback(using driver: any SpeechBackendDriver) {
-        driver.stop()
+    private func showPlaybackError(_ message: String) {
+        let trimmedMessage = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty else {
+            return
+        }
+
+        playbackErrorDismissTask?.cancel()
+        let playbackError = PlaybackError(message: trimmedMessage)
+        self.playbackError = playbackError
+        playbackErrorDismissTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            guard let self, self.playbackError?.id == playbackError.id else {
+                return
+            }
+
+            self.playbackError = nil
+        }
+    }
+
+    private func clearPlaybackError() {
+        playbackErrorDismissTask?.cancel()
+        playbackErrorDismissTask = nil
+        playbackError = nil
     }
 
     private func finishCurrentPlayback(playbackID: UUID) {
@@ -213,22 +251,6 @@ final class SpeechController {
         playNextQueuedRequestIfNeeded()
     }
 
-    private func setPlaybackStateToSpeaking() {
-        guard let activePlayback = playbackState.activePlayback else {
-            return
-        }
-
-        playbackState = .speaking(activePlayback)
-    }
-
-    private func setPlaybackStateToPaused() {
-        guard let activePlayback = playbackState.activePlayback else {
-            return
-        }
-
-        playbackState = .paused(activePlayback)
-    }
-
     private func handleDriverEvent(_ event: SpeechDriverEvent) {
         guard let activePlayback = playbackState.activePlayback,
               activePlayback.request.playbackID == event.playbackID else {
@@ -236,16 +258,20 @@ final class SpeechController {
         }
 
         switch event {
-        case .didStart, .didResume:
-            setPlaybackStateToSpeaking()
+        case .didStart:
+            clearPlaybackError()
+            playbackState = .speaking(activePlayback)
+        case .didResume:
+            playbackState = .speaking(activePlayback)
         case .didPause:
-            setPlaybackStateToPaused()
+            playbackState = .paused(activePlayback)
         case .didFinish:
             finishCurrentPlayback(playbackID: activePlayback.request.playbackID)
         case let .didFail(_, description):
             logger.error(
                 "Playback failed for \(activePlayback.request.messageID, privacy: .public): \(description, privacy: .public)"
             )
+            showPlaybackError(description)
             finishCurrentPlayback(playbackID: activePlayback.request.playbackID)
         }
     }

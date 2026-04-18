@@ -1,5 +1,4 @@
 import AVFoundation
-import Darwin
 import Foundation
 import Observation
 import OSLog
@@ -16,13 +15,44 @@ final class AppModel {
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "AppModel")
     @ObservationIgnored private let userDefaults = UserDefaults.standard
 
-    var sessions: [ClaudeSessionSummary] = []
+    var sessionsState: SessionsState = .loading([])
     var selectedSessionID: ClaudeSessionSummary.ID?
-    var transcriptMessages: [TranscriptMessage] = []
-    var isLoading = false
-    var isLoadingTranscript = false
+    var transcriptState: TranscriptState = .none
     var errorMessage: String?
     var liveReadSessionID: ClaudeSessionSummary.ID?
+    var preferredSpeechBackend: SpeechBackend {
+        didSet {
+            guard oldValue != preferredSpeechBackend else {
+                return
+            }
+
+            userDefaults.set(preferredSpeechBackend.rawValue, forKey: Self.preferredSpeechBackendKey)
+            speechController.backend = preferredSpeechBackend
+            preferredVoiceIdentifier = speechController.resolveVoiceIdentifier(preferredVoiceIdentifier)
+        }
+    }
+    var preferredVoiceIdentifier: String? {
+        didSet {
+            guard oldValue != preferredVoiceIdentifier else {
+                return
+            }
+
+            if let preferredVoiceIdentifier {
+                userDefaults.set(preferredVoiceIdentifier, forKey: Self.preferredVoiceIdentifierKey)
+            } else {
+                userDefaults.removeObject(forKey: Self.preferredVoiceIdentifierKey)
+            }
+        }
+    }
+    var preferredSpeechRate: Double {
+        didSet {
+            guard oldValue != preferredSpeechRate else {
+                return
+            }
+
+            userDefaults.set(preferredSpeechRate, forKey: Self.preferredSpeechRateKey)
+        }
+    }
 
     let speechController = SpeechController()
 
@@ -33,53 +63,43 @@ final class AppModel {
     @ObservationIgnored private var knownAssistantMessageIDsBySession: [ClaudeSessionSummary.ID: Set<TranscriptMessage.ID>] = [:]
 
     init() {
-        applyStoredSpeechPreferences()
+        if let storedValue = userDefaults.string(forKey: Self.preferredSpeechBackendKey),
+           let backend = SpeechBackend(rawValue: storedValue) {
+            preferredSpeechBackend = backend
+        } else {
+            preferredSpeechBackend = .avSpeech
+        }
+
+        let storedRate = userDefaults.double(forKey: Self.preferredSpeechRateKey)
+        preferredSpeechRate = storedRate == 0 ? Double(AVSpeechUtteranceDefaultSpeechRate) : storedRate
+        speechController.backend = preferredSpeechBackend
+        preferredVoiceIdentifier = speechController.resolveVoiceIdentifier(
+            userDefaults.string(forKey: Self.preferredVoiceIdentifierKey)
+        )
     }
 
     var selectedSession: ClaudeSessionSummary? {
         sessions.first { $0.id == selectedSessionID }
     }
 
-    var preferredSpeechBackend: SpeechBackend {
-        get {
-            if let storedValue = userDefaults.string(forKey: Self.preferredSpeechBackendKey),
-               let backend = SpeechBackend(rawValue: storedValue) {
-                return backend
-            }
-
-            return .avSpeech
-        }
-        set {
-            userDefaults.set(newValue.rawValue, forKey: Self.preferredSpeechBackendKey)
-            speechController.backend = newValue
-        }
+    var sessions: [ClaudeSessionSummary] {
+        sessionsState.sessions
     }
 
-    var preferredVoiceIdentifier: String? {
-        get {
-            speechController.resolveVoiceIdentifier(
-                userDefaults.string(forKey: Self.preferredVoiceIdentifierKey)
-            )
-        }
-        set {
-            storePreferredVoiceIdentifier(
-                speechController.resolveVoiceIdentifier(newValue)
-            )
-        }
+    var transcriptMessages: [TranscriptMessage] {
+        transcriptState.messages
     }
 
-    var preferredSpeechRate: Double {
-        get {
-            let storedValue = userDefaults.double(forKey: Self.preferredSpeechRateKey)
-            if storedValue == 0 {
-                return Double(AVSpeechUtteranceDefaultSpeechRate)
-            }
+    var isLoading: Bool {
+        sessionsState.isLoading
+    }
 
-            return storedValue
+    var isLoadingTranscript: Bool {
+        guard let selectedSessionID else {
+            return false
         }
-        set {
-            userDefaults.set(newValue, forKey: Self.preferredSpeechRateKey)
-        }
+
+        return transcriptState.isLoading(for: selectedSessionID)
     }
 
     deinit {
@@ -93,14 +113,15 @@ final class AppModel {
             return
         }
 
-        isLoading = true
+        sessionsState = .loading(sessionsState.sessions)
         await refreshSessions()
 
         if let selectedSessionID {
+            if transcriptState == .none {
+                transcriptState = .loading(sessionID: selectedSessionID, messages: [])
+            }
             await refreshTranscript(for: selectedSessionID, allowLiveRead: false, showLoadingState: true)
         }
-
-        isLoading = false
 
         sessionRefreshTask = Task { [weak self] in
             guard let self else {
@@ -121,14 +142,14 @@ final class AppModel {
 
         selectionRefreshTask?.cancel()
         selectedSessionID = id
-        transcriptMessages = []
-        isLoadingTranscript = id != nil
         updateSelectedTranscriptObservation()
 
         guard let id else {
-            isLoadingTranscript = false
+            transcriptState = .none
             return
         }
+
+        transcriptState = .loading(sessionID: id, messages: [])
 
         selectionRefreshTask = Task { [weak self] in
             guard let self else {
@@ -166,12 +187,20 @@ final class AppModel {
         )
     }
 
+    func dismissErrorMessage() {
+        errorMessage = nil
+    }
+
     private func refreshSessions() async {
+        let existingSessions = sessionsState.sessions
+
         do {
             let loadedSessions = try await storageService.loadSessions(limit: Self.sessionListLimit)
-            if sessions != loadedSessions {
-                sessions = loadedSessions
+            if sessionsState != .loaded(loadedSessions) {
+                sessionsState = .loaded(loadedSessions)
             }
+            let currentSessionIDs = Set(loadedSessions.map(\.id))
+            knownAssistantMessageIDsBySession = knownAssistantMessageIDsBySession.filter { currentSessionIDs.contains($0.key) }
 
             if let selectedSessionID, loadedSessions.contains(where: { $0.id == selectedSessionID }) {
                 updateSelectedTranscriptObservation()
@@ -179,9 +208,16 @@ final class AppModel {
             }
 
             selectedSessionID = loadedSessions.first?.id
+            if let selectedSessionID {
+                transcriptState = .loading(sessionID: selectedSessionID, messages: [])
+            } else {
+                transcriptState = .none
+            }
             updateSelectedTranscriptObservation()
         } catch {
-            errorMessage = "Unable to load Claude sessions: \(error.localizedDescription)"
+            let newErrorMessage = "Unable to load Claude sessions: \(error.localizedDescription)"
+            sessionsState = .failed(existingSessions, message: newErrorMessage)
+            errorMessage = newErrorMessage
         }
     }
 
@@ -193,9 +229,11 @@ final class AppModel {
         guard let session = sessions.first(where: { $0.id == sessionID }) else {
             return
         }
-        
+
+        let existingMessages = transcriptState.messages(for: sessionID)
+
         if showLoadingState, selectedSessionID == sessionID {
-            isLoadingTranscript = true
+            transcriptState = .loading(sessionID: sessionID, messages: existingMessages)
         }
 
         do {
@@ -208,8 +246,9 @@ final class AppModel {
             let assistantMessages = loadedTranscript.filter(\.isAssistant)
             let latestAssistantIDs = Set(assistantMessages.map(\.id))
 
-            if selectedSessionID == sessionID, transcriptMessages != loadedTranscript {
-                transcriptMessages = loadedTranscript
+            if selectedSessionID == sessionID,
+               transcriptState != .loaded(sessionID: sessionID, messages: loadedTranscript) {
+                transcriptState = .loaded(sessionID: sessionID, messages: loadedTranscript)
             }
 
             if allowLiveRead, !previousIDs.isEmpty {
@@ -228,19 +267,15 @@ final class AppModel {
             if errorMessage != nil {
                 errorMessage = nil
             }
-            
-            if selectedSessionID == sessionID, isLoadingTranscript {
-                isLoadingTranscript = false
-            }
+        } catch is CancellationError {
+            return
         } catch {
             if selectedSessionID == sessionID {
-                if !transcriptMessages.isEmpty {
-                    transcriptMessages = []
-                }
-                
-                if isLoadingTranscript {
-                    isLoadingTranscript = false
-                }
+                transcriptState = .failed(
+                    sessionID: sessionID,
+                    messages: existingMessages,
+                    message: "Unable to load transcript: \(error.localizedDescription)"
+                )
             }
 
             let newErrorMessage = "Unable to load transcript: \(error.localizedDescription)"
@@ -286,6 +321,7 @@ final class AppModel {
                 return
             }
 
+            // Debounce rapid file-system events while Claude is still appending to the transcript.
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else {
                 return
@@ -298,104 +334,4 @@ final class AppModel {
         }
     }
 
-    private func applyStoredSpeechPreferences() {
-        speechController.backend = preferredSpeechBackend
-        storePreferredVoiceIdentifier(
-            speechController.resolveVoiceIdentifier(
-                userDefaults.string(forKey: Self.preferredVoiceIdentifierKey)
-            )
-        )
-    }
-
-    private func storePreferredVoiceIdentifier(_ identifier: String?) {
-        if let identifier {
-            userDefaults.set(identifier, forKey: Self.preferredVoiceIdentifierKey)
-        } else {
-            userDefaults.removeObject(forKey: Self.preferredVoiceIdentifierKey)
-        }
-    }
-}
-
-private final class TranscriptFileWatcher {
-    private var watchedURL: URL?
-    private var source: DispatchSourceFileSystemObject?
-
-    @MainActor
-    func startWatching(
-        fileURL: URL,
-        onChange: @escaping @MainActor @Sendable () -> Void,
-        onFailure: @escaping @MainActor @Sendable (String) -> Void
-    ) {
-        guard watchedURL != fileURL else {
-            return
-        }
-
-        armWatcher(
-            fileURL: fileURL,
-            onChange: onChange,
-            onFailure: onFailure
-        )
-    }
-
-    @MainActor
-    private func armWatcher(
-        fileURL: URL,
-        onChange: @escaping @MainActor @Sendable () -> Void,
-        onFailure: @escaping @MainActor @Sendable (String) -> Void
-    ) {
-        stop()
-
-        let fileDescriptor = open(fileURL.path, O_EVTONLY)
-        let openErrorNumber = errno
-        guard fileDescriptor >= 0 else {
-            onFailure(Self.errorDescription(for: fileURL, errorNumber: openErrorNumber))
-            return
-        }
-
-        let source = DispatchSource.makeFileSystemObjectSource(
-            fileDescriptor: fileDescriptor,
-            eventMask: [.write, .extend, .rename, .delete],
-            queue: .main
-        )
-        source.setEventHandler { [weak self, weak source] in
-            guard let self, let source else {
-                return
-            }
-
-            let events = source.data
-
-            if events.contains(.rename) || events.contains(.delete) {
-                self.armWatcher(
-                    fileURL: fileURL,
-                    onChange: onChange,
-                    onFailure: onFailure
-                )
-            }
-
-            onChange()
-        }
-        source.setCancelHandler {
-            close(fileDescriptor)
-        }
-        source.resume()
-
-        watchedURL = fileURL
-        self.source = source
-    }
-
-    @MainActor
-    func stop() {
-        watchedURL = nil
-        source?.cancel()
-        source = nil
-    }
-
-    deinit {
-        source?.cancel()
-    }
-
-    private static func errorDescription(for fileURL: URL, errorNumber: Int32) -> String {
-        let systemMessage = String(cString: strerror(errorNumber))
-        return "\(fileURL.lastPathComponent) (\(systemMessage))"
-    }
 }

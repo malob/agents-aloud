@@ -121,8 +121,7 @@ enum ClaudeTranscriptParser {
             return TranscriptMessage(
                 id: uuid,
                 role: .user,
-                text: text,
-                renderingMode: renderingMode(for: text),
+                content: content(for: text),
                 timestamp: timestamp,
                 sessionID: entry.sessionID ?? ""
             )
@@ -140,8 +139,7 @@ enum ClaudeTranscriptParser {
             return TranscriptMessage(
                 id: uuid,
                 role: .assistant,
-                text: text,
-                renderingMode: renderingMode(for: text),
+                content: content(for: text),
                 timestamp: timestamp,
                 sessionID: entry.sessionID ?? ""
             )
@@ -156,7 +154,7 @@ enum ClaudeTranscriptParser {
         return trimmedValue.isEmpty ? nil : trimmedValue
     }
 
-    private static func renderingMode(for text: String) -> TranscriptMessage.RenderingMode {
+    private static func content(for text: String) -> TranscriptMessage.Content {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let literalPrefixes = [
             "<task-notification>",
@@ -167,17 +165,16 @@ enum ClaudeTranscriptParser {
         ]
 
         if literalPrefixes.contains(where: { trimmed.hasPrefix($0) }) {
-            return .literal
+            return .literal(text)
         }
 
-        if text.contains("```") ||
-            text.contains("`") ||
+        if text.contains("`") ||
             text.contains("](") ||
             text.contains("![") ||
             text.contains("**") ||
             text.contains("__") ||
             text.contains("~~") {
-            return .markdown
+            return .markdown(text)
         }
 
         for line in text.split(whereSeparator: \.isNewline) {
@@ -196,11 +193,11 @@ enum ClaudeTranscriptParser {
                 trimmedLine.contains("| ---") ||
                 trimmedLine.contains(" | ") ||
                 orderedListPrefix(in: trimmedLine) {
-                return .markdown
+                return .markdown(text)
             }
         }
 
-        return .plainText
+        return .plainText(text)
     }
 
     private static func orderedListPrefix(in line: String) -> Bool {
