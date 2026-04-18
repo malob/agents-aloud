@@ -90,22 +90,6 @@ struct TranscriptDetailView: View {
                 isPinnedToBottom = true
             }
         }
-        .safeAreaInset(edge: .top) {
-            if let errorMessage = model.errorMessage {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                    Text(errorMessage)
-                        .font(.caption)
-                        .lineLimit(2)
-                    Spacer()
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .glassEffect(.regular.tint(.orange), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .padding(.horizontal)
-                .padding(.top, 8)
-            }
-        }
     }
 
     private func scrollToLatestMessageIfNeeded(using proxy: ScrollViewProxy, reason: ScrollToLatestReason) {
@@ -239,16 +223,14 @@ private struct SessionHeaderView: View {
                     if let modifiedAt = session.modifiedAt {
                         SessionStatusBadge(
                             title: DateFormatting.sessionTimestamp.string(from: modifiedAt),
-                            systemImage: "clock",
-                            prominence: .neutral
+                            systemImage: "clock"
                         )
                         .glassEffectID("updated-at", in: glassNamespace)
                     }
 
                     SessionStatusBadge(
                         title: messageCountText(displayedMessageCount),
-                        systemImage: "text.bubble",
-                        prominence: .neutral
+                        systemImage: "text.bubble"
                     )
                     .glassEffectID("message-count", in: glassNamespace)
                 }
@@ -265,14 +247,8 @@ private struct SessionHeaderView: View {
 }
 
 private struct SessionStatusBadge: View {
-    enum Prominence {
-        case neutral
-        case active
-    }
-
     let title: String
     let systemImage: String
-    let prominence: Prominence
 
     var body: some View {
         Label(title, systemImage: systemImage)
@@ -280,16 +256,7 @@ private struct SessionStatusBadge: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
-            .glassEffect(glassStyle, in: Capsule())
+            .glassEffect(.regular, in: Capsule())
             .lineLimit(1)
-    }
-
-    private var glassStyle: Glass {
-        switch prominence {
-        case .neutral:
-            return .regular
-        case .active:
-            return .regular.tint(.accentColor)
-        }
     }
 }

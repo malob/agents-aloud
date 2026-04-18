@@ -87,7 +87,6 @@ enum ClaudeTranscriptParser {
             id: sessionID,
             summary: resolvedSummary,
             firstPrompt: firstPrompt,
-            createdAt: nil,
             modifiedAt: modifiedAt,
             projectPath: projectPath ?? fallbackProjectPath,
             transcriptPath: fileURL.path,

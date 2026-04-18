@@ -72,12 +72,6 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-
-            Section("MVP Notes") {
-                Text("This first version reads raw assistant text directly from Claude’s local transcript files. Transcript cleanup and speech-aware rewriting come later.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
         .padding()

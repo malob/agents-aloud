@@ -25,5 +25,29 @@ struct ContentView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .top) {
+            if let errorMessage = model.errorMessage {
+                ErrorBannerView(message: errorMessage)
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+            }
+        }
+    }
+}
+
+private struct ErrorBannerView: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(message)
+                .font(.caption)
+                .lineLimit(2)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .glassEffect(.regular.tint(.orange), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }

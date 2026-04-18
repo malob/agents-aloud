@@ -4,7 +4,6 @@ struct ClaudeSessionSummary: Identifiable, Hashable {
     let id: String
     let summary: String
     let firstPrompt: String?
-    let createdAt: Date?
     let modifiedAt: Date?
     let projectPath: String
     let transcriptPath: String
