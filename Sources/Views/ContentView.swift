@@ -17,30 +17,12 @@ struct ContentView: View {
                 )
             }
         }
-        .searchable(
-            text: Binding(
-                get: { model.searchQuery },
-                set: { model.searchQuery = $0 }
-            ),
-            placement: .toolbar,
-            prompt: "Search sessions and transcript"
-        )
         .navigationTitle("Claude Code Voice")
         .toolbar {
             if model.selectedSession != nil {
-                ToolbarItem(placement: .automatic) {
+                ToolbarItemGroup(placement: .navigation) {
                     PlaybackControlsView(controller: model.speechController)
                 }
-
-                ToolbarSpacer(.fixed)
-
-                ToolbarItem(placement: .automatic) {
-                    SettingsLink {
-                        Label("Settings", systemImage: "gearshape")
-                    }
-                    .help("Open speech and playback settings.")
-                }
-                .sharedBackgroundVisibility(.hidden)
             }
         }
     }

@@ -20,12 +20,12 @@ struct MessageRowView: View {
 
                 if message.isAssistant {
                     Button(action: onPlay) {
-                        Label("Listen", systemImage: "speaker.wave.2.fill")
+                        Label("Speak", systemImage: "speaker.wave.2.fill")
                             .font(.caption.weight(.medium))
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
-                    .help("Read this assistant message aloud.")
+                    .help("Speak this assistant message aloud.")
                 }
             }
 

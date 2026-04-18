@@ -15,8 +15,8 @@ final class AppModel {
     var sessions: [ClaudeSessionSummary] = []
     var selectedSessionID: ClaudeSessionSummary.ID?
     var transcriptMessages: [TranscriptMessage] = []
-    var searchQuery = ""
     var isLoading = false
+    var isLoadingTranscript = false
     var errorMessage: String?
     var liveReadSessionID: ClaudeSessionSummary.ID?
 
@@ -28,34 +28,6 @@ final class AppModel {
 
     var selectedSession: ClaudeSessionSummary? {
         sessions.first { $0.id == selectedSessionID }
-    }
-
-    var hasActiveSearch: Bool {
-        !normalizedSearchQuery.isEmpty
-    }
-
-    var displayedSessions: [ClaudeSessionSummary] {
-        guard !normalizedSearchQuery.isEmpty else {
-            return sessions
-        }
-
-        return sessions.filter { session in
-            searchMatches(session.summary) ||
-            searchMatches(session.projectName) ||
-            searchMatches(session.projectPath) ||
-            searchMatches(session.firstPrompt)
-        }
-    }
-
-    var displayedTranscriptMessages: [TranscriptMessage] {
-        guard !normalizedSearchQuery.isEmpty else {
-            return transcriptMessages
-        }
-
-        return transcriptMessages.filter { message in
-            searchMatches(message.text) ||
-            searchMatches(message.role.rawValue)
-        }
     }
 
     var preferredSpeechBackend: SpeechBackend {
@@ -120,7 +92,7 @@ final class AppModel {
         await refreshSessions()
 
         if let selectedSessionID {
-            await refreshTranscript(for: selectedSessionID, allowLiveRead: false)
+            await refreshTranscript(for: selectedSessionID, allowLiveRead: false, showLoadingState: true)
         }
 
         isLoading = false
@@ -159,8 +131,10 @@ final class AppModel {
         selectionRefreshTask?.cancel()
         selectedSessionID = id
         transcriptMessages = []
+        isLoadingTranscript = id != nil
 
         guard let id else {
+            isLoadingTranscript = false
             return
         }
 
@@ -169,7 +143,7 @@ final class AppModel {
                 return
             }
 
-            await refreshTranscript(for: id, allowLiveRead: false)
+            await refreshTranscript(for: id, allowLiveRead: false, showLoadingState: true)
         }
     }
 
@@ -217,9 +191,17 @@ final class AppModel {
         }
     }
 
-    private func refreshTranscript(for sessionID: ClaudeSessionSummary.ID, allowLiveRead: Bool) async {
+    private func refreshTranscript(
+        for sessionID: ClaudeSessionSummary.ID,
+        allowLiveRead: Bool,
+        showLoadingState: Bool = false
+    ) async {
         guard let session = sessions.first(where: { $0.id == sessionID }) else {
             return
+        }
+        
+        if showLoadingState, selectedSessionID == sessionID {
+            isLoadingTranscript = true
         }
 
         do {
@@ -252,10 +234,18 @@ final class AppModel {
             if errorMessage != nil {
                 errorMessage = nil
             }
+            
+            if selectedSessionID == sessionID, isLoadingTranscript {
+                isLoadingTranscript = false
+            }
         } catch {
             if selectedSessionID == sessionID {
                 if !transcriptMessages.isEmpty {
                     transcriptMessages = []
+                }
+                
+                if isLoadingTranscript {
+                    isLoadingTranscript = false
                 }
             }
 
@@ -264,19 +254,5 @@ final class AppModel {
                 errorMessage = newErrorMessage
             }
         }
-    }
-
-    private var normalizedSearchQuery: String {
-        searchQuery
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .localizedLowercase
-    }
-
-    private func searchMatches(_ value: String?) -> Bool {
-        guard let value else {
-            return false
-        }
-
-        return value.localizedLowercase.contains(normalizedSearchQuery)
     }
 }

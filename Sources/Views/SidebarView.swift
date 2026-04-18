@@ -10,7 +10,7 @@ struct SidebarView: View {
                 set: { model.selectSession(id: $0) }
             )
         ) {
-            ForEach(model.displayedSessions) { session in
+            ForEach(model.sessions) { session in
                 SessionRowView(
                     session: session,
                     isSelected: model.selectedSessionID == session.id,
@@ -23,8 +23,12 @@ struct SidebarView: View {
         .overlay {
             if model.isLoading && model.sessions.isEmpty {
                 ProgressView("Loading Claude sessions…")
-            } else if model.displayedSessions.isEmpty {
-                ContentUnavailableView.search(text: model.searchQuery)
+            } else if model.sessions.isEmpty {
+                ContentUnavailableView(
+                    "No Claude Sessions",
+                    systemImage: "bubble.left.and.bubble.right",
+                    description: Text("Recent Claude Code sessions will appear here once transcripts are available.")
+                )
             }
         }
     }

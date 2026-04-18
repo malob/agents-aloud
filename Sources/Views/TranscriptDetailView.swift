@@ -15,17 +15,9 @@ struct TranscriptDetailView: View {
 
                 Divider()
 
-                if model.transcriptMessages.isEmpty {
-                    ContentUnavailableView(
-                        "No Speakable Messages Yet",
-                        systemImage: "text.word.spacing",
-                        description: Text("This view shows your prompts and assistant text messages from the selected Claude session.")
-                    )
-                } else if model.displayedTranscriptMessages.isEmpty {
-                    ContentUnavailableView.search(text: model.searchQuery)
-                } else {
+                ZStack {
                     List {
-                        ForEach(model.displayedTranscriptMessages) { message in
+                        ForEach(model.transcriptMessages) { message in
                             MessageRowView(message: message) {
                                 model.playMessage(message)
                             }
@@ -43,7 +35,7 @@ struct TranscriptDetailView: View {
                         pendingInitialScrollSessionID = session.id
                         scrollToLatestMessageIfNeeded(using: proxy, reason: .initialLoad)
                     }
-                    .onChange(of: model.displayedTranscriptMessages.map(\.id)) { oldIDs, newIDs in
+                    .onChange(of: model.transcriptMessages.map(\.id)) { oldIDs, newIDs in
                         let appendedMessagesAtEnd =
                             !oldIDs.isEmpty &&
                             newIDs.count > oldIDs.count &&
@@ -76,6 +68,17 @@ struct TranscriptDetailView: View {
 
                         isPinnedToBottom = bottomDistance(for: newMetrics) <= bottomPinThreshold
                     })
+                    
+                    if model.isLoadingTranscript {
+                        ProgressView("Loading transcript…")
+                            .controlSize(.regular)
+                    } else if model.transcriptMessages.isEmpty {
+                        ContentUnavailableView(
+                            "No Speakable Messages Yet",
+                            systemImage: "text.word.spacing",
+                            description: Text("This view shows your prompts and assistant text messages from the selected Claude session.")
+                        )
+                    }
                 }
             }
             .onAppear {
@@ -106,7 +109,7 @@ struct TranscriptDetailView: View {
     }
 
     private func scrollToLatestMessageIfNeeded(using proxy: ScrollViewProxy, reason: ScrollToLatestReason) {
-        guard let lastMessageID = model.displayedTranscriptMessages.last?.id else {
+        guard let lastMessageID = model.transcriptMessages.last?.id else {
             return
         }
 
@@ -153,8 +156,8 @@ private struct SessionHeaderView: View {
     }
 
     private var displayedMessageCount: Int {
-        model.selectedSessionID == session.id && !model.displayedTranscriptMessages.isEmpty
-            ? model.displayedTranscriptMessages.count
+        model.selectedSessionID == session.id && !model.transcriptMessages.isEmpty
+            ? model.transcriptMessages.count
             : session.messageCount
     }
 
@@ -248,16 +251,6 @@ private struct SessionHeaderView: View {
                         prominence: .neutral
                     )
                     .glassEffectID("message-count", in: glassNamespace)
-
-                    if model.hasActiveSearch {
-                        SessionStatusBadge(
-                            title: "Filtered",
-                            systemImage: "magnifyingglass",
-                            prominence: .search
-                        )
-                        .glassEffectID("filtered", in: glassNamespace)
-                        .glassEffectTransition(.materialize)
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -275,7 +268,6 @@ private struct SessionStatusBadge: View {
     enum Prominence {
         case neutral
         case active
-        case search
     }
 
     let title: String
@@ -298,8 +290,6 @@ private struct SessionStatusBadge: View {
             return .regular
         case .active:
             return .regular.tint(.accentColor)
-        case .search:
-            return .regular.tint(.orange)
         }
     }
 }
