@@ -144,6 +144,8 @@ final class AppModel {
             return
         }
 
+        PerfLog.mark("AppModel.selectSession start id=\(id ?? "nil")")
+
         selectionRefreshTask?.cancel()
         selectedTranscriptRefreshTask?.cancel()
         selectedSessionID = id
@@ -154,7 +156,9 @@ final class AppModel {
             return
         }
 
-        transcriptState = .loading(sessionID: id, messages: cachedTranscriptMessages(for: id))
+        let cached = cachedTranscriptMessages(for: id)
+        PerfLog.mark("AppModel.selectSession setLoading cached=\(cached.count)")
+        transcriptState = .loading(sessionID: id, messages: cached)
 
         selectionRefreshTask = Task { [weak self] in
             guard let self else {
@@ -231,6 +235,13 @@ final class AppModel {
         allowLiveRead: Bool,
         showLoadingState: Bool = false
     ) async {
+        let start = CFAbsoluteTimeGetCurrent()
+        PerfLog.mark("AppModel.refreshTranscript start session=\(sessionID)")
+        defer {
+            let elapsed = (CFAbsoluteTimeGetCurrent() - start) * 1000
+            PerfLog.mark("AppModel.refreshTranscript end \(String(format: "%.1f", elapsed))ms")
+        }
+
         guard let session = sessions.first(where: { $0.id == sessionID }) else {
             return
         }
@@ -243,6 +254,7 @@ final class AppModel {
 
         do {
             let loadedTranscript = try await storageService.loadTranscript(for: session)
+            PerfLog.mark("AppModel.refreshTranscript loaded count=\(loadedTranscript.count)")
             guard !Task.isCancelled else {
                 return
             }
@@ -265,7 +277,10 @@ final class AppModel {
                 }
 
                 if !alreadyCurrent {
+                    PerfLog.mark("AppModel.refreshTranscript commit count=\(loadedTranscript.count)")
                     transcriptState = .loaded(sessionID: sessionID, messages: loadedTranscript)
+                } else {
+                    PerfLog.mark("AppModel.refreshTranscript skip (already current)")
                 }
             }
 

@@ -15,6 +15,7 @@ struct MessageRowView: View, Equatable {
     }
 
     var body: some View {
+        let _ = BodyCounter.tick("MessageRowView[\(message.id.suffix(6))]")
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
                 Label(roleAppearance.title, systemImage: roleAppearance.symbolName)

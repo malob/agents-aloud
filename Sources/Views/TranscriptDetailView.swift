@@ -28,6 +28,7 @@ struct TranscriptDetailView: View {
     }
 
     var body: some View {
+        let _ = BodyCounter.tick("TranscriptDetailView")
         ZStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -134,6 +135,7 @@ private struct SessionHeaderView: View {
     }
 
     var body: some View {
+        let _ = BodyCounter.tick("SessionHeaderView")
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {

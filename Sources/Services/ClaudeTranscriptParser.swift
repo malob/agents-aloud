@@ -6,24 +6,27 @@ enum ClaudeTranscriptParser {
     private static let decoder = JSONDecoder()
 
     static func parseTranscript(_ rawTranscript: String) -> [TranscriptMessage] {
-        let dateParsers = ISO8601DateParsers()
-        var messages: [TranscriptMessage] = []
-        var droppedLineCount = 0
+        PerfLog.time("Parser.parseTranscript") {
+            let dateParsers = ISO8601DateParsers()
+            var messages: [TranscriptMessage] = []
+            var droppedLineCount = 0
 
-        for lineSlice in rawTranscript.split(whereSeparator: \.isNewline) {
-            guard let data = String(lineSlice).data(using: .utf8),
-                  let entry = try? decoder.decode(TranscriptLine.self, from: data),
-                  let message = makeTranscriptMessage(from: entry, using: dateParsers) else {
-                droppedLineCount += 1
-                continue
+            for lineSlice in rawTranscript.split(whereSeparator: \.isNewline) {
+                guard let data = String(lineSlice).data(using: .utf8),
+                      let entry = try? decoder.decode(TranscriptLine.self, from: data),
+                      let message = makeTranscriptMessage(from: entry, using: dateParsers) else {
+                    droppedLineCount += 1
+                    continue
+                }
+
+                messages.append(message)
             }
 
-            messages.append(message)
+            logDroppedLineCount(droppedLineCount, operation: "parse")
+            PerfLog.mark("Parser.parseTranscript kept=\(messages.count) dropped=\(droppedLineCount)")
+
+            return messages.sorted { $0.timestamp < $1.timestamp }
         }
-
-        logDroppedLineCount(droppedLineCount, operation: "parse")
-
-        return messages.sorted { $0.timestamp < $1.timestamp }
     }
 
     static func summarizeTranscript(

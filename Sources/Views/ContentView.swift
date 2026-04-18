@@ -4,6 +4,7 @@ struct ContentView: View {
     let model: AppModel
 
     var body: some View {
+        let _ = BodyCounter.tick("ContentView")
         NavigationSplitView {
             SidebarView(model: model)
         } detail: {

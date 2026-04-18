@@ -18,6 +18,12 @@ actor ClaudeStorageService {
     }
 
     func loadSessions(limit: Int = 200) throws -> [ClaudeSessionSummary] {
+        try PerfLog.time("Storage.loadSessions") {
+            try _loadSessions(limit: limit)
+        }
+    }
+
+    private func _loadSessions(limit: Int) throws -> [ClaudeSessionSummary] {
         let projectURLs = try fileManager.contentsOfDirectory(
             at: projectsRoot,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -91,21 +97,26 @@ actor ClaudeStorageService {
     }
 
     func loadTranscript(for session: ClaudeSessionSummary) throws -> [TranscriptMessage] {
-        let transcriptURL = URL(fileURLWithPath: session.transcriptPath)
-        let modifiedAt = try transcriptURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
+        try PerfLog.time("Storage.loadTranscript") {
+            let transcriptURL = URL(fileURLWithPath: session.transcriptPath)
+            let modifiedAt = try transcriptURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
 
-        if let cachedTranscript = transcriptCache[session.transcriptPath],
-           cachedTranscript.modifiedAt == modifiedAt {
-            return cachedTranscript.messages
+            if let cachedTranscript = transcriptCache[session.transcriptPath],
+               cachedTranscript.modifiedAt == modifiedAt {
+                PerfLog.mark("Storage.loadTranscript cacheHit")
+                return cachedTranscript.messages
+            }
+
+            let rawTranscript = try PerfLog.time("Storage.loadTranscript.read") {
+                try String(contentsOf: transcriptURL, encoding: .utf8)
+            }
+            let sortedMessages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
+            transcriptCache[session.transcriptPath] = CachedTranscript(
+                modifiedAt: modifiedAt,
+                messages: sortedMessages
+            )
+            return sortedMessages
         }
-
-        let rawTranscript = try String(contentsOf: transcriptURL, encoding: .utf8)
-        let sortedMessages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
-        transcriptCache[session.transcriptPath] = CachedTranscript(
-            modifiedAt: modifiedAt,
-            messages: sortedMessages
-        )
-        return sortedMessages
     }
 
     private func summarizeTranscriptFile(at fileURL: URL, modifiedAt: Date) throws -> ClaudeSessionSummary? {
