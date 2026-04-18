@@ -1,18 +1,12 @@
 import SwiftUI
 
 struct SettingsView: View {
-    let model: AppModel
+    @Bindable var model: AppModel
 
     var body: some View {
         Form {
             Section("Speech Engine") {
-                Picker(
-                    "Engine",
-                    selection: Binding(
-                        get: { model.preferredSpeechBackend },
-                        set: { model.preferredSpeechBackend = $0 }
-                    )
-                ) {
+                Picker("Engine", selection: $model.preferredSpeechBackend) {
                     ForEach(SpeechBackend.allCases) { backend in
                         Text(backend.displayName)
                             .tag(backend)
@@ -26,16 +20,10 @@ struct SettingsView: View {
 
             if model.preferredSpeechBackend.supportsVoicePicker {
                 Section("Voice") {
-                    Picker(
-                        "Preferred Voice",
-                        selection: Binding(
-                            get: { model.preferredVoiceIdentifier ?? "" },
-                            set: { model.preferredVoiceIdentifier = $0 }
-                        )
-                    ) {
+                    Picker("Preferred Voice", selection: $model.preferredVoiceIdentifier) {
                         ForEach(model.speechController.availableVoices) { voice in
                             Text(voice.displayName)
-                                .tag(voice.id)
+                                .tag(Optional(voice.id))
                         }
                     }
 
@@ -53,13 +41,7 @@ struct SettingsView: View {
 
             if model.preferredSpeechBackend == .avSpeech {
                 Section("Speech Rate") {
-                    Slider(
-                        value: Binding(
-                            get: { model.preferredSpeechRate },
-                            set: { model.preferredSpeechRate = $0 }
-                        ),
-                        in: 0.2...0.6
-                    )
+                    Slider(value: $model.preferredSpeechRate, in: 0.2...0.6)
 
                     Text(String(format: "Current rate: %.2f", model.preferredSpeechRate))
                         .font(.caption)
