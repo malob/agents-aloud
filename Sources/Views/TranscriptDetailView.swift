@@ -5,89 +5,92 @@ struct TranscriptDetailView: View {
     let session: ClaudeSessionSummary
     @State private var pendingInitialScrollSessionID: ClaudeSessionSummary.ID?
     @State private var isPinnedToBottom = true
+    @State private var scrollStabilizationTask: Task<Void, Never>?
 
     private let bottomPinThreshold: CGFloat = 40
 
     var body: some View {
         ScrollViewReader { proxy in
-            VStack(spacing: 0) {
-                SessionHeaderView(model: model, session: session)
-
-                Divider()
-
-                ZStack {
-                    List {
-                        ForEach(model.transcriptMessages) { message in
-                            MessageRowView(message: message) {
-                                model.playMessage(message)
-                            }
-                            .id(message.id)
-                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                            .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
+            ZStack {
+                List {
+                    ForEach(model.transcriptMessages) { message in
+                        MessageRowView(message: message) {
+                            model.playMessage(message)
                         }
-                    }
-                    .id(session.id)
-                    .listStyle(.plain)
-                    .scrollContentBackground(.hidden)
-                    .background(.clear)
-                    .onAppear {
-                        pendingInitialScrollSessionID = session.id
-                        scrollToLatestMessageIfNeeded(using: proxy, reason: .initialLoad)
-                    }
-                    .onChange(of: model.transcriptMessages.map(\.id)) { oldIDs, newIDs in
-                        let appendedMessagesAtEnd =
-                            !oldIDs.isEmpty &&
-                            newIDs.count > oldIDs.count &&
-                            Array(newIDs.prefix(oldIDs.count)) == oldIDs
-
-                        let shouldScrollForInitialLoad = pendingInitialScrollSessionID == session.id
-                        let shouldScrollForAppendedMessages = isPinnedToBottom && appendedMessagesAtEnd
-
-                        guard shouldScrollForInitialLoad || shouldScrollForAppendedMessages else {
-                            return
-                        }
-
-                        scrollToLatestMessageIfNeeded(
-                            using: proxy,
-                            reason: shouldScrollForInitialLoad ? .initialLoad : .keepPinnedToBottom
-                        )
-                    }
-                    .onScrollGeometryChange(for: ScrollMetrics.self, of: { geometry in
-                        ScrollMetrics(
-                            visibleMaxY: geometry.visibleRect.maxY,
-                            contentHeight: geometry.contentSize.height
-                        )
-                    }, action: { oldMetrics, newMetrics in
-                        let visiblePositionChanged = abs(newMetrics.visibleMaxY - oldMetrics.visibleMaxY) > 1
-                        let firstMeasurement = oldMetrics == .zero
-
-                        guard visiblePositionChanged || firstMeasurement else {
-                            return
-                        }
-
-                        isPinnedToBottom = bottomDistance(for: newMetrics) <= bottomPinThreshold
-                    })
-                    
-                    if model.isLoadingTranscript {
-                        ProgressView("Loading transcript…")
-                            .controlSize(.regular)
-                    } else if model.transcriptMessages.isEmpty {
-                        ContentUnavailableView(
-                            "No Speakable Messages Yet",
-                            systemImage: "text.word.spacing",
-                            description: Text("This view shows your prompts and assistant text messages from the selected Claude session.")
-                        )
+                        .id(message.id)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                     }
                 }
+                .id(session.id)
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(.clear)
+                .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                .onAppear {
+                    pendingInitialScrollSessionID = session.id
+                    scrollToLatestMessageIfNeeded(using: proxy, reason: .initialLoad)
+                }
+                .onChange(of: model.transcriptMessages.map(\.id)) { oldIDs, newIDs in
+                    let appendedMessagesAtEnd =
+                        !oldIDs.isEmpty &&
+                        newIDs.count > oldIDs.count &&
+                        Array(newIDs.prefix(oldIDs.count)) == oldIDs
+
+                    let shouldScrollForInitialLoad = pendingInitialScrollSessionID == session.id
+                    let shouldScrollForAppendedMessages = isPinnedToBottom && appendedMessagesAtEnd
+
+                    guard shouldScrollForInitialLoad || shouldScrollForAppendedMessages else {
+                        return
+                    }
+
+                    scrollToLatestMessageIfNeeded(
+                        using: proxy,
+                        reason: shouldScrollForInitialLoad ? .initialLoad : .keepPinnedToBottom
+                    )
+                }
+                .onScrollGeometryChange(for: ScrollMetrics.self, of: { geometry in
+                    ScrollMetrics(
+                        visibleMaxY: geometry.visibleRect.maxY,
+                        contentHeight: geometry.contentSize.height
+                    )
+                }, action: { oldMetrics, newMetrics in
+                    let visiblePositionChanged = abs(newMetrics.visibleMaxY - oldMetrics.visibleMaxY) > 1
+                    let firstMeasurement = oldMetrics == .zero
+
+                    guard visiblePositionChanged || firstMeasurement else {
+                        return
+                    }
+
+                    isPinnedToBottom = bottomDistance(for: newMetrics) <= bottomPinThreshold
+                })
+
+                if model.isLoadingTranscript {
+                    ProgressView("Loading transcript…")
+                        .controlSize(.regular)
+                } else if model.transcriptMessages.isEmpty {
+                    ContentUnavailableView(
+                        "No Speakable Messages Yet",
+                        systemImage: "text.word.spacing",
+                        description: Text("This view shows your prompts and assistant text messages from the selected Claude session.")
+                    )
+                }
+            }
+            .safeAreaBar(edge: .top, spacing: 0) {
+                SessionHeaderView(model: model, session: session)
             }
             .onAppear {
                 pendingInitialScrollSessionID = session.id
                 isPinnedToBottom = true
             }
             .onChange(of: session.id) { _, newSessionID in
+                scrollStabilizationTask?.cancel()
                 pendingInitialScrollSessionID = newSessionID
                 isPinnedToBottom = true
+            }
+            .onDisappear {
+                scrollStabilizationTask?.cancel()
             }
         }
     }
@@ -97,19 +100,45 @@ struct TranscriptDetailView: View {
             return
         }
 
+        scrollStabilizationTask?.cancel()
         if reason == .initialLoad {
             guard pendingInitialScrollSessionID == session.id else {
                 return
             }
-
-            pendingInitialScrollSessionID = nil
         }
 
         isPinnedToBottom = true
 
-        Task { @MainActor in
-            await Task.yield()
-            proxy.scrollTo(lastMessageID, anchor: .bottom)
+        let stabilizationDelays: [Duration]
+        switch reason {
+        case .initialLoad:
+            stabilizationDelays = [.zero, .milliseconds(40), .milliseconds(140)]
+        case .keepPinnedToBottom:
+            stabilizationDelays = [.zero, .milliseconds(40)]
+        }
+
+        scrollStabilizationTask = Task { @MainActor in
+            for delay in stabilizationDelays {
+                if delay > .zero {
+                    try? await Task.sleep(for: delay)
+                } else {
+                    await Task.yield()
+                }
+
+                guard !Task.isCancelled else {
+                    return
+                }
+
+                guard model.selectedSessionID == session.id else {
+                    return
+                }
+
+                proxy.scrollTo(lastMessageID, anchor: .bottom)
+            }
+
+            if reason == .initialLoad, pendingInitialScrollSessionID == session.id {
+                pendingInitialScrollSessionID = nil
+            }
         }
     }
 
@@ -211,7 +240,6 @@ private struct SessionHeaderView: View {
                         Capsule()
                             .stroke(liveSpeakBorderColor, lineWidth: 1)
                     }
-                    .glassEffectID("playback-mode", in: glassNamespace)
                 }
                 .buttonStyle(.plain)
                 .controlSize(.large)

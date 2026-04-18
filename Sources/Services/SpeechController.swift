@@ -1,77 +1,13 @@
-import AVFoundation
-import Darwin
 import Foundation
 import Observation
+import OSLog
 
 @MainActor
 @Observable
-final class SpeechController: NSObject {
-    private static let experimentalSystemVoiceWordsPerMinute = 400
-
-    private struct SpeechRequest {
-        let messageID: String
-        let text: String
-        let voiceIdentifier: String?
-        let rate: Float
-    }
-
-    private final class SystemVoiceJob {
-        let token = UUID()
-        let process: Process
-        let inputPipe: Pipe
-        private var hasClosedInput = false
-
-        init(process: Process, inputPipe: Pipe) {
-            self.process = process
-            self.inputPipe = inputPipe
-        }
-
-        func write(_ text: String) throws {
-            guard let data = text.data(using: .utf8) else {
-                return
-            }
-
-            try inputPipe.fileHandleForWriting.write(contentsOf: data)
-            closeInput()
-        }
-
-        func closeInput() {
-            guard !hasClosedInput else {
-                return
-            }
-
-            hasClosedInput = true
-            try? inputPipe.fileHandleForWriting.close()
-        }
-
-        func pause() {
-            guard process.isRunning else {
-                return
-            }
-
-            kill(process.processIdentifier, SIGSTOP)
-        }
-
-        func resume() {
-            guard process.isRunning else {
-                return
-            }
-
-            kill(process.processIdentifier, SIGCONT)
-        }
-
-        func terminate() {
-            closeInput()
-
-            if process.isRunning {
-                process.terminate()
-            }
-        }
-    }
-
+final class SpeechController {
     private struct ActivePlayback {
         let request: SpeechRequest
-        let systemVoiceJob: SystemVoiceJob?
+        let backend: SpeechBackend
     }
 
     private enum PlaybackState {
@@ -109,10 +45,10 @@ final class SpeechController: NSObject {
         }
     }
 
-    @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
+    @ObservationIgnored private let logger = Logger(subsystem: "local.claudecodevoice", category: "Speech")
     @ObservationIgnored private var queuedRequests: [SpeechRequest] = []
-    @ObservationIgnored private lazy var supportedVoices = Self.loadSupportedVoices()
-    @ObservationIgnored private lazy var supportedVoiceIdentifiers = Set(supportedVoices.map(\.id))
+    @ObservationIgnored private let avSpeechDriver: any SpeechBackendDriver
+    @ObservationIgnored private let systemVoiceDriver: any SpeechBackendDriver
     private var playbackState: PlaybackState = .idle
 
     var backend: SpeechBackend = .avSpeech {
@@ -121,13 +57,18 @@ final class SpeechController: NSObject {
                 return
             }
 
-            stop()
+            queuedRequests.removeAll()
+            stopPlayback(using: driver(for: oldValue))
+            playbackState = .idle
         }
     }
 
-    override init() {
-        super.init()
-        synthesizer.delegate = self
+    init(
+        avSpeechDriver: any SpeechBackendDriver = AVSpeechBackendDriver(),
+        systemVoiceDriver: any SpeechBackendDriver = SystemVoiceBackendDriver()
+    ) {
+        self.avSpeechDriver = avSpeechDriver
+        self.systemVoiceDriver = systemVoiceDriver
     }
 
     var isSpeaking: Bool {
@@ -143,67 +84,44 @@ final class SpeechController: NSObject {
     }
 
     var availableVoices: [SpeechVoiceOption] {
-        supportedVoices
+        avSpeechDriver.availableVoices
     }
 
     var systemVoiceWordsPerMinute: Int {
-        Self.experimentalSystemVoiceWordsPerMinute
+        systemVoiceDriver.wordsPerMinute ?? 400
     }
 
     var defaultVoiceIdentifier: String? {
-        guard !supportedVoices.isEmpty else {
-            return nil
-        }
-
-        let preferredEnglishLanguages = preferredEnglishLanguageCodes()
-
-        for languageCode in preferredEnglishLanguages {
-            if let exactMatch = supportedVoices.first(where: { $0.language == languageCode }) {
-                return exactMatch.id
-            }
-        }
-
-        if let usEnglishVoice = supportedVoices.first(where: { $0.language == "en-US" }) {
-            return usEnglishVoice.id
-        }
-
-        return supportedVoices.first?.id
+        avSpeechDriver.resolveVoiceIdentifier(nil)
     }
 
     func resolveVoiceIdentifier(_ identifier: String?) -> String? {
-        if let identifier, supportedVoiceIdentifiers.contains(identifier) {
-            return identifier
-        }
-
-        return defaultVoiceIdentifier
+        avSpeechDriver.resolveVoiceIdentifier(identifier)
     }
 
     func playNow(text: String, messageID: String, voiceIdentifier: String?, rate: Float) {
+        let request = SpeechRequest(
+            playbackID: UUID(),
+            messageID: messageID,
+            text: text,
+            voiceIdentifier: voiceIdentifier,
+            rate: rate
+        )
+
         if playbackState.activePlayback != nil {
-            queuedRequests = [
-                SpeechRequest(
-                    messageID: messageID,
-                    text: text,
-                    voiceIdentifier: voiceIdentifier,
-                    rate: rate
-                )
-            ]
-            interruptCurrentPlayback()
+            queuedRequests = [request]
+            stopPlayback(using: activeDriver ?? currentDriver)
+            playbackState = .idle
+            playNextQueuedRequestIfNeeded()
             return
         }
 
-        speak(
-            SpeechRequest(
-                messageID: messageID,
-                text: text,
-                voiceIdentifier: voiceIdentifier,
-                rate: rate
-            )
-        )
+        speak(request)
     }
 
     func enqueue(text: String, messageID: String, voiceIdentifier: String?, rate: Float) {
         let request = SpeechRequest(
+            playbackID: UUID(),
             messageID: messageID,
             text: text,
             voiceIdentifier: voiceIdentifier,
@@ -218,72 +136,35 @@ final class SpeechController: NSObject {
     }
 
     func pause() {
-        switch backend {
-        case .avSpeech:
-            guard synthesizer.isSpeaking else {
-                return
-            }
-
-            synthesizer.pauseSpeaking(at: .word)
-
-        case .systemVoice:
-            guard case let .speaking(activePlayback) = playbackState,
-                  let job = activePlayback.systemVoiceJob else {
-                return
-            }
-
-            job.pause()
-            playbackState = .paused(activePlayback)
-        }
+        activeDriver?.pause()
     }
 
     func resume() {
-        switch backend {
-        case .avSpeech:
-            guard synthesizer.isPaused else {
-                return
-            }
-
-            synthesizer.continueSpeaking()
-
-        case .systemVoice:
-            guard case let .paused(activePlayback) = playbackState,
-                  let job = activePlayback.systemVoiceJob else {
-                return
-            }
-
-            job.resume()
-            playbackState = .speaking(activePlayback)
-        }
+        activeDriver?.resume()
     }
 
     func stop() {
         queuedRequests.removeAll()
-        interruptCurrentPlayback()
+        stopPlayback(using: activeDriver ?? currentDriver)
         playbackState = .idle
     }
 
     private func speak(_ request: SpeechRequest) {
-        switch backend {
-        case .avSpeech:
-            let utterance = AVSpeechUtterance(string: request.text)
-            utterance.rate = request.rate
+        let driver = currentDriver
+        let activePlayback = ActivePlayback(request: request, backend: backend)
 
-            if let voiceIdentifier = resolveVoiceIdentifier(request.voiceIdentifier),
-               let voice = AVSpeechSynthesisVoice(identifier: voiceIdentifier) {
-                utterance.voice = voice
-            }
-
-            playbackState = .speaking(
-                ActivePlayback(
-                    request: request,
-                    systemVoiceJob: nil
-                )
+        do {
+            try driver.start(
+                request: request,
+                eventHandler: handleDriverEvent(_:)
             )
-            synthesizer.speak(utterance)
-
-        case .systemVoice:
-            speakWithSystemVoice(request)
+            playbackState = .speaking(activePlayback)
+        } catch {
+            logger.error(
+                "Playback failed to start for \(request.messageID, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            playbackState = .idle
+            playNextQueuedRequestIfNeeded()
         }
     }
 
@@ -297,85 +178,39 @@ final class SpeechController: NSObject {
         speak(nextRequest)
     }
 
-    private func interruptCurrentPlayback() {
+    private var currentDriver: any SpeechBackendDriver {
+        driver(for: backend)
+    }
+
+    private var activeDriver: (any SpeechBackendDriver)? {
+        guard let activePlayback = playbackState.activePlayback else {
+            return nil
+        }
+
+        return driver(for: activePlayback.backend)
+    }
+
+    private func driver(for backend: SpeechBackend) -> any SpeechBackendDriver {
         switch backend {
         case .avSpeech:
-            if synthesizer.isSpeaking || synthesizer.isPaused {
-                synthesizer.stopSpeaking(at: .immediate)
-            }
-
+            return avSpeechDriver
         case .systemVoice:
-            stopSystemVoiceProcess()
+            return systemVoiceDriver
         }
     }
 
-    private func speakWithSystemVoice(_ request: SpeechRequest) {
-        stopSystemVoiceProcess()
-
-        let process = Process()
-        let inputPipe = Pipe()
-        let job = SystemVoiceJob(process: process, inputPipe: inputPipe)
-        let jobToken = job.token
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = ["-r", String(systemVoiceWordsPerMinute)]
-        process.standardInput = inputPipe
-        process.terminationHandler = { [weak self] _ in
-            Task { @MainActor in
-                guard let self else {
-                    return
-                }
-
-                self.handleSystemVoiceJobTermination(jobToken: jobToken)
-            }
-        }
-
-        do {
-            try process.run()
-            playbackState = .speaking(
-                ActivePlayback(
-                    request: request,
-                    systemVoiceJob: job
-                )
-            )
-
-            try job.write(request.text)
-        } catch {
-            job.terminate()
-            playbackState = .idle
-        }
+    private func stopPlayback(using driver: any SpeechBackendDriver) {
+        driver.stop()
     }
 
-    private func stopSystemVoiceProcess() {
+    private func finishCurrentPlayback(playbackID: UUID) {
         guard let activePlayback = playbackState.activePlayback,
-              let job = activePlayback.systemVoiceJob else {
+              activePlayback.request.playbackID == playbackID else {
             return
         }
 
-        job.terminate()
-    }
-
-    private func handleSystemVoiceJobTermination(jobToken: UUID) {
-        guard let activePlayback = playbackState.activePlayback,
-              let activeJob = activePlayback.systemVoiceJob,
-              activeJob.token == jobToken else {
-            return
-        }
-
-        finishCurrentPlayback()
-    }
-
-    private func finishCurrentPlayback() {
-        switch playbackState {
-        case .idle:
-            playNextQueuedRequestIfNeeded()
-        case let .speaking(activePlayback), let .paused(activePlayback):
-            if let job = activePlayback.systemVoiceJob {
-                job.closeInput()
-            }
-
-            playbackState = .idle
-            playNextQueuedRequestIfNeeded()
-        }
+        playbackState = .idle
+        playNextQueuedRequestIfNeeded()
     }
 
     private func setPlaybackStateToSpeaking() {
@@ -394,131 +229,24 @@ final class SpeechController: NSObject {
         playbackState = .paused(activePlayback)
     }
 
-    private func handleSpeechSynthesizerEvent(_ event: SpeechSynthesizerEvent) {
+    private func handleDriverEvent(_ event: SpeechDriverEvent) {
+        guard let activePlayback = playbackState.activePlayback,
+              activePlayback.request.playbackID == event.playbackID else {
+            return
+        }
+
         switch event {
-        case .didStart, .didContinue:
+        case .didStart, .didResume:
             setPlaybackStateToSpeaking()
         case .didPause:
             setPlaybackStateToPaused()
-        case .didFinish, .didCancel:
-            finishCurrentPlayback()
-        }
-    }
-
-    private enum SpeechSynthesizerEvent {
-        case didStart
-        case didFinish
-        case didCancel
-        case didPause
-        case didContinue
-    }
-
-    private static func loadSupportedVoices() -> [SpeechVoiceOption] {
-        let englishVoices = AVSpeechSynthesisVoice.speechVoices()
-            .filter { voice in
-                voice.language.hasPrefix("en-") || voice.language == "en"
-            }
-            .filter { voice in
-                voice.identifier.hasPrefix("com.apple.voice.")
-            }
-
-        let voicesToExpose: [AVSpeechSynthesisVoice]
-        if englishVoices.contains(where: { $0.quality == .enhanced }) {
-            voicesToExpose = englishVoices.filter { $0.quality == .enhanced }
-        } else {
-            voicesToExpose = englishVoices
-        }
-
-        return voicesToExpose
-            .map { voice in
-                SpeechVoiceOption(
-                    id: voice.identifier,
-                    name: voice.name,
-                    language: voice.language,
-                    quality: voice.quality
-                )
-            }
-            .sorted(by: compareVoiceOptions)
-    }
-
-    private static func compareVoiceOptions(_ lhs: SpeechVoiceOption, _ rhs: SpeechVoiceOption) -> Bool {
-        let lhsScore = voicePriority(for: lhs)
-        let rhsScore = voicePriority(for: rhs)
-
-        if lhsScore != rhsScore {
-            return lhsScore < rhsScore
-        }
-
-        if lhs.language != rhs.language {
-            return lhs.language < rhs.language
-        }
-
-        return lhs.name < rhs.name
-    }
-
-    private static func voicePriority(for voice: SpeechVoiceOption) -> Int {
-        switch voice.language {
-        case "en-US":
-            return 0
-        case "en-GB":
-            return 1
-        case "en-AU":
-            return 2
-        case "en-IE":
-            return 3
-        case "en-IN":
-            return 4
-        case "en-ZA":
-            return 5
-        case "en":
-            return 6
-        default:
-            return 10
-        }
-    }
-
-    private func preferredEnglishLanguageCodes() -> [String] {
-        Locale.preferredLanguages
-            .map { $0.replacingOccurrences(of: "_", with: "-") }
-            .filter { language in
-                language == "en" || language.hasPrefix("en-")
-            }
-            .reduce(into: [String]()) { result, language in
-                if !result.contains(language) {
-                    result.append(language)
-                }
-            }
-    }
-}
-
-extension SpeechController: AVSpeechSynthesizerDelegate {
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            self.handleSpeechSynthesizerEvent(.didStart)
-        }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            self.handleSpeechSynthesizerEvent(.didFinish)
-        }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            self.handleSpeechSynthesizerEvent(.didCancel)
-        }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            self.handleSpeechSynthesizerEvent(.didPause)
-        }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
-        Task { @MainActor in
-            self.handleSpeechSynthesizerEvent(.didContinue)
+        case .didFinish:
+            finishCurrentPlayback(playbackID: activePlayback.request.playbackID)
+        case let .didFail(_, description):
+            logger.error(
+                "Playback failed for \(activePlayback.request.messageID, privacy: .public): \(description, privacy: .public)"
+            )
+            finishCurrentPlayback(playbackID: activePlayback.request.playbackID)
         }
     }
 }

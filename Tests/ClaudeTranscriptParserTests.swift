@@ -20,6 +20,7 @@ struct ClaudeTranscriptParserTests {
             "Tell me what happened.",
             "First paragraph.\n\nSecond paragraph.",
         ])
+        #expect(messages.map(\.renderingMode) == [.plainText, .plainText])
         #expect(messages.allSatisfy { $0.sessionID == "session-123" })
     }
 
@@ -35,6 +36,19 @@ struct ClaudeTranscriptParserTests {
         #expect(messages.count == 2)
         #expect(messages[0].text == "Fractional time")
         #expect(messages[1].text == "Standard time")
+        #expect(messages.allSatisfy { $0.renderingMode == .plainText })
+    }
+
+    @Test
+    func parseTranscriptPrecomputesLiteralAndMarkdownRenderingModes() {
+        let rawTranscript = """
+        {"type":"user","uuid":"user-1","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-123","message":{"role":"user","content":"<task-notification>Task output</task-notification>"}}
+        {"type":"assistant","uuid":"assistant-1","timestamp":"2026-04-17T17:00:01Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"# Heading\\n\\n- one\\n- two"}]}}
+        """
+
+        let messages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
+
+        #expect(messages.map(\.renderingMode) == [.literal, .markdown])
     }
 
     @Test

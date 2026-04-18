@@ -29,7 +29,10 @@ struct MessageRowView: View {
                 }
             }
 
-            TranscriptMarkdownView(markdown: message.text)
+            TranscriptMarkdownView(
+                markdown: message.text,
+                renderingMode: message.renderingMode
+            )
                 .equatable()
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -69,15 +72,14 @@ struct MessageRowView: View {
         }
     }
 
-    private var roleBackground: some ShapeStyle {
+    private var roleBackground: Color {
         switch message.role {
         case .user:
-            return AnyShapeStyle(.quinary)
+            return Color.secondary.opacity(0.08)
         case .assistant:
-            return AnyShapeStyle(.quaternary)
+            return Color.secondary.opacity(0.14)
         }
     }
-
     private func copyMessageText() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(message.text, forType: .string)

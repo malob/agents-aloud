@@ -2,6 +2,7 @@ import AVFoundation
 import Darwin
 import Foundation
 import Observation
+import OSLog
 
 @MainActor
 @Observable
@@ -12,6 +13,7 @@ final class AppModel {
     private static let sessionListLimit = 30
 
     private let storageService = ClaudeStorageService()
+    private let logger = Logger(subsystem: "local.claudecodevoice", category: "AppModel")
     @ObservationIgnored private let userDefaults = UserDefaults.standard
 
     var sessions: [ClaudeSessionSummary] = []
@@ -257,15 +259,24 @@ final class AppModel {
         let sessionID = selectedSession.id
         let transcriptURL = URL(fileURLWithPath: selectedSession.transcriptPath)
 
-        selectedTranscriptWatcher.startWatching(fileURL: transcriptURL) { [weak self] in
-            Task { @MainActor [weak self] in
+        selectedTranscriptWatcher.startWatching(
+            fileURL: transcriptURL,
+            onChange: { [weak self] in
                 guard let self, self.selectedSessionID == sessionID else {
                     return
                 }
 
                 self.scheduleSelectedTranscriptRefresh(for: sessionID)
+            },
+            onFailure: { [weak self] message in
+                guard let self, self.selectedSessionID == sessionID else {
+                    return
+                }
+
+                self.logger.error("Transcript watcher error for \(transcriptURL.path, privacy: .public): \(message, privacy: .public)")
+                self.errorMessage = "Unable to watch transcript for live updates: \(message)"
             }
-        }
+        )
     }
 
     private func scheduleSelectedTranscriptRefresh(for sessionID: ClaudeSessionSummary.ID) {
@@ -306,43 +317,85 @@ final class AppModel {
 }
 
 private final class TranscriptFileWatcher {
-    private var watchedPath: String?
+    private var watchedURL: URL?
     private var source: DispatchSourceFileSystemObject?
 
-    func startWatching(fileURL: URL, onChange: @escaping @Sendable () -> Void) {
-        guard watchedPath != fileURL.path else {
+    @MainActor
+    func startWatching(
+        fileURL: URL,
+        onChange: @escaping @MainActor @Sendable () -> Void,
+        onFailure: @escaping @MainActor @Sendable (String) -> Void
+    ) {
+        guard watchedURL != fileURL else {
             return
         }
 
+        armWatcher(
+            fileURL: fileURL,
+            onChange: onChange,
+            onFailure: onFailure
+        )
+    }
+
+    @MainActor
+    private func armWatcher(
+        fileURL: URL,
+        onChange: @escaping @MainActor @Sendable () -> Void,
+        onFailure: @escaping @MainActor @Sendable (String) -> Void
+    ) {
         stop()
 
         let fileDescriptor = open(fileURL.path, O_EVTONLY)
+        let openErrorNumber = errno
         guard fileDescriptor >= 0 else {
+            onFailure(Self.errorDescription(for: fileURL, errorNumber: openErrorNumber))
             return
         }
 
         let source = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fileDescriptor,
             eventMask: [.write, .extend, .rename, .delete],
-            queue: DispatchQueue.global(qos: .utility)
+            queue: .main
         )
-        source.setEventHandler(handler: onChange)
+        source.setEventHandler { [weak self, weak source] in
+            guard let self, let source else {
+                return
+            }
+
+            let events = source.data
+
+            if events.contains(.rename) || events.contains(.delete) {
+                self.armWatcher(
+                    fileURL: fileURL,
+                    onChange: onChange,
+                    onFailure: onFailure
+                )
+            }
+
+            onChange()
+        }
         source.setCancelHandler {
             close(fileDescriptor)
         }
         source.resume()
 
-        watchedPath = fileURL.path
+        watchedURL = fileURL
         self.source = source
     }
 
+    @MainActor
     func stop() {
-        watchedPath = nil
+        watchedURL = nil
         source?.cancel()
         source = nil
     }
 
     deinit {
-        stop()
+        source?.cancel()
+    }
+
+    private static func errorDescription(for fileURL: URL, errorNumber: Int32) -> String {
+        let systemMessage = String(cString: strerror(errorNumber))
+        return "\(fileURL.lastPathComponent) (\(systemMessage))"
     }
 }

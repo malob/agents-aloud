@@ -16,7 +16,7 @@ struct SidebarView: View {
                     isSelected: model.selectedSessionID == session.id,
                     isLiveSpeakSession: model.liveReadSessionID == session.id
                 )
-                    .tag(Optional(session.id))
+                .tag(Optional(session.id))
             }
         }
         .listStyle(.sidebar)
@@ -75,10 +75,10 @@ private struct SessionRowView: View {
 
     private var liveIndicatorColor: some ShapeStyle {
         if isSelected {
-            return AnyShapeStyle(.primary)
+            return Color.primary
         }
 
-        return AnyShapeStyle(Color.accentColor)
+        return Color.accentColor
     }
 }
 

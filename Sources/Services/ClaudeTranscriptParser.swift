@@ -122,6 +122,7 @@ enum ClaudeTranscriptParser {
                 id: uuid,
                 role: .user,
                 text: text,
+                renderingMode: renderingMode(for: text),
                 timestamp: timestamp,
                 sessionID: entry.sessionID ?? ""
             )
@@ -140,6 +141,7 @@ enum ClaudeTranscriptParser {
                 id: uuid,
                 role: .assistant,
                 text: text,
+                renderingMode: renderingMode(for: text),
                 timestamp: timestamp,
                 sessionID: entry.sessionID ?? ""
             )
@@ -152,6 +154,68 @@ enum ClaudeTranscriptParser {
     private static func normalized(_ value: String?) -> String? {
         let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmedValue.isEmpty ? nil : trimmedValue
+    }
+
+    private static func renderingMode(for text: String) -> TranscriptMessage.RenderingMode {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let literalPrefixes = [
+            "<task-notification>",
+            "<command-message>",
+            "<command-name>",
+            "<command-args>",
+            "<local-command-caveat>",
+        ]
+
+        if literalPrefixes.contains(where: { trimmed.hasPrefix($0) }) {
+            return .literal
+        }
+
+        if text.contains("```") ||
+            text.contains("`") ||
+            text.contains("](") ||
+            text.contains("![") ||
+            text.contains("**") ||
+            text.contains("__") ||
+            text.contains("~~") {
+            return .markdown
+        }
+
+        for line in text.split(whereSeparator: \.isNewline) {
+            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+            if trimmedLine.isEmpty {
+                continue
+            }
+
+            if trimmedLine.hasPrefix("#") ||
+                trimmedLine.hasPrefix(">") ||
+                trimmedLine.hasPrefix("- ") ||
+                trimmedLine.hasPrefix("* ") ||
+                trimmedLine.hasPrefix("+ ") ||
+                trimmedLine == "---" ||
+                trimmedLine == "***" ||
+                trimmedLine.contains("| ---") ||
+                trimmedLine.contains(" | ") ||
+                orderedListPrefix(in: trimmedLine) {
+                return .markdown
+            }
+        }
+
+        return .plainText
+    }
+
+    private static func orderedListPrefix(in line: String) -> Bool {
+        var digits = 0
+
+        for character in line {
+            if character.isNumber {
+                digits += 1
+                continue
+            }
+
+            return digits > 0 && character == "." && line.dropFirst(digits + 1).first == " "
+        }
+
+        return false
     }
 
     private static func summarizedPrompt(_ prompt: String?, fallback: String) -> String {
