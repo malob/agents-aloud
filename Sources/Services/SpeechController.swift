@@ -15,12 +15,61 @@ final class SpeechController: NSObject {
         let rate: Float
     }
 
+    private final class SystemVoiceJob {
+        let process: Process
+        let inputPipe: Pipe
+
+        init(process: Process, inputPipe: Pipe) {
+            self.process = process
+            self.inputPipe = inputPipe
+        }
+    }
+
+    private struct ActivePlayback {
+        let request: SpeechRequest
+        let systemVoiceJob: SystemVoiceJob?
+    }
+
+    private enum PlaybackState {
+        case idle
+        case speaking(ActivePlayback)
+        case paused(ActivePlayback)
+
+        var activePlayback: ActivePlayback? {
+            switch self {
+            case .idle:
+                return nil
+            case let .speaking(activePlayback), let .paused(activePlayback):
+                return activePlayback
+            }
+        }
+
+        var currentMessageID: String? {
+            activePlayback?.request.messageID
+        }
+
+        var isSpeaking: Bool {
+            if case .speaking = self {
+                return true
+            }
+
+            return false
+        }
+
+        var isPaused: Bool {
+            if case .paused = self {
+                return true
+            }
+
+            return false
+        }
+    }
+
     @ObservationIgnored private let synthesizer = AVSpeechSynthesizer()
     @ObservationIgnored private var queuedRequests: [SpeechRequest] = []
-    @ObservationIgnored private var currentSayProcess: Process?
-    @ObservationIgnored private var currentSayInputPipe: Pipe?
     @ObservationIgnored private lazy var supportedVoices = Self.loadSupportedVoices()
     @ObservationIgnored private lazy var supportedVoiceIdentifiers = Set(supportedVoices.map(\.id))
+    private var playbackState: PlaybackState = .idle
 
     var backend: SpeechBackend = .avSpeech {
         didSet {
@@ -31,13 +80,22 @@ final class SpeechController: NSObject {
             stop()
         }
     }
-    var isSpeaking = false
-    var isPaused = false
-    var currentMessageID: String?
 
     override init() {
         super.init()
         synthesizer.delegate = self
+    }
+
+    var isSpeaking: Bool {
+        playbackState.isSpeaking
+    }
+
+    var isPaused: Bool {
+        playbackState.isPaused
+    }
+
+    var currentMessageID: String? {
+        playbackState.currentMessageID
     }
 
     var availableVoices: [SpeechVoiceOption] {
@@ -77,7 +135,7 @@ final class SpeechController: NSObject {
     }
 
     func playNow(text: String, messageID: String, voiceIdentifier: String?, rate: Float) {
-        if isSpeaking || isPaused {
+        if playbackState.activePlayback != nil {
             queuedRequests = [
                 SpeechRequest(
                     messageID: messageID,
@@ -108,7 +166,7 @@ final class SpeechController: NSObject {
             rate: rate
         )
 
-        if isSpeaking || isPaused {
+        if playbackState.activePlayback != nil {
             queuedRequests.append(request)
         } else {
             speak(request)
@@ -125,13 +183,14 @@ final class SpeechController: NSObject {
             synthesizer.pauseSpeaking(at: .word)
 
         case .systemVoice:
-            guard let process = currentSayProcess, process.isRunning else {
+            guard case let .speaking(activePlayback) = playbackState,
+                  let process = activePlayback.systemVoiceJob?.process,
+                  process.isRunning else {
                 return
             }
 
             kill(process.processIdentifier, SIGSTOP)
-            isPaused = true
-            isSpeaking = false
+            playbackState = .paused(activePlayback)
         }
     }
 
@@ -145,22 +204,21 @@ final class SpeechController: NSObject {
             synthesizer.continueSpeaking()
 
         case .systemVoice:
-            guard let process = currentSayProcess, isPaused, process.isRunning else {
+            guard case let .paused(activePlayback) = playbackState,
+                  let process = activePlayback.systemVoiceJob?.process,
+                  process.isRunning else {
                 return
             }
 
             kill(process.processIdentifier, SIGCONT)
-            isPaused = false
-            isSpeaking = true
+            playbackState = .speaking(activePlayback)
         }
     }
 
     func stop() {
         queuedRequests.removeAll()
         interruptCurrentPlayback()
-        isSpeaking = false
-        isPaused = false
-        currentMessageID = nil
+        playbackState = .idle
     }
 
     private func speak(_ request: SpeechRequest) {
@@ -174,7 +232,12 @@ final class SpeechController: NSObject {
                 utterance.voice = voice
             }
 
-            currentMessageID = request.messageID
+            playbackState = .speaking(
+                ActivePlayback(
+                    request: request,
+                    systemVoiceJob: nil
+                )
+            )
             synthesizer.speak(utterance)
 
         case .systemVoice:
@@ -184,7 +247,7 @@ final class SpeechController: NSObject {
 
     private func playNextQueuedRequestIfNeeded() {
         guard !queuedRequests.isEmpty else {
-            currentMessageID = nil
+            playbackState = .idle
             return
         }
 
@@ -209,6 +272,7 @@ final class SpeechController: NSObject {
 
         let process = Process()
         let inputPipe = Pipe()
+        let job = SystemVoiceJob(process: process, inputPipe: inputPipe)
         process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
         process.arguments = ["-r", String(systemVoiceWordsPerMinute)]
         process.standardInput = inputPipe
@@ -218,48 +282,88 @@ final class SpeechController: NSObject {
                     return
                 }
 
-                self.currentSayProcess = nil
-                self.currentSayInputPipe = nil
-                self.isSpeaking = false
-                self.isPaused = false
-                self.playNextQueuedRequestIfNeeded()
+                self.finishCurrentPlayback()
             }
         }
 
         do {
             try process.run()
-            currentSayProcess = process
-            currentSayInputPipe = inputPipe
-            currentMessageID = request.messageID
-            isSpeaking = true
-            isPaused = false
+            playbackState = .speaking(
+                ActivePlayback(
+                    request: request,
+                    systemVoiceJob: job
+                )
+            )
 
             if let data = request.text.data(using: .utf8) {
                 inputPipe.fileHandleForWriting.write(data)
             }
             inputPipe.fileHandleForWriting.closeFile()
         } catch {
-            currentSayProcess = nil
-            currentSayInputPipe = nil
-            currentMessageID = nil
-            isSpeaking = false
-            isPaused = false
+            playbackState = .idle
         }
     }
 
     private func stopSystemVoiceProcess() {
-        currentSayInputPipe?.fileHandleForWriting.closeFile()
-        currentSayInputPipe = nil
-
-        guard let process = currentSayProcess else {
+        guard let activePlayback = playbackState.activePlayback,
+              let job = activePlayback.systemVoiceJob else {
             return
         }
 
-        if process.isRunning {
-            process.terminate()
+        job.inputPipe.fileHandleForWriting.closeFile()
+
+        if job.process.isRunning {
+            job.process.terminate()
+        }
+    }
+
+    private func finishCurrentPlayback() {
+        switch playbackState {
+        case .idle:
+            playNextQueuedRequestIfNeeded()
+        case let .speaking(activePlayback), let .paused(activePlayback):
+            if let job = activePlayback.systemVoiceJob {
+                job.inputPipe.fileHandleForWriting.closeFile()
+            }
+
+            playbackState = .idle
+            playNextQueuedRequestIfNeeded()
+        }
+    }
+
+    private func setPlaybackStateToSpeaking() {
+        guard let activePlayback = playbackState.activePlayback else {
+            return
         }
 
-        currentSayProcess = nil
+        playbackState = .speaking(activePlayback)
+    }
+
+    private func setPlaybackStateToPaused() {
+        guard let activePlayback = playbackState.activePlayback else {
+            return
+        }
+
+        playbackState = .paused(activePlayback)
+    }
+
+    private func handleSpeechSynthesizerEvent(_ event: SpeechSynthesizerEvent) {
+        switch event {
+        case .didStart, .didContinue:
+            setPlaybackStateToSpeaking()
+        case .didPause:
+            setPlaybackStateToPaused()
+        case .didFinish, .didCancel:
+            finishCurrentPlayback()
+        }
+    }
+
+    private enum SpeechSynthesizerEvent {
+        case didStart
+        case didFinish
+        case didCancel
+        case didPause
+        case didContinue
     }
 
     private static func loadSupportedVoices() -> [SpeechVoiceOption] {
@@ -343,38 +447,31 @@ final class SpeechController: NSObject {
 extension SpeechController: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
         Task { @MainActor in
-            self.isSpeaking = true
-            self.isPaused = false
+            self.handleSpeechSynthesizerEvent(.didStart)
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in
-            self.isSpeaking = false
-            self.isPaused = false
-            self.playNextQueuedRequestIfNeeded()
+            self.handleSpeechSynthesizerEvent(.didFinish)
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         Task { @MainActor in
-            self.isSpeaking = false
-            self.isPaused = false
-            self.playNextQueuedRequestIfNeeded()
+            self.handleSpeechSynthesizerEvent(.didCancel)
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
         Task { @MainActor in
-            self.isPaused = true
-            self.isSpeaking = false
+            self.handleSpeechSynthesizerEvent(.didPause)
         }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
         Task { @MainActor in
-            self.isPaused = false
-            self.isSpeaking = true
+            self.handleSpeechSynthesizerEvent(.didContinue)
         }
     }
 }
