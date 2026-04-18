@@ -1,0 +1,95 @@
+import SwiftUI
+
+struct SidebarView: View {
+    let model: AppModel
+
+    var body: some View {
+        List(
+            selection: Binding(
+                get: { model.selectedSessionID },
+                set: { model.selectSession(id: $0) }
+            )
+        ) {
+            ForEach(model.displayedSessions) { session in
+                SessionRowView(
+                    session: session,
+                    isSelected: model.selectedSessionID == session.id,
+                    isLiveSpeakSession: model.liveReadSessionID == session.id
+                )
+                    .tag(Optional(session.id))
+            }
+        }
+        .listStyle(.sidebar)
+        .overlay {
+            if model.isLoading && model.sessions.isEmpty {
+                ProgressView("Loading Claude sessions…")
+            } else if model.displayedSessions.isEmpty {
+                ContentUnavailableView.search(text: model.searchQuery)
+            }
+        }
+    }
+}
+
+private struct SessionRowView: View {
+    let session: ClaudeSessionSummary
+    let isSelected: Bool
+    let isLiveSpeakSession: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if isLiveSpeakSession {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(liveIndicatorColor)
+                        .help("Live Speak is enabled for this session.")
+                }
+
+                Text(session.summary)
+                    .font(.body.weight(.medium))
+                    .lineLimit(2)
+            }
+
+            Text(session.projectName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            HStack(spacing: 6) {
+                SidebarMetadataBadge(text: session.messageCountLabel, systemImage: "text.bubble")
+
+                if let modifiedAt = session.modifiedAt {
+                    SidebarMetadataBadge(
+                        text: DateFormatting.sessionRelativeTimestamp.localizedString(for: modifiedAt, relativeTo: .now),
+                        systemImage: "clock"
+                    )
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var liveIndicatorColor: some ShapeStyle {
+        if isSelected {
+            return AnyShapeStyle(.primary)
+        }
+
+        return AnyShapeStyle(Color.accentColor)
+    }
+}
+
+private struct SidebarMetadataBadge: View {
+    let text: String
+    let systemImage: String
+
+    var body: some View {
+        Label(text, systemImage: systemImage)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.quinary, in: Capsule())
+            .labelStyle(.titleAndIcon)
+            .lineLimit(1)
+    }
+}
