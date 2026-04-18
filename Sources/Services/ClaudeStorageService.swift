@@ -146,6 +146,10 @@ actor ClaudeStorageService {
             return nil
         }
 
+        guard entry.isMeta != true else {
+            return nil
+        }
+
         guard let envelope = entry.message else {
             return nil
         }
@@ -251,6 +255,7 @@ actor ClaudeStorageService {
 
             if firstPrompt == nil,
                entry.type == "user",
+               entry.isMeta != true,
                entry.message?.role == "user",
                let prompt = entry.message?.content?.plainText?.trimmedNonEmpty {
                 firstPrompt = prompt
@@ -447,6 +452,7 @@ private struct TranscriptLine: Decodable {
     let timestamp: String?
     let sessionID: String?
     let cwd: String?
+    let isMeta: Bool?
     let message: TranscriptEnvelope?
 
     enum CodingKeys: String, CodingKey {
@@ -455,6 +461,7 @@ private struct TranscriptLine: Decodable {
         case timestamp
         case sessionID = "sessionId"
         case cwd
+        case isMeta
         case message
     }
 }
@@ -521,6 +528,7 @@ private struct SummaryTranscriptLine: Decodable {
     let cwd: String?
     let aiTitle: String?
     let customTitle: String?
+    let isMeta: Bool?
     let message: SummaryTranscriptEnvelope?
 
     enum CodingKeys: String, CodingKey {
@@ -529,6 +537,7 @@ private struct SummaryTranscriptLine: Decodable {
         case cwd
         case aiTitle
         case customTitle
+        case isMeta
         case message
     }
 }

@@ -29,9 +29,8 @@ struct MessageRowView: View {
                 }
             }
 
-            Text(message.text)
-                .font(.body)
-                .multilineTextAlignment(.leading)
+            TranscriptMarkdownView(markdown: message.text)
+                .equatable()
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(roleBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))

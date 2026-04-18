@@ -159,6 +159,36 @@ private struct SessionHeaderView: View {
     }
 
     private let liveSpeakButtonWidth: CGFloat = 188
+    
+    private var liveSpeakTitle: String {
+        isLiveReadEnabled ? "Live Speak On" : "Start Live Speak"
+    }
+    
+    private var liveSpeakSymbolName: String {
+        isLiveReadEnabled ? "speaker.wave.3.fill" : "speaker.wave.2.fill"
+    }
+    
+    private var liveSpeakHelpText: String {
+        isLiveReadEnabled
+            ? "Stop automatically speaking new assistant messages for this session."
+            : "Automatically speak new assistant messages for this session."
+    }
+    
+    private var liveSpeakIconColor: Color {
+        isLiveReadEnabled ? .accentColor : .secondary
+    }
+    
+    private var liveSpeakGlass: Glass {
+        if isLiveReadEnabled {
+            return .regular.tint(.accentColor.opacity(0.18)).interactive()
+        }
+        
+        return .regular.interactive()
+    }
+    
+    private var liveSpeakBorderColor: Color {
+        isLiveReadEnabled ? .accentColor.opacity(0.28) : .white.opacity(0)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -175,36 +205,30 @@ private struct SessionHeaderView: View {
 
                 Spacer(minLength: 12)
 
-                if isLiveReadEnabled {
-                    Button {
-                        model.setLiveReadEnabled(false)
-                    } label: {
-                        Label("Live Speak On", systemImage: "speaker.wave.3.fill")
-                            .font(.callout.weight(.semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .frame(width: liveSpeakButtonWidth)
+                Button {
+                    model.setLiveReadEnabled(!isLiveReadEnabled)
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: liveSpeakSymbolName)
+                            .foregroundStyle(liveSpeakIconColor)
+                        
+                        Text(liveSpeakTitle)
+                            .foregroundStyle(.primary)
                     }
-                    .buttonStyle(.glassProminent)
-                    .tint(.accentColor)
-                    .controlSize(.large)
-                    .help("Stop automatically speaking new assistant messages for this session.")
-                    .glassEffectID("playback-mode", in: glassNamespace)
-                } else {
-                    Button {
-                        model.setLiveReadEnabled(true)
-                    } label: {
-                        Label("Start Live Speak", systemImage: "speaker.wave.2.fill")
-                            .font(.callout.weight(.semibold))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .frame(width: liveSpeakButtonWidth)
+                    .font(.callout.weight(.semibold))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .frame(width: liveSpeakButtonWidth)
+                    .glassEffect(liveSpeakGlass, in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .stroke(liveSpeakBorderColor, lineWidth: 1)
                     }
-                    .buttonStyle(.glass(.regular.interactive()))
-                    .controlSize(.large)
-                    .help("Automatically speak new assistant messages for this session.")
                     .glassEffectID("playback-mode", in: glassNamespace)
                 }
+                .buttonStyle(.plain)
+                .controlSize(.large)
+                .help(liveSpeakHelpText)
             }
 
             GlassEffectContainer(spacing: 14) {
