@@ -170,74 +170,56 @@ final class AVSpeechBackendDriver: NSObject, SpeechBackendDriver {
     }
 
     private func preferredEnglishLanguageCodes() -> [String] {
-        Locale.preferredLanguages
+        var seen: Set<String> = []
+
+        return Locale.preferredLanguages
             .map { $0.replacingOccurrences(of: "_", with: "-") }
             .filter { language in
                 language == "en" || language.hasPrefix("en-")
             }
-            .reduce(into: [String]()) { result, language in
-                if !result.contains(language) {
-                    result.append(language)
-                }
+            .filter { language in
+                seen.insert(language).inserted
             }
+    }
+
+    nonisolated private func forwardEvent(
+        for utterance: AVSpeechUtterance,
+        removesTracking: Bool = false,
+        event: @escaping @Sendable (UUID) -> SpeechDriverEvent
+    ) {
+        let utteranceID = ObjectIdentifier(utterance)
+        Task { @MainActor in
+            guard let playbackID = self.playbackID(for: utteranceID) else {
+                return
+            }
+
+            if removesTracking {
+                self.removePlaybackID(for: utteranceID)
+            }
+
+            self.emit(event(playbackID))
+        }
     }
 }
 
 extension AVSpeechBackendDriver: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        let utteranceID = ObjectIdentifier(utterance)
-        Task { @MainActor in
-            guard let playbackID = self.playbackID(for: utteranceID) else {
-                return
-            }
-
-            self.emit(.didStart(playbackID))
-        }
+        forwardEvent(for: utterance, event: SpeechDriverEvent.didStart)
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        let utteranceID = ObjectIdentifier(utterance)
-        Task { @MainActor in
-            guard let playbackID = self.playbackID(for: utteranceID) else {
-                return
-            }
-
-            self.removePlaybackID(for: utteranceID)
-            self.emit(.didFinish(playbackID))
-        }
+        forwardEvent(for: utterance, removesTracking: true, event: SpeechDriverEvent.didFinish)
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        let utteranceID = ObjectIdentifier(utterance)
-        Task { @MainActor in
-            guard let playbackID = self.playbackID(for: utteranceID) else {
-                return
-            }
-
-            self.removePlaybackID(for: utteranceID)
-            self.emit(.didFinish(playbackID))
-        }
+        forwardEvent(for: utterance, removesTracking: true, event: SpeechDriverEvent.didFinish)
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
-        let utteranceID = ObjectIdentifier(utterance)
-        Task { @MainActor in
-            guard let playbackID = self.playbackID(for: utteranceID) else {
-                return
-            }
-
-            self.emit(.didPause(playbackID))
-        }
+        forwardEvent(for: utterance, event: SpeechDriverEvent.didPause)
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
-        let utteranceID = ObjectIdentifier(utterance)
-        Task { @MainActor in
-            guard let playbackID = self.playbackID(for: utteranceID) else {
-                return
-            }
-
-            self.emit(.didResume(playbackID))
-        }
+        forwardEvent(for: utterance, event: SpeechDriverEvent.didResume)
     }
 }

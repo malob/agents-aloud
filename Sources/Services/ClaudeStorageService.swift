@@ -4,16 +4,20 @@ import OSLog
 actor ClaudeStorageService {
     private let fileManager = FileManager.default
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "Storage")
+    private let projectsRoot: URL
     private var sessionSummaryCache: [String: CachedSessionSummary] = [:]
     private var transcriptCache: [String: CachedTranscript] = [:]
     private var projectMetadataCache: [String: CachedProjectMetadata] = [:]
 
-    func loadSessions(limit: Int = 200) throws -> [ClaudeSessionSummary] {
-        let startedAt = ContinuousClock.now
-        let projectsRoot = fileManager.homeDirectoryForCurrentUser
+    init(
+        projectsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude", isDirectory: true)
             .appendingPathComponent("projects", isDirectory: true)
+    ) {
+        self.projectsRoot = projectsRoot
+    }
 
+    func loadSessions(limit: Int = 200) throws -> [ClaudeSessionSummary] {
         let projectURLs = try fileManager.contentsOfDirectory(
             at: projectsRoot,
             includingPropertiesForKeys: [.isDirectoryKey],
@@ -23,24 +27,30 @@ actor ClaudeStorageService {
         var transcriptCandidates: [(url: URL, modifiedAt: Date)] = []
 
         for projectURL in projectURLs {
-            let values = try projectURL.resourceValues(forKeys: [.isDirectoryKey])
-            guard values.isDirectory == true else {
-                continue
-            }
-
-            let childURLs = try fileManager.contentsOfDirectory(
-                at: projectURL,
-                includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
-                options: [.skipsHiddenFiles]
-            )
-
-            for childURL in childURLs where childURL.pathExtension == "jsonl" {
-                let childValues = try childURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey])
-                guard childValues.isRegularFile == true else {
+            do {
+                let values = try projectURL.resourceValues(forKeys: [.isDirectoryKey])
+                guard values.isDirectory == true else {
                     continue
                 }
 
-                transcriptCandidates.append((childURL, childValues.contentModificationDate ?? .distantPast))
+                let childURLs = try fileManager.contentsOfDirectory(
+                    at: projectURL,
+                    includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+                    options: [.skipsHiddenFiles]
+                )
+
+                for childURL in childURLs where childURL.pathExtension == "jsonl" {
+                    let childValues = try childURL.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey])
+                    guard childValues.isRegularFile == true else {
+                        continue
+                    }
+
+                    transcriptCandidates.append((childURL, childValues.contentModificationDate ?? .distantPast))
+                }
+            } catch {
+                logger.error(
+                    "Skipping project directory \(projectURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
             }
         }
 
@@ -77,10 +87,6 @@ actor ClaudeStorageService {
         transcriptCache = transcriptCache.filter { validPaths.contains($0.key) }
         projectMetadataCache = projectMetadataCache.filter { validProjectPaths.contains($0.key) }
 
-        logger.info(
-            "Loaded \(sessions.count, privacy: .public) session summaries from \(sortedCandidates.count, privacy: .public) candidates in \(startedAt.duration(to: .now).components.seconds, privacy: .public)s"
-        )
-
         return sessions
     }
 
@@ -98,9 +104,6 @@ actor ClaudeStorageService {
         transcriptCache[session.transcriptPath] = CachedTranscript(
             modifiedAt: modifiedAt,
             messages: sortedMessages
-        )
-        logger.debug(
-            "Loaded transcript \(session.id, privacy: .public) with \(sortedMessages.count, privacy: .public) speakable messages"
         )
         return sortedMessages
     }
@@ -131,39 +134,31 @@ actor ClaudeStorageService {
 
         var index = ProjectMetadataIndex()
 
-        if fileManager.fileExists(atPath: sessionsIndexURL.path) {
-            let rawSessionsIndex = try String(contentsOf: sessionsIndexURL, encoding: .utf8)
-            if let data = rawSessionsIndex.data(using: .utf8),
-               let sessionsIndex = try? JSONDecoder().decode(SessionsIndexFile.self, from: data) {
-                for entry in sessionsIndex.entries {
-                    let metadata = SessionMetadata(
-                        summary: entry.summary?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-                        source: .sessionsIndex
-                    )
-                    index.merge(metadata, forFilePath: entry.fullPath, sessionID: entry.sessionID)
-                }
+        if let sessionsIndex: SessionsIndexFile = try decodeIfPresent(SessionsIndexFile.self, at: sessionsIndexURL) {
+            for entry in sessionsIndex.entries {
+                let metadata = SessionMetadata(
+                    summary: entry.summary?.trimmed.nilIfEmpty,
+                    source: .sessionsIndex
+                )
+                index.merge(metadata, forFilePath: entry.fullPath, sessionID: entry.sessionID)
             }
         }
 
-        if fileManager.fileExists(atPath: sessionCacheURL.path) {
-            let rawSessionCache = try String(contentsOf: sessionCacheURL, encoding: .utf8)
-            if let data = rawSessionCache.data(using: .utf8),
-               let sessionCache = try? JSONDecoder().decode(SessionCacheFile.self, from: data) {
-                for (entryPath, entry) in sessionCache.entries {
-                    guard let session = entry.session else {
-                        continue
-                    }
-
-                    let metadata = SessionMetadata(
-                        summary: session.summary?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
-                        source: .sessionCache
-                    )
-                    index.merge(
-                        metadata,
-                        forFilePath: session.filePath ?? entryPath,
-                        sessionID: session.actualSessionID
-                    )
+        if let sessionCache: SessionCacheFile = try decodeIfPresent(SessionCacheFile.self, at: sessionCacheURL) {
+            for (entryPath, entry) in sessionCache.entries {
+                guard let session = entry.session else {
+                    continue
                 }
+
+                let metadata = SessionMetadata(
+                    summary: session.summary?.trimmed.nilIfEmpty,
+                    source: .sessionCache
+                )
+                index.merge(
+                    metadata,
+                    forFilePath: session.filePath ?? entryPath,
+                    sessionID: session.actualSessionID
+                )
             }
         }
 
@@ -181,6 +176,19 @@ actor ClaudeStorageService {
         }
 
         return try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
+    private func decodeIfPresent<T: Decodable>(_ type: T.Type, at fileURL: URL) throws -> T? {
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            return nil
+        }
+
+        let rawValue = try String(contentsOf: fileURL, encoding: .utf8)
+        guard let data = rawValue.data(using: .utf8) else {
+            return nil
+        }
+
+        return try? JSONDecoder().decode(T.self, from: data)
     }
 }
 
@@ -233,11 +241,5 @@ private struct SessionCacheSession: Decodable {
         case actualSessionID = "actual_session_id"
         case filePath = "file_path"
         case summary
-    }
-}
-
-private extension String {
-    var nilIfEmpty: String? {
-        isEmpty ? nil : self
     }
 }

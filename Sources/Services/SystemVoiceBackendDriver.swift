@@ -5,12 +5,46 @@ import Foundation
 final class SystemVoiceBackendDriver: SpeechBackendDriver {
     private static let defaultWordsPerMinute = 400
 
+    private final class StandardErrorBuffer: @unchecked Sendable {
+        private let lock = NSLock()
+        private var data = Data()
+
+        func append(_ newData: Data) {
+            guard !newData.isEmpty else {
+                return
+            }
+
+            lock.lock()
+            data.append(newData)
+            lock.unlock()
+        }
+
+        func output() -> String? {
+            lock.lock()
+            let snapshot = data
+            lock.unlock()
+
+            guard let output = String(data: snapshot, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  !output.isEmpty else {
+                return nil
+            }
+
+            return output.replacingOccurrences(of: "\n", with: " ")
+        }
+    }
+
     private final class SystemVoiceJob {
+        enum Outcome {
+            case running
+            case interruptedByApp
+        }
+
         let playbackID: UUID
         let process: Process
         let inputPipe: Pipe
         private var hasClosedInput = false
-        private(set) var wasInterruptedByApp = false
+        private(set) var outcome: Outcome = .running
 
         init(playbackID: UUID, process: Process, inputPipe: Pipe) {
             self.playbackID = playbackID
@@ -54,7 +88,7 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         }
 
         func terminate() {
-            wasInterruptedByApp = true
+            outcome = .interruptedByApp
             closeInput()
 
             if process.isRunning {
@@ -78,8 +112,8 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         []
     }
 
-    // We keep `say` fixed at 400 WPM for the experimental backend because that is the only
-    // speed the user found consistently acceptable during local-voice prototyping.
+    // The `say` backend deliberately stays at 400 WPM so it matches the faster local-voice
+    // cadence this app is tuned around, even though `say` itself exposes a configurable rate.
     var wordsPerMinute: Int? {
         Self.defaultWordsPerMinute
     }
@@ -97,6 +131,7 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         let process = Process()
         let inputPipe = Pipe()
         let errorPipe = Pipe()
+        let errorBuffer = StandardErrorBuffer()
         let job = SystemVoiceJob(
             playbackID: request.playbackID,
             process: process,
@@ -107,13 +142,17 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         currentJob = job
 
         process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = ["-r", String(wordsPerMinute ?? Self.defaultWordsPerMinute)]
+        process.arguments = ["-r", String(Self.defaultWordsPerMinute)]
         process.standardInput = inputPipe
         process.standardError = errorPipe
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            errorBuffer.append(handle.availableData)
+        }
         process.terminationHandler = { [weak self] process in
             let terminationStatus = process.terminationStatus
             let terminationReason = process.terminationReason
-            let standardErrorOutput = Self.standardErrorOutput(from: errorPipe)
+            let standardErrorOutput = errorBuffer.output()
+            errorPipe.fileHandleForReading.readabilityHandler = nil
 
             Task { @MainActor in
                 self?.handleTermination(
@@ -127,10 +166,12 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
 
         do {
             try process.run()
-            emit(.didStart(request.playbackID))
+            Self.configurePipeForNoSigPipe(inputPipe.fileHandleForWriting)
             try job.write(request.text)
+            emit(.didStart(request.playbackID))
         } catch {
-            let standardErrorOutput = process.isRunning ? nil : Self.standardErrorOutput(from: errorPipe)
+            errorPipe.fileHandleForReading.readabilityHandler = nil
+            let standardErrorOutput = process.isRunning ? nil : errorBuffer.output()
             let failureDescription = Self.failureDescription(
                 standardErrorOutput: standardErrorOutput,
                 fallback: error.localizedDescription
@@ -178,7 +219,7 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
 
         self.currentJob = nil
 
-        guard !currentJob.wasInterruptedByApp else {
+        guard currentJob.outcome != .interruptedByApp else {
             return
         }
 
@@ -201,17 +242,6 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         eventHandler?(event)
     }
 
-    nonisolated private static func standardErrorOutput(from pipe: Pipe) -> String? {
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let output = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !output.isEmpty else {
-            return nil
-        }
-
-        return output.replacingOccurrences(of: "\n", with: " ")
-    }
-
     nonisolated private static func failureDescription(
         standardErrorOutput: String?,
         fallback: String
@@ -222,5 +252,9 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
 
         let trimmedFallback = fallback.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmedFallback.isEmpty ? "Playback failed." : trimmedFallback
+    }
+
+    nonisolated private static func configurePipeForNoSigPipe(_ fileHandle: FileHandle) {
+        _ = fcntl(fileHandle.fileDescriptor, F_SETNOSIGPIPE, 1)
     }
 }

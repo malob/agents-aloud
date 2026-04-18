@@ -68,9 +68,20 @@ struct ClaudeTranscriptParserTests {
         let rawTranscript = """
         {"type":"user","uuid":"user-1","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-123","message":{"role":"user","content":"<command-message>test</command-message>"}}
         {"type":"user","uuid":"user-2","timestamp":"2026-04-17T17:00:01Z","sessionId":"session-123","message":{"role":"user","content":"<local-command-caveat>Heads up</local-command-caveat>"}}
+        {"type":"user","uuid":"user-3","timestamp":"2026-04-17T17:00:01.500Z","sessionId":"session-123","message":{"role":"user","content":"<command-name>ship-it</command-name>"}}
+        {"type":"user","uuid":"user-4","timestamp":"2026-04-17T17:00:01.750Z","sessionId":"session-123","message":{"role":"user","content":"<command-args>--help</command-args>"}}
         {"type":"assistant","uuid":"assistant-1","timestamp":"2026-04-17T17:00:02Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"1. item"}]}}
         {"type":"assistant","uuid":"assistant-2","timestamp":"2026-04-17T17:00:03Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"1.item"}]}}
-        {"type":"assistant","uuid":"assistant-3","timestamp":"2026-04-17T17:00:04Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"Normal prose paragraph."}]}}
+        {"type":"assistant","uuid":"assistant-3","timestamp":"2026-04-17T17:00:04Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"`inline code`"}]}}
+        {"type":"assistant","uuid":"assistant-4","timestamp":"2026-04-17T17:00:05Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"[link](https://example.com)"}]}}
+        {"type":"assistant","uuid":"assistant-5","timestamp":"2026-04-17T17:00:06Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"![alt](https://example.com/image.png)"}]}}
+        {"type":"assistant","uuid":"assistant-6","timestamp":"2026-04-17T17:00:07Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"**bold** __underline__ ~~strike~~"}]}}
+        {"type":"assistant","uuid":"assistant-7","timestamp":"2026-04-17T17:00:08Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"> quote"}]}}
+        {"type":"assistant","uuid":"assistant-8","timestamp":"2026-04-17T17:00:09Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"| head |\\n| --- |\\n| cell |"}]}}
+        {"type":"assistant","uuid":"assistant-9","timestamp":"2026-04-17T17:00:10Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"---"}]}}
+        {"type":"assistant","uuid":"assistant-10","timestamp":"2026-04-17T17:00:11Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"10. item"}]}}
+        {"type":"assistant","uuid":"assistant-11","timestamp":"2026-04-17T17:00:12Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"1.2.3"}]}}
+        {"type":"assistant","uuid":"assistant-12","timestamp":"2026-04-17T17:00:13Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"Normal prose paragraph."}]}}
         """
 
         let messages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
@@ -78,8 +89,19 @@ struct ClaudeTranscriptParserTests {
         #expect(messages.map(\.content) == [
             .literal("<command-message>test</command-message>"),
             .literal("<local-command-caveat>Heads up</local-command-caveat>"),
+            .literal("<command-name>ship-it</command-name>"),
+            .literal("<command-args>--help</command-args>"),
             .markdown("1. item"),
             .plainText("1.item"),
+            .markdown("`inline code`"),
+            .markdown("[link](https://example.com)"),
+            .markdown("![alt](https://example.com/image.png)"),
+            .markdown("**bold** __underline__ ~~strike~~"),
+            .markdown("> quote"),
+            .markdown("| head |\n| --- |\n| cell |"),
+            .markdown("---"),
+            .markdown("10. item"),
+            .plainText("1.2.3"),
             .plainText("Normal prose paragraph."),
         ])
     }

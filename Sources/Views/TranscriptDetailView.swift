@@ -3,9 +3,9 @@ import SwiftUI
 struct TranscriptDetailView: View {
     let model: AppModel
     let session: ClaudeSessionSummary
-    @State private var pendingInitialScrollSessionID: ClaudeSessionSummary.ID?
-    @State private var scrolledMessageID: TranscriptMessage.ID?
-    @State private var initialScrollGeneration = 0
+    @State private var isPinnedToBottom = true
+    @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    @State private var initialScrollSettled = false
 
     private var transcriptMessages: [TranscriptMessage] {
         model.transcriptState.messages(for: session.id)
@@ -19,57 +19,64 @@ struct TranscriptDetailView: View {
         model.transcriptState.errorMessage(for: session.id)
     }
 
+    private var transcriptSignal: TranscriptSignal {
+        TranscriptSignal(
+            count: transcriptMessages.count,
+            firstID: transcriptMessages.first?.id,
+            lastID: transcriptMessages.last?.id
+        )
+    }
+
     var body: some View {
         ZStack {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(transcriptMessages) { message in
-                            MessageRowView(message: message) {
-                                model.playMessage(message)
-                            }
-                            .id(message.id)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 8)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(transcriptMessages) { message in
+                        MessageRowView(message: message) {
+                            model.playMessage(message)
                         }
+                        .equatable()
+                        .id(message.id)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .scrollTargetLayout()
                 }
-                .id(session.id)
-                .background(.clear)
-                .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
-                .defaultScrollAnchor(.bottom)
-                .defaultScrollAnchor(.top, for: .alignment)
-                .scrollPosition(id: $scrolledMessageID, anchor: .bottom)
-                .onAppear {
-                    pendingInitialScrollSessionID = session.id
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(.clear)
+            .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+            .scrollPosition($scrollPosition)
+            .onScrollGeometryChange(
+                for: Bool.self,
+                of: { geometry in
+                    let visibleBottom = geometry.contentOffset.y + geometry.containerSize.height
+                    let bottomDistance = geometry.contentSize.height - visibleBottom
+                    return bottomDistance <= 24
+                }
+            ) { _, isNearBottom in
+                isPinnedToBottom = isNearBottom
+            }
+            .onChange(of: transcriptSignal) { oldSignal, newSignal in
+                let wasAppend =
+                    newSignal.count > oldSignal.count &&
+                    (oldSignal.lastID == nil || newSignal.firstID == oldSignal.firstID)
 
-                    if model.selectedSessionID == session.id,
-                       let latestMessageID = transcriptMessages.last?.id {
-                        scheduleInitialScroll(to: latestMessageID, proxy: proxy)
-                    }
+                if wasAppend && isPinnedToBottom {
+                    scrollPosition.scrollTo(edge: .bottom)
                 }
-                .onChange(of: transcriptMessages.map(\.id)) { oldIDs, newIDs in
-                    let previousLastMessageID = oldIDs.last
-                    let latestMessageID = newIDs.last
-                    let appendedMessagesAtEnd =
-                        newIDs.count > oldIDs.count &&
-                        (previousLastMessageID == nil || newIDs[oldIDs.count - 1] == previousLastMessageID)
-                    let wasPinnedToBottom = previousLastMessageID != nil && scrolledMessageID == previousLastMessageID
+            }
+            .task(id: transcriptSignal.count) {
+                // ScrollPosition(edge: .bottom) may land short of the true bottom
+                // when the LazyVStack has inaccurate height estimates for unmaterialized
+                // items. Re-scroll once after layout has refined its measurements.
+                guard transcriptSignal.count > 0, !initialScrollSettled else {
+                    return
+                }
 
-                    if pendingInitialScrollSessionID == session.id {
-                        scheduleInitialScroll(to: latestMessageID, proxy: proxy)
-                    } else if appendedMessagesAtEnd && wasPinnedToBottom {
-                        scrollToMessage(latestMessageID, proxy: proxy)
-                    }
-                }
-                .onChange(of: session.id) { _, newSessionID in
-                    initialScrollGeneration += 1
-                    pendingInitialScrollSessionID = newSessionID
-                    scrolledMessageID = nil
-                }
+                try? await Task.sleep(for: .milliseconds(150))
+                scrollPosition.scrollTo(edge: .bottom)
+                initialScrollSettled = true
             }
 
             if isLoadingTranscript {
@@ -95,40 +102,12 @@ struct TranscriptDetailView: View {
             SessionHeaderView(model: model, session: session)
         }
     }
+}
 
-    private func scrollToMessage(_ messageID: TranscriptMessage.ID?, proxy: ScrollViewProxy) {
-        if let messageID {
-            proxy.scrollTo(messageID, anchor: .bottom)
-        }
-
-        scrolledMessageID = messageID
-
-        if pendingInitialScrollSessionID == session.id {
-            pendingInitialScrollSessionID = nil
-        }
-    }
-
-    private func scheduleInitialScroll(to messageID: TranscriptMessage.ID?, proxy: ScrollViewProxy) {
-        initialScrollGeneration += 1
-        let generation = initialScrollGeneration
-
-        guard let messageID else {
-            scrollToMessage(nil, proxy: proxy)
-            return
-        }
-
-        for delay in [0.0, 0.12, 0.32] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard generation == initialScrollGeneration else {
-                    return
-                }
-
-                scrolledMessageID = nil
-                proxy.scrollTo(messageID, anchor: .bottom)
-                scrollToMessage(messageID, proxy: proxy)
-            }
-        }
-    }
+private struct TranscriptSignal: Equatable {
+    let count: Int
+    let firstID: String?
+    let lastID: String?
 }
 
 private struct SessionHeaderView: View {

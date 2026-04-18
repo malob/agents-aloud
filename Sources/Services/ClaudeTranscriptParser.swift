@@ -1,20 +1,27 @@
 import Foundation
+import OSLog
 
 enum ClaudeTranscriptParser {
+    private static let logger = Logger(subsystem: "local.claudecodevoice", category: "TranscriptParser")
+    private static let decoder = JSONDecoder()
+
     static func parseTranscript(_ rawTranscript: String) -> [TranscriptMessage] {
-        let decoder = JSONDecoder()
         let dateParsers = ISO8601DateParsers()
         var messages: [TranscriptMessage] = []
+        var droppedLineCount = 0
 
         for lineSlice in rawTranscript.split(whereSeparator: \.isNewline) {
             guard let data = String(lineSlice).data(using: .utf8),
                   let entry = try? decoder.decode(TranscriptLine.self, from: data),
                   let message = makeTranscriptMessage(from: entry, using: dateParsers) else {
+                droppedLineCount += 1
                 continue
             }
 
             messages.append(message)
         }
+
+        logDroppedLineCount(droppedLineCount, operation: "parse")
 
         return messages.sorted { $0.timestamp < $1.timestamp }
     }
@@ -25,7 +32,6 @@ enum ClaudeTranscriptParser {
         modifiedAt: Date,
         projectMetadataIndex: ProjectMetadataIndex
     ) -> ClaudeSessionSummary? {
-        let decoder = JSONDecoder()
         let dateParsers = ISO8601DateParsers()
         var sessionID = fileURL.deletingPathExtension().lastPathComponent
         var customTitle: String?
@@ -33,10 +39,12 @@ enum ClaudeTranscriptParser {
         var firstPrompt: String?
         var projectPath: String?
         var messageCount = 0
+        var droppedLineCount = 0
 
         for lineSlice in rawTranscript.split(whereSeparator: \.isNewline) {
             guard let data = String(lineSlice).data(using: .utf8),
                   let entry = try? decoder.decode(TranscriptLine.self, from: data) else {
+                droppedLineCount += 1
                 continue
             }
 
@@ -71,6 +79,8 @@ enum ClaudeTranscriptParser {
                 firstPrompt = prompt
             }
         }
+
+        logDroppedLineCount(droppedLineCount, operation: "summarize")
 
         let fallbackProjectPath = fileURL.deletingLastPathComponent().lastPathComponent
         let sessionMetadata = projectMetadataIndex.metadata(
@@ -121,7 +131,7 @@ enum ClaudeTranscriptParser {
             return TranscriptMessage(
                 id: uuid,
                 role: .user,
-                content: content(for: text),
+                text: text,
                 timestamp: timestamp,
                 sessionID: entry.sessionID ?? ""
             )
@@ -139,7 +149,7 @@ enum ClaudeTranscriptParser {
             return TranscriptMessage(
                 id: uuid,
                 role: .assistant,
-                content: content(for: text),
+                text: text,
                 timestamp: timestamp,
                 sessionID: entry.sessionID ?? ""
             )
@@ -154,67 +164,6 @@ enum ClaudeTranscriptParser {
         return trimmedValue.isEmpty ? nil : trimmedValue
     }
 
-    private static func content(for text: String) -> TranscriptMessage.Content {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let literalPrefixes = [
-            "<task-notification>",
-            "<command-message>",
-            "<command-name>",
-            "<command-args>",
-            "<local-command-caveat>",
-        ]
-
-        if literalPrefixes.contains(where: { trimmed.hasPrefix($0) }) {
-            return .literal(text)
-        }
-
-        if text.contains("`") ||
-            text.contains("](") ||
-            text.contains("![") ||
-            text.contains("**") ||
-            text.contains("__") ||
-            text.contains("~~") {
-            return .markdown(text)
-        }
-
-        for line in text.split(whereSeparator: \.isNewline) {
-            let trimmedLine = line.trimmingCharacters(in: .whitespaces)
-            if trimmedLine.isEmpty {
-                continue
-            }
-
-            if trimmedLine.hasPrefix("#") ||
-                trimmedLine.hasPrefix(">") ||
-                trimmedLine.hasPrefix("- ") ||
-                trimmedLine.hasPrefix("* ") ||
-                trimmedLine.hasPrefix("+ ") ||
-                trimmedLine == "---" ||
-                trimmedLine == "***" ||
-                trimmedLine.contains("| ---") ||
-                trimmedLine.contains(" | ") ||
-                orderedListPrefix(in: trimmedLine) {
-                return .markdown(text)
-            }
-        }
-
-        return .plainText(text)
-    }
-
-    private static func orderedListPrefix(in line: String) -> Bool {
-        var digits = 0
-
-        for character in line {
-            if character.isNumber {
-                digits += 1
-                continue
-            }
-
-            return digits > 0 && character == "." && line.dropFirst(digits + 1).first == " "
-        }
-
-        return false
-    }
-
     private static func summarizedPrompt(_ prompt: String?, fallback: String) -> String {
         let base = normalized(prompt?.replacingOccurrences(of: "\n", with: " ")) ?? fallback
         let maxLength = 88
@@ -224,6 +173,14 @@ enum ClaudeTranscriptParser {
         }
 
         return String(base.prefix(maxLength - 1)) + "…"
+    }
+
+    private static func logDroppedLineCount(_ droppedLineCount: Int, operation: String) {
+        guard droppedLineCount > 0 else {
+            return
+        }
+
+        logger.debug("Dropped \(droppedLineCount, privacy: .public) JSONL lines while \(operation, privacy: .public) transcript content")
     }
 }
 
@@ -386,15 +343,4 @@ private enum TranscriptContent: Decodable {
 private struct TranscriptContentItem: Decodable {
     let type: String?
     let text: String?
-}
-
-private extension String {
-    var trimmed: String {
-        trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    var trimmedNonEmpty: String? {
-        let value = trimmed
-        return value.isEmpty ? nil : value
-    }
 }

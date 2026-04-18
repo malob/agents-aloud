@@ -9,6 +9,7 @@ struct ContentView: View {
         } detail: {
             if let session = model.selectedSession {
                 TranscriptDetailView(model: model, session: session)
+                    .id(session.id)
             } else if case .loading = model.sessionsState {
                 ContentUnavailableView(
                     "Loading Sessions…",
@@ -34,14 +35,16 @@ struct ContentView: View {
         .safeAreaInset(edge: .top) {
             VStack(spacing: 8) {
                 if let errorMessage = model.errorMessage {
-                    ErrorBannerView(
+                    BannerView(
+                        kind: .error,
                         message: errorMessage,
                         onDismiss: model.dismissErrorMessage
                     )
                 }
 
                 if let playbackError = model.speechController.playbackError {
-                    PlaybackErrorToastView(
+                    BannerView(
+                        kind: .playback,
                         message: playbackError.message,
                         onDismiss: model.speechController.dismissPlaybackError
                     )
@@ -55,13 +58,46 @@ struct ContentView: View {
     }
 }
 
-private struct PlaybackErrorToastView: View {
+private struct BannerView: View {
+    enum Kind {
+        case error
+        case playback
+
+        var symbolName: String {
+            switch self {
+            case .error:
+                return "exclamationmark.triangle.fill"
+            case .playback:
+                return "speaker.slash.fill"
+            }
+        }
+
+        var helpText: String {
+            switch self {
+            case .error:
+                return "Dismiss error"
+            case .playback:
+                return "Dismiss playback status"
+            }
+        }
+
+        var tint: Color {
+            switch self {
+            case .error:
+                return .orange
+            case .playback:
+                return .red.opacity(0.16)
+            }
+        }
+    }
+
+    let kind: Kind
     let message: String
     let onDismiss: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "speaker.slash.fill")
+            Image(systemName: kind.symbolName)
 
             Text(message)
                 .font(.caption)
@@ -75,36 +111,10 @@ private struct PlaybackErrorToastView: View {
                 Image(systemName: "xmark.circle.fill")
             }
             .buttonStyle(.plain)
-            .help("Dismiss playback status")
+            .help(kind.helpText)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .glassEffect(.regular.tint(.red.opacity(0.16)), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-}
-
-private struct ErrorBannerView: View {
-    let message: String
-    let onDismiss: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-            Text(message)
-                .font(.caption)
-                .lineLimit(2)
-            Spacer()
-
-            Button {
-                onDismiss()
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-            }
-            .buttonStyle(.plain)
-            .help("Dismiss error")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .glassEffect(.regular.tint(.orange), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .glassEffect(.regular.tint(kind.tint), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }

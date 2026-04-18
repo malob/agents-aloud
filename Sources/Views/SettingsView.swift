@@ -19,8 +19,8 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            if model.preferredSpeechBackend.supportsVoicePicker {
-                Section("Voice") {
+            Section("Voice") {
+                if model.preferredSpeechBackend.supportsVoicePicker {
                     Picker("Preferred Voice", selection: $model.preferredVoiceIdentifier) {
                         ForEach(model.speechController.availableVoices) { voice in
                             Text(voice.displayName)
@@ -31,9 +31,7 @@ struct SettingsView: View {
                     Text("English voices only for now. Showing Apple’s modern system voices and hiding legacy Eloquence and novelty voices.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-            } else {
-                Section("Voice") {
+                } else {
                     Text("This engine ignores the app voice picker and uses the voice you set in macOS Accessibility > Read & Speak > System Voice.")
                         .font(.caption)
                         .foregroundStyle(.secondary)

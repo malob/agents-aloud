@@ -11,9 +11,9 @@ final class AppModel {
     private static let preferredSpeechRateKey = "preferredSpeechRate"
     private static let sessionListLimit = 30
 
-    private let storageService = ClaudeStorageService()
+    private let storageService: ClaudeStorageService
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "AppModel")
-    @ObservationIgnored private let userDefaults = UserDefaults.standard
+    @ObservationIgnored private let userDefaults: UserDefaults
 
     var sessionsState: SessionsState = .loading([])
     var selectedSessionID: ClaudeSessionSummary.ID?
@@ -54,15 +54,26 @@ final class AppModel {
         }
     }
 
-    let speechController = SpeechController()
+    let speechController: SpeechController
 
     @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var selectionRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var selectedTranscriptRefreshTask: Task<Void, Never>?
-    @ObservationIgnored private let selectedTranscriptWatcher = TranscriptFileWatcher()
+    @ObservationIgnored private let selectedTranscriptWatcher: any TranscriptFileWatching
+    @ObservationIgnored private var transcriptMessagesBySession: [ClaudeSessionSummary.ID: [TranscriptMessage]] = [:]
     @ObservationIgnored private var knownAssistantMessageIDsBySession: [ClaudeSessionSummary.ID: Set<TranscriptMessage.ID>] = [:]
 
-    init() {
+    init(
+        storageService: ClaudeStorageService = ClaudeStorageService(),
+        speechController: SpeechController = SpeechController(),
+        userDefaults: UserDefaults = .standard,
+        selectedTranscriptWatcher: any TranscriptFileWatching = TranscriptFileWatcher()
+    ) {
+        self.storageService = storageService
+        self.speechController = speechController
+        self.userDefaults = userDefaults
+        self.selectedTranscriptWatcher = selectedTranscriptWatcher
+
         if let storedValue = userDefaults.string(forKey: Self.preferredSpeechBackendKey),
            let backend = SpeechBackend(rawValue: storedValue) {
             preferredSpeechBackend = backend
@@ -116,13 +127,6 @@ final class AppModel {
         sessionsState = .loading(sessionsState.sessions)
         await refreshSessions()
 
-        if let selectedSessionID {
-            if transcriptState == .none {
-                transcriptState = .loading(sessionID: selectedSessionID, messages: [])
-            }
-            await refreshTranscript(for: selectedSessionID, allowLiveRead: false, showLoadingState: true)
-        }
-
         sessionRefreshTask = Task { [weak self] in
             guard let self else {
                 return
@@ -141,6 +145,7 @@ final class AppModel {
         }
 
         selectionRefreshTask?.cancel()
+        selectedTranscriptRefreshTask?.cancel()
         selectedSessionID = id
         updateSelectedTranscriptObservation()
 
@@ -149,7 +154,7 @@ final class AppModel {
             return
         }
 
-        transcriptState = .loading(sessionID: id, messages: [])
+        transcriptState = .loading(sessionID: id, messages: cachedTranscriptMessages(for: id))
 
         selectionRefreshTask = Task { [weak self] in
             guard let self else {
@@ -175,6 +180,7 @@ final class AppModel {
             )
         } else if liveReadSessionID == selectedSessionID {
             liveReadSessionID = nil
+            selectedTranscriptRefreshTask?.cancel()
         }
     }
 
@@ -200,6 +206,7 @@ final class AppModel {
                 sessionsState = .loaded(loadedSessions)
             }
             let currentSessionIDs = Set(loadedSessions.map(\.id))
+            transcriptMessagesBySession = transcriptMessagesBySession.filter { currentSessionIDs.contains($0.key) }
             knownAssistantMessageIDsBySession = knownAssistantMessageIDsBySession.filter { currentSessionIDs.contains($0.key) }
 
             if let selectedSessionID, loadedSessions.contains(where: { $0.id == selectedSessionID }) {
@@ -207,15 +214,13 @@ final class AppModel {
                 return
             }
 
-            selectedSessionID = loadedSessions.first?.id
-            if let selectedSessionID {
-                transcriptState = .loading(sessionID: selectedSessionID, messages: [])
-            } else {
-                transcriptState = .none
-            }
+            // Clear selection when the previously selected session is no longer available.
+            // The user picks which session to view from the sidebar.
+            selectedSessionID = nil
+            transcriptState = .none
             updateSelectedTranscriptObservation()
         } catch {
-            let newErrorMessage = "Unable to load Claude sessions: \(error.localizedDescription)"
+            let newErrorMessage = sessionLoadErrorMessage(for: error)
             sessionsState = .failed(existingSessions, message: newErrorMessage)
             errorMessage = newErrorMessage
         }
@@ -242,18 +247,35 @@ final class AppModel {
                 return
             }
 
+            transcriptMessagesBySession[sessionID] = loadedTranscript
             let previousIDs = knownAssistantMessageIDsBySession[sessionID] ?? []
             let assistantMessages = loadedTranscript.filter(\.isAssistant)
             let latestAssistantIDs = Set(assistantMessages.map(\.id))
 
-            if selectedSessionID == sessionID,
-               transcriptState != .loaded(sessionID: sessionID, messages: loadedTranscript) {
-                transcriptState = .loaded(sessionID: sessionID, messages: loadedTranscript)
+            if selectedSessionID == sessionID {
+                let alreadyCurrent: Bool
+                if case let .loaded(currentSessionID, currentMessages) = transcriptState,
+                   currentSessionID == sessionID,
+                   currentMessages.count == loadedTranscript.count,
+                   currentMessages.first?.id == loadedTranscript.first?.id,
+                   currentMessages.last?.id == loadedTranscript.last?.id {
+                    alreadyCurrent = true
+                } else {
+                    alreadyCurrent = false
+                }
+
+                if !alreadyCurrent {
+                    transcriptState = .loaded(sessionID: sessionID, messages: loadedTranscript)
+                }
             }
 
             if allowLiveRead, !previousIDs.isEmpty {
                 let newAssistantMessages = assistantMessages.filter { !previousIDs.contains($0.id) }
                 for message in newAssistantMessages {
+                    guard selectedSessionID == sessionID, liveReadSessionID == sessionID else {
+                        break
+                    }
+
                     speechController.enqueue(
                         text: message.text,
                         messageID: message.id,
@@ -264,9 +286,6 @@ final class AppModel {
             }
 
             knownAssistantMessageIDsBySession[sessionID] = latestAssistantIDs
-            if errorMessage != nil {
-                errorMessage = nil
-            }
         } catch is CancellationError {
             return
         } catch {
@@ -274,14 +293,10 @@ final class AppModel {
                 transcriptState = .failed(
                     sessionID: sessionID,
                     messages: existingMessages,
-                    message: "Unable to load transcript: \(error.localizedDescription)"
+                    message: transcriptLoadErrorMessage(for: error)
                 )
             }
-
-            let newErrorMessage = "Unable to load transcript: \(error.localizedDescription)"
-            if errorMessage != newErrorMessage {
-                errorMessage = newErrorMessage
-            }
+            logger.error("Failed to refresh transcript \(sessionID, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -303,13 +318,14 @@ final class AppModel {
 
                 self.scheduleSelectedTranscriptRefresh(for: sessionID)
             },
-            onFailure: { [weak self] message in
+            onFailure: { [weak self] error in
                 guard let self, self.selectedSessionID == sessionID else {
                     return
                 }
 
+                let message = self.watcherErrorMessage(error)
                 self.logger.error("Transcript watcher error for \(transcriptURL.path, privacy: .public): \(message, privacy: .public)")
-                self.errorMessage = "Unable to watch transcript for live updates: \(message)"
+                self.errorMessage = message
             }
         )
     }
@@ -334,4 +350,27 @@ final class AppModel {
         }
     }
 
+    private func cachedTranscriptMessages(for sessionID: ClaudeSessionSummary.ID) -> [TranscriptMessage] {
+        transcriptMessagesBySession[sessionID] ?? []
+    }
+
+    private func watcherErrorMessage(_ error: TranscriptFileWatcherError) -> String {
+        switch error {
+        case let .openFailed(_, errorNumber) where errorNumber == EACCES || errorNumber == EPERM:
+            return "Unable to watch transcript for live updates: permission denied. Check Claude transcript access permissions."
+        case let .openFailed(_, errorNumber) where errorNumber == EMFILE:
+            return "Unable to watch transcript for live updates: too many open files. Try restarting the app."
+        case let .openFailed(fileName, errorNumber):
+            let systemMessage = String(cString: strerror(errorNumber))
+            return "Unable to watch transcript for live updates: \(fileName) (\(systemMessage))"
+        }
+    }
+
+    private func transcriptLoadErrorMessage(for error: Error) -> String {
+        "Unable to load transcript: \(error.localizedDescription)"
+    }
+
+    private func sessionLoadErrorMessage(for error: Error) -> String {
+        "Unable to load Claude sessions: \(error.localizedDescription)"
+    }
 }

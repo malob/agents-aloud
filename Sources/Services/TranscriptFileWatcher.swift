@@ -2,14 +2,37 @@ import Darwin
 import Foundation
 
 @MainActor
-final class TranscriptFileWatcher {
+protocol TranscriptFileWatching: AnyObject {
+    func startWatching(
+        fileURL: URL,
+        onChange: @escaping @MainActor @Sendable () -> Void,
+        onFailure: @escaping @MainActor @Sendable (TranscriptFileWatcherError) -> Void
+    )
+    func stop()
+}
+
+enum TranscriptFileWatcherError: LocalizedError, Equatable {
+    case openFailed(fileName: String, errorNumber: Int32)
+
+    var errorDescription: String? {
+        switch self {
+        case let .openFailed(fileName, errorNumber):
+            let systemMessage = String(cString: strerror(errorNumber))
+            return "\(fileName) (\(systemMessage))"
+        }
+    }
+}
+
+@MainActor
+final class TranscriptFileWatcher: TranscriptFileWatching {
     private var watchedURL: URL?
     private var source: DispatchSourceFileSystemObject?
+    private var retryTask: Task<Void, Never>?
 
     func startWatching(
         fileURL: URL,
         onChange: @escaping @MainActor @Sendable () -> Void,
-        onFailure: @escaping @MainActor @Sendable (String) -> Void
+        onFailure: @escaping @MainActor @Sendable (TranscriptFileWatcherError) -> Void
     ) {
         guard watchedURL != fileURL else {
             return
@@ -25,14 +48,32 @@ final class TranscriptFileWatcher {
     private func armWatcher(
         fileURL: URL,
         onChange: @escaping @MainActor @Sendable () -> Void,
-        onFailure: @escaping @MainActor @Sendable (String) -> Void
+        onFailure: @escaping @MainActor @Sendable (TranscriptFileWatcherError) -> Void,
+        retryCount: Int = 0
     ) {
         stop()
 
         let fileDescriptor = open(fileURL.path, O_EVTONLY)
         let openErrorNumber = errno
         guard fileDescriptor >= 0 else {
-            onFailure(Self.errorDescription(for: fileURL, errorNumber: openErrorNumber))
+            if openErrorNumber == ENOENT, retryCount < 3 {
+                retryTask = Task { [weak self] in
+                    try? await Task.sleep(for: .milliseconds(100))
+                    guard let self, !Task.isCancelled else {
+                        return
+                    }
+
+                    self.armWatcher(
+                        fileURL: fileURL,
+                        onChange: onChange,
+                        onFailure: onFailure,
+                        retryCount: retryCount + 1
+                    )
+                }
+                return
+            }
+
+            onFailure(.openFailed(fileName: fileURL.lastPathComponent, errorNumber: openErrorNumber))
             return
         }
 
@@ -49,6 +90,8 @@ final class TranscriptFileWatcher {
             let events = source.data
 
             if events.contains(.rename) || events.contains(.delete) {
+                // Rearm against the original path because rename/delete can orphan the current
+                // file descriptor even when a replacement file shows up at the same location.
                 self.armWatcher(
                     fileURL: fileURL,
                     onChange: onChange,
@@ -69,17 +112,15 @@ final class TranscriptFileWatcher {
     }
 
     func stop() {
+        retryTask?.cancel()
+        retryTask = nil
         watchedURL = nil
         source?.cancel()
         source = nil
     }
 
     deinit {
+        retryTask?.cancel()
         source?.cancel()
-    }
-
-    private static func errorDescription(for fileURL: URL, errorNumber: Int32) -> String {
-        let systemMessage = String(cString: strerror(errorNumber))
-        return "\(fileURL.lastPathComponent) (\(systemMessage))"
     }
 }

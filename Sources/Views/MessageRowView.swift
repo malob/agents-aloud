@@ -1,16 +1,25 @@
 import AppKit
 import SwiftUI
 
-struct MessageRowView: View {
+@MainActor
+struct MessageRowView: View, Equatable {
     let message: TranscriptMessage
     let onPlay: () -> Void
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.message == rhs.message
+    }
+
+    private var roleAppearance: RoleAppearance {
+        RoleAppearance(role: message.role)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Label(roleTitle, systemImage: roleSymbolName)
+                Label(roleAppearance.title, systemImage: roleAppearance.symbolName)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(roleColor)
+                    .foregroundStyle(roleAppearance.color)
 
                 Text(DateFormatting.messageTimestamp.string(from: message.timestamp))
                     .font(.caption)
@@ -35,7 +44,7 @@ struct MessageRowView: View {
                 .equatable()
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(roleBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(roleAppearance.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .contextMenu {
                     Button("Copy Message") {
                         copyMessageText()
@@ -44,43 +53,30 @@ struct MessageRowView: View {
         }
     }
 
-    private var roleTitle: String {
-        switch message.role {
-        case .user:
-            return "You"
-        case .assistant:
-            return "Assistant"
-        }
-    }
-
-    private var roleSymbolName: String {
-        switch message.role {
-        case .user:
-            return "person"
-        case .assistant:
-            return "waveform"
-        }
-    }
-
-    private var roleColor: Color {
-        switch message.role {
-        case .user:
-            return .secondary
-        case .assistant:
-            return .accentColor
-        }
-    }
-
-    private var roleBackground: Color {
-        switch message.role {
-        case .user:
-            return Color.secondary.opacity(0.08)
-        case .assistant:
-            return Color.secondary.opacity(0.14)
-        }
-    }
     private func copyMessageText() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(message.text, forType: .string)
+    }
+}
+
+private struct RoleAppearance {
+    let title: String
+    let symbolName: String
+    let color: Color
+    let background: Color
+
+    init(role: TranscriptMessage.Role) {
+        switch role {
+        case .user:
+            title = "You"
+            symbolName = "person"
+            color = .secondary
+            background = Color.secondary.opacity(0.08)
+        case .assistant:
+            title = "Assistant"
+            symbolName = "waveform"
+            color = .accentColor
+            background = Color.secondary.opacity(0.14)
+        }
     }
 }
