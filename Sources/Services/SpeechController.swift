@@ -16,12 +16,56 @@ final class SpeechController: NSObject {
     }
 
     private final class SystemVoiceJob {
+        let token = UUID()
         let process: Process
         let inputPipe: Pipe
+        private var hasClosedInput = false
 
         init(process: Process, inputPipe: Pipe) {
             self.process = process
             self.inputPipe = inputPipe
+        }
+
+        func write(_ text: String) throws {
+            guard let data = text.data(using: .utf8) else {
+                return
+            }
+
+            try inputPipe.fileHandleForWriting.write(contentsOf: data)
+            closeInput()
+        }
+
+        func closeInput() {
+            guard !hasClosedInput else {
+                return
+            }
+
+            hasClosedInput = true
+            try? inputPipe.fileHandleForWriting.close()
+        }
+
+        func pause() {
+            guard process.isRunning else {
+                return
+            }
+
+            kill(process.processIdentifier, SIGSTOP)
+        }
+
+        func resume() {
+            guard process.isRunning else {
+                return
+            }
+
+            kill(process.processIdentifier, SIGCONT)
+        }
+
+        func terminate() {
+            closeInput()
+
+            if process.isRunning {
+                process.terminate()
+            }
         }
     }
 
@@ -184,12 +228,11 @@ final class SpeechController: NSObject {
 
         case .systemVoice:
             guard case let .speaking(activePlayback) = playbackState,
-                  let process = activePlayback.systemVoiceJob?.process,
-                  process.isRunning else {
+                  let job = activePlayback.systemVoiceJob else {
                 return
             }
 
-            kill(process.processIdentifier, SIGSTOP)
+            job.pause()
             playbackState = .paused(activePlayback)
         }
     }
@@ -205,12 +248,11 @@ final class SpeechController: NSObject {
 
         case .systemVoice:
             guard case let .paused(activePlayback) = playbackState,
-                  let process = activePlayback.systemVoiceJob?.process,
-                  process.isRunning else {
+                  let job = activePlayback.systemVoiceJob else {
                 return
             }
 
-            kill(process.processIdentifier, SIGCONT)
+            job.resume()
             playbackState = .speaking(activePlayback)
         }
     }
@@ -273,6 +315,7 @@ final class SpeechController: NSObject {
         let process = Process()
         let inputPipe = Pipe()
         let job = SystemVoiceJob(process: process, inputPipe: inputPipe)
+        let jobToken = job.token
         process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
         process.arguments = ["-r", String(systemVoiceWordsPerMinute)]
         process.standardInput = inputPipe
@@ -282,7 +325,7 @@ final class SpeechController: NSObject {
                     return
                 }
 
-                self.finishCurrentPlayback()
+                self.handleSystemVoiceJobTermination(jobToken: jobToken)
             }
         }
 
@@ -295,11 +338,9 @@ final class SpeechController: NSObject {
                 )
             )
 
-            if let data = request.text.data(using: .utf8) {
-                inputPipe.fileHandleForWriting.write(data)
-            }
-            inputPipe.fileHandleForWriting.closeFile()
+            try job.write(request.text)
         } catch {
+            job.terminate()
             playbackState = .idle
         }
     }
@@ -310,11 +351,17 @@ final class SpeechController: NSObject {
             return
         }
 
-        job.inputPipe.fileHandleForWriting.closeFile()
+        job.terminate()
+    }
 
-        if job.process.isRunning {
-            job.process.terminate()
+    private func handleSystemVoiceJobTermination(jobToken: UUID) {
+        guard let activePlayback = playbackState.activePlayback,
+              let activeJob = activePlayback.systemVoiceJob,
+              activeJob.token == jobToken else {
+            return
         }
+
+        finishCurrentPlayback()
     }
 
     private func finishCurrentPlayback() {
@@ -323,7 +370,7 @@ final class SpeechController: NSObject {
             playNextQueuedRequestIfNeeded()
         case let .speaking(activePlayback), let .paused(activePlayback):
             if let job = activePlayback.systemVoiceJob {
-                job.inputPipe.fileHandleForWriting.closeFile()
+                job.closeInput()
             }
 
             playbackState = .idle

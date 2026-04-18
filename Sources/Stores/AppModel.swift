@@ -84,7 +84,6 @@ final class AppModel {
         sessionRefreshTask?.cancel()
         selectionRefreshTask?.cancel()
         selectedTranscriptRefreshTask?.cancel()
-        selectedTranscriptWatcher.stop()
     }
 
     func start() async {
@@ -306,7 +305,7 @@ final class AppModel {
     }
 }
 
-private final class TranscriptFileWatcher: @unchecked Sendable {
+private final class TranscriptFileWatcher {
     private var watchedPath: String?
     private var source: DispatchSourceFileSystemObject?
 
