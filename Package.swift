@@ -23,5 +23,10 @@ let package = Package(
             ],
             path: "Sources"
         ),
+        .testTarget(
+            name: "ClaudeCodeVoiceTests",
+            dependencies: ["ClaudeCodeVoice"],
+            path: "Tests"
+        ),
     ]
 )
