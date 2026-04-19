@@ -1,5 +1,37 @@
 import SwiftUI
 
+// Chat-style auto-pin-to-bottom — READ BEFORE "SIMPLIFYING".
+//
+// If you're reaching for `.defaultScrollAnchor(.bottom)`,
+// `.defaultScrollAnchor(.bottom, for: .sizeChanges)`, or
+// `.scrollPosition(id:anchor:)` to shrink this view: those APIs do not
+// work with LazyVStack. Known Apple bug, reported on the Developer
+// Forums in 2023 (thread 741406) and still broken in macOS 26. Symptoms:
+// (a) view renders blank when content > screen height until the user
+// scrolls a bit, (b) no auto-pin when new messages arrive. Multiple
+// attempts to use those APIs here were reverted after observation.
+//
+// The pattern below is the community-verified workaround (see e.g.
+// https://medium.com/@itsuki.enjoy/swiftui-2-5-reliable-ways-to-automatically-scroll-to-the-bottom-of-scrollview-1581711e957c):
+//
+//   1. `ScrollViewReader` + `proxy.scrollTo(id, anchor: .bottom)` —
+//      the only path that reliably lands at the bottom with LazyVStack.
+//   2. Listen to `contentSize` changes (not `messages.last?.id`); this
+//      catches initial layout, cell materialization, new-message
+//      append, and (future) streaming-edit growth under one signal.
+//   3. `userSetAtBottom` gates the auto-pin. It is sampled ONLY when
+//      `ScrollPhase` transitions to `.idle` FROM a user-initiated phase
+//      (`.tracking` / `.decelerating` / `.interacting`). Updating it
+//      from `.animating` transitions (programmatic scrolls) or from
+//      content-growth-driven idle transitions would latch it to false
+//      and silently break auto-pin. That trap was seen in the logs.
+//   4. The 250px threshold for "at bottom" is empirical: with
+//      `.scrollEdgeEffectStyle(.soft, for: [.top, .bottom])` the scroll
+//      physics reserve ~165px of scroll extent for the blur edge, so the
+//      user's visual "bottom" lands at `remaining ≈ 165`, not 0.
+//
+// If this view ever feels over-engineered, the reason is that SwiftUI's
+// simpler declarative primitives for chat UIs are currently broken.
 struct TranscriptDetailView: View {
     let model: AppModel
     let session: ClaudeSessionSummary
