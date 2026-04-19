@@ -9,6 +9,9 @@ final class AppModel {
     private static let preferredSpeechBackendKey = "preferredSpeechBackend"
     private static let preferredVoiceIdentifierKey = "preferredVoiceIdentifier"
     private static let preferredSpeechRateKey = "preferredSpeechRate"
+    private static let preferredElevenLabsVoiceIDKey = "preferredElevenLabsVoiceID"
+    static let defaultKeychainService = "local.claudecodevoice"
+    static let elevenLabsAPIKeyAccount = "elevenlabs_api_key"
     // How far back to show sessions in the sidebar. The session list is for
     // recent work — anything older you can still dig up, but we don't try to
     // keep weeks of history in the main view.
@@ -17,6 +20,8 @@ final class AppModel {
     private let storageService: ClaudeStorageService
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "AppModel")
     @ObservationIgnored private let userDefaults: UserDefaults
+    @ObservationIgnored private let keychain: KeychainStorage
+    @ObservationIgnored private var elevenLabsVoiceRefreshTask: Task<Void, Never>?
 
     var sessionsState: SessionsState = .loading([])
     var selectedSessionID: ClaudeSessionSummary.ID?
@@ -57,6 +62,39 @@ final class AppModel {
         }
     }
 
+    // ElevenLabs API key. Stored in the Keychain (not UserDefaults) since
+    // it's a credential. Setting it rebuilds the driver's client with the
+    // new key and kicks off a voice-list refresh so the Settings picker
+    // can populate.
+    var elevenLabsAPIKey: String? {
+        didSet {
+            guard oldValue != elevenLabsAPIKey else {
+                return
+            }
+
+            do {
+                try keychain.set(elevenLabsAPIKey, for: Self.elevenLabsAPIKeyAccount)
+            } catch {
+                logger.error("Failed to persist ElevenLabs API key: \(error.localizedDescription, privacy: .public)")
+            }
+            applyElevenLabsAPIKey()
+        }
+    }
+
+    var preferredElevenLabsVoiceID: String? {
+        didSet {
+            guard oldValue != preferredElevenLabsVoiceID else {
+                return
+            }
+
+            if let preferredElevenLabsVoiceID {
+                userDefaults.set(preferredElevenLabsVoiceID, forKey: Self.preferredElevenLabsVoiceIDKey)
+            } else {
+                userDefaults.removeObject(forKey: Self.preferredElevenLabsVoiceIDKey)
+            }
+        }
+    }
+
     let speechController: SpeechController
 
     @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
@@ -70,12 +108,14 @@ final class AppModel {
         storageService: ClaudeStorageService = ClaudeStorageService(),
         speechController: SpeechController = SpeechController(),
         userDefaults: UserDefaults = .standard,
-        selectedTranscriptWatcher: any TranscriptFileWatching = TranscriptFileWatcher()
+        selectedTranscriptWatcher: any TranscriptFileWatching = TranscriptFileWatcher(),
+        keychain: KeychainStorage = KeychainStorage(service: AppModel.defaultKeychainService)
     ) {
         self.storageService = storageService
         self.speechController = speechController
         self.userDefaults = userDefaults
         self.selectedTranscriptWatcher = selectedTranscriptWatcher
+        self.keychain = keychain
 
         if let storedValue = userDefaults.string(forKey: Self.preferredSpeechBackendKey),
            let backend = SpeechBackend(rawValue: storedValue) {
@@ -86,10 +126,62 @@ final class AppModel {
 
         let storedRate = userDefaults.double(forKey: Self.preferredSpeechRateKey)
         preferredSpeechRate = storedRate == 0 ? Double(AVSpeechUtteranceDefaultSpeechRate) : storedRate
+
+        // ElevenLabs prefs. API key from Keychain; swallow-log on missing
+        // keychain access (e.g. sandboxed test run) so init still succeeds.
+        let storedKey: String?
+        do {
+            storedKey = try keychain.get(Self.elevenLabsAPIKeyAccount)
+        } catch {
+            storedKey = nil
+        }
+        elevenLabsAPIKey = storedKey
+        preferredElevenLabsVoiceID = userDefaults.string(forKey: Self.preferredElevenLabsVoiceIDKey)
+
         speechController.backend = preferredSpeechBackend
         preferredVoiceIdentifier = speechController.resolveVoiceIdentifier(
             userDefaults.string(forKey: Self.preferredVoiceIdentifierKey)
         )
+
+        // If an API key is already stored, seed the driver with a live
+        // client and trigger voice-list fetch so the Settings picker
+        // populates on first open.
+        applyElevenLabsAPIKey()
+    }
+
+    // Swap the ElevenLabs driver's client to one configured with the
+    // current API key (if any) and kick off a voice-list refresh.
+    private func applyElevenLabsAPIKey() {
+        elevenLabsVoiceRefreshTask?.cancel()
+
+        guard let key = elevenLabsAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !key.isEmpty else {
+            // No key: leave the driver with an empty-key client so any
+            // attempt to use it fails fast with an auth error surfaced
+            // through the existing playback-error banner.
+            speechController.elevenLabsDriver.replaceClient(ElevenLabsClient(apiKey: ""))
+            return
+        }
+
+        speechController.elevenLabsDriver.replaceClient(ElevenLabsClient(apiKey: key))
+        elevenLabsVoiceRefreshTask = Task { [weak self] in
+            await self?.speechController.elevenLabsDriver.refreshVoices()
+        }
+    }
+
+    // Voice IDs are backend-scoped (AVSpeech identifiers and ElevenLabs
+    // voice IDs don't overlap), so speech calls route through this rather
+    // than `preferredVoiceIdentifier` directly. SystemVoice uses whatever
+    // voice macOS has configured — we pass nil and let the driver decide.
+    var currentVoiceIdentifier: String? {
+        switch preferredSpeechBackend {
+        case .avSpeech:
+            return preferredVoiceIdentifier
+        case .systemVoice:
+            return nil
+        case .elevenLabs:
+            return preferredElevenLabsVoiceID
+        }
     }
 
     var selectedSession: ClaudeSessionSummary? {
@@ -195,7 +287,7 @@ final class AppModel {
         speechController.playNow(
             text: message.text,
             messageID: message.id,
-            voiceIdentifier: preferredVoiceIdentifier,
+            voiceIdentifier: currentVoiceIdentifier,
             rate: Float(preferredSpeechRate)
         )
     }
@@ -211,18 +303,20 @@ final class AppModel {
         let fromHere = messages[startIndex...].filter(\.isAssistant)
         guard let first = fromHere.first else { return }
 
+        let voice = currentVoiceIdentifier
+        let rate = Float(preferredSpeechRate)
         speechController.playNow(
             text: first.text,
             messageID: first.id,
-            voiceIdentifier: preferredVoiceIdentifier,
-            rate: Float(preferredSpeechRate)
+            voiceIdentifier: voice,
+            rate: rate
         )
         for next in fromHere.dropFirst() {
             speechController.enqueue(
                 text: next.text,
                 messageID: next.id,
-                voiceIdentifier: preferredVoiceIdentifier,
-                rate: Float(preferredSpeechRate)
+                voiceIdentifier: voice,
+                rate: rate
             )
         }
     }
@@ -326,7 +420,7 @@ final class AppModel {
                     speechController.enqueue(
                         text: message.text,
                         messageID: message.id,
-                        voiceIdentifier: preferredVoiceIdentifier,
+                        voiceIdentifier: currentVoiceIdentifier,
                         rate: Float(preferredSpeechRate)
                     )
                 }
