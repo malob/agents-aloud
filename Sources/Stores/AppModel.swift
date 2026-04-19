@@ -36,7 +36,11 @@ final class AppModel {
 
             userDefaults.set(preferredSpeechBackend.rawValue, forKey: Self.preferredSpeechBackendKey)
             speechController.backend = preferredSpeechBackend
-            preferredVoiceIdentifier = speechController.resolveVoiceIdentifier(preferredVoiceIdentifier)
+            // Don't normalize preferredVoiceIdentifier here — it's the
+            // AVSpeech-scoped pref. Resolving it against the new backend
+            // would overwrite it with a voice from a different backend's
+            // ID space, destroying the user's App Voices choice. Per-backend
+            // voice selection happens via `currentVoiceIdentifier`.
         }
     }
     var preferredVoiceIdentifier: String? {
@@ -170,17 +174,19 @@ final class AppModel {
     }
 
     // Voice IDs are backend-scoped (AVSpeech identifiers and ElevenLabs
-    // voice IDs don't overlap), so speech calls route through this rather
-    // than `preferredVoiceIdentifier` directly. SystemVoice uses whatever
-    // voice macOS has configured — we pass nil and let the driver decide.
+    // voice IDs don't overlap). Routed through the driver's
+    // `resolveVoiceIdentifier` so a nil / unknown pref falls back to the
+    // first loaded voice — otherwise a first-time ElevenLabs user with a
+    // valid key but no voice picked would hit "No voice selected" on play.
+    // SystemVoice ignores identifiers entirely.
     var currentVoiceIdentifier: String? {
         switch preferredSpeechBackend {
         case .avSpeech:
-            return preferredVoiceIdentifier
+            return speechController.resolveVoiceIdentifier(preferredVoiceIdentifier)
         case .systemVoice:
             return nil
         case .elevenLabs:
-            return preferredElevenLabsVoiceID
+            return speechController.resolveVoiceIdentifier(preferredElevenLabsVoiceID)
         }
     }
 
@@ -212,6 +218,7 @@ final class AppModel {
         sessionRefreshTask?.cancel()
         selectionRefreshTask?.cancel()
         selectedTranscriptRefreshTask?.cancel()
+        elevenLabsVoiceRefreshTask?.cancel()
     }
 
     func start() async {

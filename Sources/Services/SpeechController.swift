@@ -55,7 +55,11 @@ final class SpeechController {
     @ObservationIgnored private var playbackErrorDismissTask: Task<Void, Never>?
     @ObservationIgnored private let avSpeechDriver: any SpeechBackendDriver
     @ObservationIgnored private let systemVoiceDriver: any SpeechBackendDriver
-    @ObservationIgnored let elevenLabsDriver: ElevenLabsBackendDriver
+    // Not @ObservationIgnored: the ElevenLabs driver is @Observable, and
+    // `availableVoices` reads through this stored property. Keeping the
+    // property observable lets SwiftUI propagate voice-list refreshes
+    // (populated async after the API key is entered) to Settings' picker.
+    let elevenLabsDriver: ElevenLabsBackendDriver
     private var playbackState: PlaybackState = .idle
 
     var backend: SpeechBackend = .avSpeech {

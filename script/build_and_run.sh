@@ -4,7 +4,7 @@ set -euo pipefail
 MODE="${1:-run}"
 APP_NAME="ClaudeCodeVoice"
 BUNDLE_ID="local.claudecodevoice"
-MIN_SYSTEM_VERSION="14.0"
+MIN_SYSTEM_VERSION="26.0"
 
 # Sign with a stable identity so the Keychain ACL stays valid across
 # rebuilds. `swift build` produces adhoc-signed binaries whose code
