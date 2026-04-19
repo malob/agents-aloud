@@ -19,7 +19,7 @@ struct ClaudeStorageServiceTests {
         }
 
         let service = ClaudeStorageService(projectsRoot: projectsRoot)
-        let sessions = try await service.loadSessions(limit: 10)
+        let sessions = try await service.loadSessions()
         let session = try #require(sessions.first)
 
         let initialMessages = try await service.loadTranscript(for: session)
@@ -57,7 +57,7 @@ struct ClaudeStorageServiceTests {
         }
 
         let service = ClaudeStorageService(projectsRoot: projectsRoot)
-        let sessions = try await service.loadSessions(limit: 10)
+        let sessions = try await service.loadSessions()
         let session = try #require(sessions.first)
 
         _ = try await service.loadTranscript(for: session)
@@ -73,6 +73,50 @@ struct ClaudeStorageServiceTests {
         let updatedMessages = try await service.loadTranscript(for: session)
         #expect(updatedMessages.map(\.id) == ["user-A", "assistant-A", "user-B"])
         #expect(updatedMessages.last?.text == "Follow-up on the new branch.")
+    }
+
+    @Test
+    func loadSessionsFiltersBySinceAndHonorsMinimumFloor() async throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        // Write three transcripts at three different mtimes.
+        let now = Date()
+        let ancient = now.addingTimeInterval(-10 * 24 * 60 * 60)  // 10 days ago
+        let old = now.addingTimeInterval(-2 * 24 * 60 * 60)       // 2 days ago
+        let fresh = now.addingTimeInterval(-60 * 60)              // 1 hour ago
+
+        try writeTranscript(at: projectDirectory.appendingPathComponent("ancient.jsonl"), mtime: ancient)
+        try writeTranscript(at: projectDirectory.appendingPathComponent("old.jsonl"), mtime: old)
+        try writeTranscript(at: projectDirectory.appendingPathComponent("fresh.jsonl"), mtime: fresh)
+
+        let service = ClaudeStorageService(projectsRoot: projectsRoot)
+
+        // 24h window with no minimum floor → only the fresh one.
+        let twentyFourHoursAgo = now.addingTimeInterval(-24 * 60 * 60)
+        let recentOnly = try await service.loadSessions(since: twentyFourHoursAgo, minimumCount: 0)
+        #expect(recentOnly.count == 1)
+        #expect(recentOnly.first?.transcriptPath.hasSuffix("fresh.jsonl") == true)
+
+        // Same window, minimum floor of 2 → falls back to the two most recent
+        // (fresh + old), even though `old` is outside the window.
+        let withFloor = try await service.loadSessions(since: twentyFourHoursAgo, minimumCount: 2)
+        #expect(withFloor.count == 2)
+        let paths = withFloor.map(\.transcriptPath)
+        #expect(paths.contains(where: { $0.hasSuffix("fresh.jsonl") }))
+        #expect(paths.contains(where: { $0.hasSuffix("old.jsonl") }))
+        #expect(!paths.contains(where: { $0.hasSuffix("ancient.jsonl") }))
+    }
+
+    private func writeTranscript(at url: URL, mtime: Date) throws {
+        try initialTranscript.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
     }
 
     private var rewrittenTranscript: String {

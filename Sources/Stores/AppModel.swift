@@ -9,7 +9,10 @@ final class AppModel {
     private static let preferredSpeechBackendKey = "preferredSpeechBackend"
     private static let preferredVoiceIdentifierKey = "preferredVoiceIdentifier"
     private static let preferredSpeechRateKey = "preferredSpeechRate"
-    private static let sessionListLimit = 30
+    // How far back to show sessions in the sidebar. The session list is for
+    // recent work — anything older you can still dig up, but we don't try to
+    // keep weeks of history in the main view.
+    private static let sessionLookback: TimeInterval = 24 * 60 * 60  // 24 hours
 
     private let storageService: ClaudeStorageService
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "AppModel")
@@ -205,7 +208,9 @@ final class AppModel {
         let existingSessions = sessionsState.sessions
 
         do {
-            let loadedSessions = try await storageService.loadSessions(limit: Self.sessionListLimit)
+            let loadedSessions = try await storageService.loadSessions(
+                since: Date().addingTimeInterval(-Self.sessionLookback)
+            )
             if sessionsState != .loaded(loadedSessions) {
                 sessionsState = .loaded(loadedSessions)
             }

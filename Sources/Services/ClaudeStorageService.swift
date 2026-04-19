@@ -17,9 +17,19 @@ actor ClaudeStorageService {
         self.projectsRoot = projectsRoot
     }
 
-    func loadSessions(limit: Int = 200) throws -> [ClaudeSessionSummary] {
+    // Load sessions whose transcript files were modified after `since`.
+    // If fewer than `minimumCount` sessions qualify, also include enough of
+    // the next-most-recent sessions (regardless of age) to reach that floor —
+    // so the sidebar never looks empty just because the user hasn't used
+    // Claude Code in the last day.
+    //
+    // Tests pass `since: .distantPast` to load everything they wrote.
+    func loadSessions(
+        since: Date = .distantPast,
+        minimumCount: Int = 5
+    ) throws -> [ClaudeSessionSummary] {
         try PerfLog.time("Storage.loadSessions") {
-            try _loadSessions(limit: limit)
+            try _loadSessions(since: since, minimumCount: minimumCount)
         }
     }
 
@@ -31,15 +41,23 @@ actor ClaudeStorageService {
     // appears to be memory-allocator / Foundation contention when many threads
     // churn through JSON decoder instances, ISO8601DateFormatter construction,
     // and per-line small-object allocation simultaneously. Sequential
-    // cold-start is ~2s for 30 sessions totaling ~9MB of JSONL, which is fine.
+    // cold-start is fast enough now that we're only loading a 24-hour window
+    // (typically a handful of sessions) plus a floor for the empty-state case.
     // If this ever becomes a bottleneck the right fix is probably an
     // incremental / streaming parser that allocates less per line, not
     // parallelization.
-    private func _loadSessions(limit: Int) throws -> [ClaudeSessionSummary] {
-        let sortedCandidates = try enumerateCandidates()
-        var sessions: [ClaudeSessionSummary] = []
+    private func _loadSessions(since: Date, minimumCount: Int) throws -> [ClaudeSessionSummary] {
+        let sortedCandidates = try enumerateCandidates()  // sorted mtime desc
 
-        for candidate in sortedCandidates.prefix(limit) {
+        // Prefix-slice covering `since` + the minimum floor. Because the array
+        // is sorted descending by mtime, the selected candidates are always
+        // contiguous at the front.
+        let withinWindow = sortedCandidates.prefix(while: { $0.modifiedAt >= since }).count
+        let selectedCount = max(withinWindow, min(minimumCount, sortedCandidates.count))
+        let selected = Array(sortedCandidates.prefix(selectedCount))
+
+        var sessions: [ClaudeSessionSummary] = []
+        for candidate in selected {
             if let cached = sessionSummaryCache[candidate.url.path],
                cached.modifiedAt == candidate.modifiedAt {
                 sessions.append(cached.summary)
@@ -57,7 +75,7 @@ actor ClaudeStorageService {
             sessions.append(summary)
         }
 
-        let validPaths = Set(sortedCandidates.prefix(limit).map { $0.url.path })
+        let validPaths = Set(selected.map { $0.url.path })
         let validProjectPaths = Set(validPaths.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path })
         sessionSummaryCache = sessionSummaryCache.filter { validPaths.contains($0.key) }
         transcriptCache = transcriptCache.filter { validPaths.contains($0.key) }
