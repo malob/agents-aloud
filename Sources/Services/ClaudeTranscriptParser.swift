@@ -3,10 +3,15 @@ import OSLog
 
 enum ClaudeTranscriptParser {
     private static let logger = Logger(subsystem: "local.claudecodevoice", category: "TranscriptParser")
-    private static let decoder = JSONDecoder()
+
+    // NB: JSONDecoder is documented as NOT thread-safe. Each call creates its
+    // own instance so this parser is safe to call concurrently from multiple
+    // tasks (e.g. the parallel cold-start in ClaudeStorageService.loadSessions).
+    // Allocation is microseconds; the parse itself dominates runtime.
 
     static func parseTranscript(_ rawTranscript: String) -> [TranscriptMessage] {
         PerfLog.time("Parser.parseTranscript") {
+            let decoder = JSONDecoder()
             let dateParsers = ISO8601DateParsers()
             var messages: [TranscriptMessage] = []
             var droppedLineCount = 0
@@ -35,6 +40,7 @@ enum ClaudeTranscriptParser {
         modifiedAt: Date,
         projectMetadataIndex: ProjectMetadataIndex
     ) -> ClaudeSessionSummary? {
+        let decoder = JSONDecoder()
         let dateParsers = ISO8601DateParsers()
         var sessionID = fileURL.deletingPathExtension().lastPathComponent
         var customTitle: String?

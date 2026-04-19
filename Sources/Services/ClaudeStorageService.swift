@@ -23,14 +23,57 @@ actor ClaudeStorageService {
         }
     }
 
+    // NB: This runs sequentially by design. An earlier version fanned out the
+    // per-session summarize work over a `withThrowingTaskGroup` so cold-start
+    // could use multiple cores, but under measurement that REGRESSED wall time
+    // by 2-4x on Apple Silicon — each task's individual runtime ballooned
+    // 20-50x under any concurrency level (cap=1..10 all tested). Root cause
+    // appears to be memory-allocator / Foundation contention when many threads
+    // churn through JSON decoder instances, ISO8601DateFormatter construction,
+    // and per-line small-object allocation simultaneously. Sequential
+    // cold-start is ~2s for 30 sessions totaling ~9MB of JSONL, which is fine.
+    // If this ever becomes a bottleneck the right fix is probably an
+    // incremental / streaming parser that allocates less per line, not
+    // parallelization.
     private func _loadSessions(limit: Int) throws -> [ClaudeSessionSummary] {
+        let sortedCandidates = try enumerateCandidates()
+        var sessions: [ClaudeSessionSummary] = []
+
+        for candidate in sortedCandidates.prefix(limit) {
+            if let cached = sessionSummaryCache[candidate.url.path],
+               cached.modifiedAt == candidate.modifiedAt {
+                sessions.append(cached.summary)
+                continue
+            }
+            let projectURL = candidate.url.deletingLastPathComponent()
+            let metadata = try loadProjectMetadataIndex(for: projectURL)
+            guard let summary = try Self.summarize(candidate: candidate, metadata: metadata) else {
+                continue
+            }
+            sessionSummaryCache[candidate.url.path] = CachedSessionSummary(
+                modifiedAt: candidate.modifiedAt,
+                summary: summary
+            )
+            sessions.append(summary)
+        }
+
+        let validPaths = Set(sortedCandidates.prefix(limit).map { $0.url.path })
+        let validProjectPaths = Set(validPaths.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path })
+        sessionSummaryCache = sessionSummaryCache.filter { validPaths.contains($0.key) }
+        transcriptCache = transcriptCache.filter { validPaths.contains($0.key) }
+        projectMetadataCache = projectMetadataCache.filter { validProjectPaths.contains($0.key) }
+
+        return sessions
+    }
+
+    private func enumerateCandidates() throws -> [TranscriptCandidate] {
         let projectURLs = try fileManager.contentsOfDirectory(
             at: projectsRoot,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsSubdirectoryDescendants]
         )
 
-        var transcriptCandidates: [(url: URL, modifiedAt: Date)] = []
+        var transcriptCandidates: [TranscriptCandidate] = []
 
         for projectURL in projectURLs {
             do {
@@ -51,7 +94,10 @@ actor ClaudeStorageService {
                         continue
                     }
 
-                    transcriptCandidates.append((childURL, childValues.contentModificationDate ?? .distantPast))
+                    transcriptCandidates.append(TranscriptCandidate(
+                        url: childURL,
+                        modifiedAt: childValues.contentModificationDate ?? .distantPast
+                    ))
                 }
             } catch {
                 logger.error(
@@ -60,40 +106,24 @@ actor ClaudeStorageService {
             }
         }
 
-        let sortedCandidates = transcriptCandidates.sorted { lhs, rhs in
-            lhs.modifiedAt > rhs.modifiedAt
-        }
+        return transcriptCandidates.sorted { $0.modifiedAt > $1.modifiedAt }
+    }
 
-        var sessions: [ClaudeSessionSummary] = []
-
-        for candidate in sortedCandidates.prefix(limit) {
-            if let cachedSummary = sessionSummaryCache[candidate.url.path],
-               cachedSummary.modifiedAt == candidate.modifiedAt {
-                sessions.append(cachedSummary.summary)
-                continue
-            }
-
-            guard let sessionSummary = try summarizeTranscriptFile(
-                at: candidate.url,
-                modifiedAt: candidate.modifiedAt
-            ) else {
-                continue
-            }
-
-            sessionSummaryCache[candidate.url.path] = CachedSessionSummary(
-                modifiedAt: candidate.modifiedAt,
-                summary: sessionSummary
-            )
-            sessions.append(sessionSummary)
-        }
-
-        let validPaths = Set(sortedCandidates.prefix(limit).map { $0.url.path })
-        let validProjectPaths = Set(validPaths.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path })
-        sessionSummaryCache = sessionSummaryCache.filter { validPaths.contains($0.key) }
-        transcriptCache = transcriptCache.filter { validPaths.contains($0.key) }
-        projectMetadataCache = projectMetadataCache.filter { validProjectPaths.contains($0.key) }
-
-        return sessions
+    // Per-file summarize work. Pure function of its inputs — reads the file,
+    // calls the parser, returns a summary. Kept as a nonisolated static to
+    // keep the type honest (no actor state needed) and to allow test/diagnostic
+    // callers to invoke it directly.
+    private nonisolated static func summarize(
+        candidate: TranscriptCandidate,
+        metadata: ProjectMetadataIndex
+    ) throws -> ClaudeSessionSummary? {
+        let rawTranscript = try String(contentsOf: candidate.url, encoding: .utf8)
+        return ClaudeTranscriptParser.summarizeTranscript(
+            rawTranscript,
+            fileURL: candidate.url,
+            modifiedAt: candidate.modifiedAt,
+            projectMetadataIndex: metadata
+        )
     }
 
     func loadTranscript(for session: ClaudeSessionSummary) throws -> [TranscriptMessage] {
@@ -206,18 +236,6 @@ actor ClaudeStorageService {
         return (cached + appended).sorted { $0.timestamp < $1.timestamp }
     }
 
-    private func summarizeTranscriptFile(at fileURL: URL, modifiedAt: Date) throws -> ClaudeSessionSummary? {
-        let rawTranscript = try String(contentsOf: fileURL, encoding: .utf8)
-        let projectURL = fileURL.deletingLastPathComponent()
-        let projectMetadataIndex = try loadProjectMetadataIndex(for: projectURL)
-        return ClaudeTranscriptParser.summarizeTranscript(
-            rawTranscript,
-            fileURL: fileURL,
-            modifiedAt: modifiedAt,
-            projectMetadataIndex: projectMetadataIndex
-        )
-    }
-
     private func loadProjectMetadataIndex(for projectURL: URL) throws -> ProjectMetadataIndex {
         let sessionCacheURL = projectURL.appendingPathComponent(".session_cache.json", isDirectory: false)
         let sessionsIndexURL = projectURL.appendingPathComponent("sessions-index.json", isDirectory: false)
@@ -288,6 +306,11 @@ actor ClaudeStorageService {
 
         return try? JSONDecoder().decode(T.self, from: data)
     }
+}
+
+private struct TranscriptCandidate: Sendable {
+    let url: URL
+    let modifiedAt: Date
 }
 
 private struct CachedSessionSummary {
