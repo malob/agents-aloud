@@ -21,14 +21,19 @@ protocol ElevenLabsClientType: Sendable {
     func listVoices() async throws -> [ElevenLabsVoice]
 }
 
-// HTTP client for ElevenLabs TTS. PCM-only output (`pcm_44100`) because
-// that's what StreamingAudioPlayer consumes directly. If we ever need
-// MP3 output (non-streaming path, voice preview, etc.) we can add it
-// as a parameter; deliberately not premature.
+// HTTP client for ElevenLabs TTS. PCM-only output because that's what
+// StreamingAudioPlayer consumes directly.
+//
+// We use `pcm_24000` (24kHz, 16-bit mono) rather than 44.1kHz because
+// 44.1kHz PCM is gated behind Pro+ tiers on ElevenLabs; 24kHz is
+// available on Free/Starter/Creator and is more than sufficient for
+// speech (human voice tops out ~8kHz, and 24kHz sampling gives us
+// 12kHz Nyquist headroom — standard for voice-assistant TTS).
+// See: https://help.elevenlabs.io/hc/en-us/articles/15754340124305
 struct ElevenLabsClient: ElevenLabsClientType {
     static let defaultBaseURL = URL(string: "https://api.elevenlabs.io")!
-    static let pcmOutputFormat = "pcm_44100"
-    static let pcmSampleRate: Double = 44_100
+    static let pcmOutputFormat = "pcm_24000"
+    static let pcmSampleRate: Double = 24_000
     static let defaultChunkSize = 4096
     static let requestTimeout: TimeInterval = 30
 
@@ -56,15 +61,19 @@ struct ElevenLabsClient: ElevenLabsClientType {
             case .invalidResponse:
                 return "ElevenLabs returned an invalid response."
             case let .http(status, message):
+                let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+                let suffix = trimmed.isEmpty ? "" : " \(trimmed)"
                 switch status {
-                case 401, 403:
-                    return "ElevenLabs rejected the API key (\(status))."
+                case 401:
+                    return "ElevenLabs rejected the API key (\(status)).\(suffix)"
+                case 403:
+                    return "ElevenLabs API key missing required permission (\(status)).\(suffix)"
                 case 404:
-                    return "ElevenLabs voice or model not found (\(status))."
+                    return "ElevenLabs voice or model not found (\(status)).\(suffix)"
                 case 429:
-                    return "ElevenLabs rate limit hit. \(message)"
+                    return "ElevenLabs rate limit hit.\(suffix)"
                 default:
-                    return "ElevenLabs request failed (\(status)). \(message)"
+                    return "ElevenLabs request failed (\(status)).\(suffix)"
                 }
             case let .nonAudioResponse(contentType, body):
                 return "ElevenLabs returned non-audio content (\(contentType)). \(body)"

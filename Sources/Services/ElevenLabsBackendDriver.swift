@@ -182,12 +182,13 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
     }
 
     // Maps our 0.2-0.6 speech rate slider (AVSpeech-calibrated, middle ~=
-    // AVSpeechUtteranceDefaultSpeechRate) onto ElevenLabs' 0.5-2.0 speed
-    // scale. Linear; slider at rest feels like "slightly quick" per
-    // ElevenLabs conventions, which testing has found preferable.
+    // AVSpeechUtteranceDefaultSpeechRate) onto ElevenLabs' 0.7-1.2 speed
+    // scale. The API rejects anything outside that range with a 400.
+    // Linear: slider min -> 0.7 (slowest allowed), middle (0.4) -> 0.95
+    // (just under 1.0, a hair slower than default), max -> 1.2.
     nonisolated static func mapRateToSpeed(_ rate: Float) -> Double {
         let t = (Double(rate) - 0.2) / (0.6 - 0.2)
-        return max(0.5, min(2.0, 0.5 + t * 1.5))
+        return max(0.7, min(1.2, 0.7 + t * 0.5))
     }
 }
 

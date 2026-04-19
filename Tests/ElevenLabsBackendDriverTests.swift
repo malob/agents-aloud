@@ -121,7 +121,7 @@ struct ElevenLabsBackendDriverTests {
             messageID: "m",
             text: "hello",
             voiceIdentifier: "v1",
-            rate: 0.4  // middle of AVSpeech range -> ~1.25x ElevenLabs speed
+            rate: 0.4  // middle of AVSpeech range -> ~0.95 ElevenLabs speed
         )
 
         try driver.start(request: request, eventHandler: recorder.handler)
@@ -131,8 +131,8 @@ struct ElevenLabsBackendDriverTests {
         #expect(client.synthesizeCalls[0].voiceID == "v1")
         #expect(client.synthesizeCalls[0].text == "hello")
         #expect(client.synthesizeCalls[0].modelID == ElevenLabsBackendDriver.defaultModelID)
-        // 0.4 maps to 1.25 per the documented linear mapping
-        #expect(abs(client.synthesizeCalls[0].speed - 1.25) < 0.001)
+        // 0.4 maps to 0.95 per the documented linear mapping
+        #expect(abs(client.synthesizeCalls[0].speed - 0.95) < 0.001)
 
         driver.stop()
     }
@@ -235,14 +235,14 @@ struct ElevenLabsBackendDriverTests {
 
     @Test
     func rateMappingIsLinearOverSliderRange() {
-        // At 0.2 (slider min) -> speed 0.5
-        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(0.2) - 0.5) < 0.001)
-        // At 0.4 (middle) -> speed 1.25
-        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(0.4) - 1.25) < 0.001)
-        // At 0.6 (slider max) -> speed 2.0
-        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(0.6) - 2.0) < 0.001)
+        // At 0.2 (slider min) -> speed 0.7 (ElevenLabs' slowest allowed)
+        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(0.2) - 0.7) < 0.001)
+        // At 0.4 (middle) -> speed 0.95
+        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(0.4) - 0.95) < 0.001)
+        // At 0.6 (slider max) -> speed 1.2 (ElevenLabs' fastest allowed)
+        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(0.6) - 1.2) < 0.001)
         // Out-of-range clamps
-        #expect(ElevenLabsBackendDriver.mapRateToSpeed(0.0) == 0.5)
-        #expect(ElevenLabsBackendDriver.mapRateToSpeed(1.0) == 2.0)
+        #expect(ElevenLabsBackendDriver.mapRateToSpeed(0.0) == 0.7)
+        #expect(ElevenLabsBackendDriver.mapRateToSpeed(1.0) == 1.2)
     }
 }
