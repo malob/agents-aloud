@@ -9,6 +9,12 @@ struct ContentView: View {
             SidebarView(model: model)
         } detail: {
             if let session = model.selectedSession {
+                // `.id(session.id)` is load-bearing: it forces SwiftUI to tear
+                // down and rebuild TranscriptDetailView when the user switches
+                // sessions, which resets the view's scroll @State (auto-pin,
+                // userSetAtBottom, etc.). Without it, scroll state from the
+                // previous session leaks through and the detail view can mount
+                // at the wrong position.
                 TranscriptDetailView(model: model, session: session)
                     .id(session.id)
             } else if case .loading = model.sessionsState {

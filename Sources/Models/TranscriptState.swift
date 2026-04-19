@@ -2,6 +2,11 @@ import Foundation
 
 enum TranscriptState: Equatable {
     case none
+    // `.loading` and `.failed` carry the last-known `messages` on purpose:
+    // the file watcher fires a refresh on every JSONL append, and a transient
+    // read error would otherwise wipe the visible transcript to empty, then
+    // repopulate when the retry succeeds. Keeping the prior payload through
+    // both transitions prevents that "disappears then comes back" flicker.
     case loading(sessionID: ClaudeSessionSummary.ID, messages: [TranscriptMessage])
     case loaded(sessionID: ClaudeSessionSummary.ID, messages: [TranscriptMessage])
     case failed(sessionID: ClaudeSessionSummary.ID, messages: [TranscriptMessage], message: String)

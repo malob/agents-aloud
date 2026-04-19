@@ -1,6 +1,11 @@
 import AppKit
 import SwiftUI
 
+// Equatable + `.equatable()` at the call site lets SwiftUI skip re-rendering
+// unchanged rows when the parent invalidates — required for smooth scroll
+// perf with long transcripts. The custom `==` deliberately ignores `onPlay`
+// (closures aren't Equatable and its identity changes on every parent body
+// eval); message identity alone determines whether the row needs to redraw.
 @MainActor
 struct MessageRowView: View, Equatable {
     let message: TranscriptMessage
