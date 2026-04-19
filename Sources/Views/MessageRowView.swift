@@ -5,14 +5,16 @@ import SwiftUI
 // unchanged rows when the parent invalidates — required for smooth scroll
 // perf with long transcripts. The custom `==` deliberately ignores `onPlay`
 // (closures aren't Equatable and its identity changes on every parent body
-// eval); message identity alone determines whether the row needs to redraw.
+// eval); message identity + active state determine whether the row needs to
+// redraw.
 @MainActor
 struct MessageRowView: View, Equatable {
     let message: TranscriptMessage
+    let isActive: Bool
     let onPlay: () -> Void
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.message == rhs.message
+        lhs.message == rhs.message && lhs.isActive == rhs.isActive
     }
 
     private var roleAppearance: RoleAppearance {
@@ -34,12 +36,17 @@ struct MessageRowView: View, Equatable {
 
                 if message.isAssistant {
                     Button(action: onPlay) {
-                        Label("Speak", systemImage: "speaker.wave.2.fill")
-                            .font(.caption.weight(.medium))
+                        Label(
+                            isActive ? "Speaking" : "Speak",
+                            systemImage: isActive ? "speaker.wave.3.fill" : "speaker.wave.2.fill"
+                        )
+                        .font(.caption.weight(.medium))
+                        .symbolEffect(.variableColor.iterative.reversing, isActive: isActive)
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
-                    .help("Speak this assistant message aloud.")
+                    .foregroundStyle(isActive ? Color.accentColor : Color.accentColor.opacity(0.8))
+                    .help(isActive ? "This message is being spoken aloud." : "Speak this assistant message aloud.")
                 }
             }
 
@@ -50,6 +57,13 @@ struct MessageRowView: View, Equatable {
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(roleAppearance.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    if isActive {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.accentColor.opacity(0.55), lineWidth: 1.5)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.2), value: isActive)
                 .contextMenu {
                     Button("Copy Message") {
                         copyMessageText()

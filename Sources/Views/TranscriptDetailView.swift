@@ -56,9 +56,11 @@ struct TranscriptDetailView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(transcriptMessages) { message in
-                            MessageRowView(message: message) {
-                                model.playMessage(message)
-                            }
+                            MessageRowView(
+                                message: message,
+                                isActive: model.speechController.currentMessageID == message.id,
+                                onPlay: { model.playMessage(message) }
+                            )
                             .equatable()
                             .id(message.id)
                             .frame(maxWidth: .infinity, alignment: .leading)
