@@ -110,17 +110,28 @@ actor ClaudeStorageService {
                 }
 
                 // Incremental path: Claude Code writes JSONL append-only, so when
-                // the file only grew we can seek past the already-parsed prefix
-                // and parse just the new tail. Brings watcher-triggered refresh
-                // from ~280ms (full file parse) down to a few ms for typical
-                // single-message appends. See `tailMessages(_:fromOffset:)` for
-                // the correctness constraints (clean line boundaries, UTF-8).
+                // the file only grew AND the bytes we already cached are still
+                // intact we can seek past them and parse just the new tail.
+                // Brings watcher-triggered refresh from ~280ms (full file parse)
+                // down to a few ms for typical single-message appends.
+                //
+                // The tail-signature check below guards against rewind / edit /
+                // session-fork scenarios where the prefix may have been
+                // rewritten even though the new fileSize is larger than the
+                // old. If the last ~128 cached bytes no longer match, something
+                // modified content we had already parsed → fall back to a full
+                // re-parse. See ClaudeStorageServiceTests for the forced
+                // failure mode.
                 if fileSize > cached.fileSize,
+                   let currentSignature = try? readTailSignature(transcriptURL, upTo: cached.fileSize),
+                   currentSignature == cached.tailSignature,
                    let appended = try? tailMessages(transcriptURL, fromOffset: cached.fileSize) {
                     let merged = mergeInTimestampOrder(cached.messages, appended)
+                    let newSignature = (try? readTailSignature(transcriptURL, upTo: fileSize)) ?? Data()
                     transcriptCache[session.transcriptPath] = CachedTranscript(
                         modifiedAt: modifiedAt,
                         fileSize: fileSize,
+                        tailSignature: newSignature,
                         messages: merged
                     )
                     PerfLog.mark("Storage.loadTranscript incremental appended=\(appended.count)")
@@ -128,14 +139,17 @@ actor ClaudeStorageService {
                 }
             }
 
-            // Cold read, or the file shrank / changed in-place: full parse.
+            // Cold read, cache miss, file shrank, prefix mutated, or in-place
+            // edit: full parse.
             let rawTranscript = try PerfLog.time("Storage.loadTranscript.read") {
                 try String(contentsOf: transcriptURL, encoding: .utf8)
             }
             let sortedMessages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
+            let signature = (try? readTailSignature(transcriptURL, upTo: fileSize)) ?? Data()
             transcriptCache[session.transcriptPath] = CachedTranscript(
                 modifiedAt: modifiedAt,
                 fileSize: fileSize,
+                tailSignature: signature,
                 messages: sortedMessages
             )
             return sortedMessages
@@ -159,6 +173,22 @@ actor ClaudeStorageService {
         }
         return ClaudeTranscriptParser.parseTranscript(tail)
     }
+
+    // Read up to the last `Self.tailSignatureLength` bytes of the file,
+    // ending at byte `size`. Used as a cheap fingerprint of the already-parsed
+    // prefix: if the bytes at [size-N, size) change between loads, the file
+    // was mutated (edited / rewound / rewritten), not just appended to.
+    private func readTailSignature(_ url: URL, upTo size: Int) throws -> Data {
+        guard size > 0 else { return Data() }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let windowStart = max(0, size - Self.tailSignatureLength)
+        try handle.seek(toOffset: UInt64(windowStart))
+        let count = size - windowStart
+        return try handle.read(upToCount: count) ?? Data()
+    }
+
+    private static let tailSignatureLength = 128
 
     // Fast path: if the tail's earliest message is at-or-after the cached
     // tail, the merged list is already sorted. Only re-sort when we detect
@@ -268,6 +298,7 @@ private struct CachedSessionSummary {
 private struct CachedTranscript {
     let modifiedAt: Date
     let fileSize: Int
+    let tailSignature: Data
     let messages: [TranscriptMessage]
 }
 
