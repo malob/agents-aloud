@@ -31,6 +31,7 @@ struct ContentView: View {
             }
         }
         .navigationTitle("Claude Code Voice")
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .toolbar {
             if model.selectedSession != nil {
                 ToolbarItemGroup(placement: .navigation) {
