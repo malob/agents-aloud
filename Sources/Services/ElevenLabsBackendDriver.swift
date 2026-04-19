@@ -21,7 +21,10 @@ import OSLog
 final class ElevenLabsBackendDriver: SpeechBackendDriver {
     static let defaultModelID = "eleven_turbo_v2_5"
 
-    private let client: ElevenLabsClientType
+    // `client` is a var because the API key lives in Keychain / AppModel;
+    // when the user enters (or changes) their key, AppModel hands us a
+    // fresh client configured with the new key.
+    private var client: ElevenLabsClientType
     private let player: StreamingAudioPlayer
     private let modelID: String
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "ElevenLabsDriver")
@@ -74,6 +77,15 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
             logger.error("Failed to list ElevenLabs voices: \(error.localizedDescription, privacy: .public)")
             availableVoices = []
         }
+    }
+
+    // Replace the underlying client — cancels any in-flight playback and
+    // invalidates the cached voice list. Call this when the API key changes.
+    // Tests also use this to swap a new fake client in mid-scenario.
+    func replaceClient(_ client: ElevenLabsClientType) {
+        stop()
+        self.client = client
+        availableVoices = []
     }
 
     func resolveVoiceIdentifier(_ identifier: String?) -> String? {

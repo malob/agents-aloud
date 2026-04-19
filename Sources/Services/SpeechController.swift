@@ -55,6 +55,7 @@ final class SpeechController {
     @ObservationIgnored private var playbackErrorDismissTask: Task<Void, Never>?
     @ObservationIgnored private let avSpeechDriver: any SpeechBackendDriver
     @ObservationIgnored private let systemVoiceDriver: any SpeechBackendDriver
+    @ObservationIgnored let elevenLabsDriver: ElevenLabsBackendDriver
     private var playbackState: PlaybackState = .idle
 
     var backend: SpeechBackend = .avSpeech {
@@ -71,10 +72,14 @@ final class SpeechController {
 
     init(
         avSpeechDriver: any SpeechBackendDriver = AVSpeechBackendDriver(),
-        systemVoiceDriver: any SpeechBackendDriver = SystemVoiceBackendDriver()
+        systemVoiceDriver: any SpeechBackendDriver = SystemVoiceBackendDriver(),
+        elevenLabsDriver: ElevenLabsBackendDriver = ElevenLabsBackendDriver(
+            client: ElevenLabsClient(apiKey: "")
+        )
     ) {
         self.avSpeechDriver = avSpeechDriver
         self.systemVoiceDriver = systemVoiceDriver
+        self.elevenLabsDriver = elevenLabsDriver
     }
 
     deinit {
@@ -93,8 +98,12 @@ final class SpeechController {
         playbackState.currentMessageID
     }
 
+    // Voice list is backend-scoped — AVSpeech voices and ElevenLabs voices
+    // are disjoint ID spaces. Callers read this reactively (the Settings
+    // picker binds to it), so whenever `backend` changes this returns the
+    // right set automatically.
     var availableVoices: [SpeechVoiceOption] {
-        avSpeechDriver.availableVoices
+        driver(for: backend).availableVoices
     }
 
     var systemVoiceWordsPerMinute: Int {
@@ -102,13 +111,13 @@ final class SpeechController {
     }
 
     var defaultVoiceIdentifier: String? {
-        avSpeechDriver.resolveVoiceIdentifier(nil)
+        driver(for: backend).resolveVoiceIdentifier(nil)
     }
 
     var playbackError: PlaybackError?
 
     func resolveVoiceIdentifier(_ identifier: String?) -> String? {
-        avSpeechDriver.resolveVoiceIdentifier(identifier)
+        driver(for: backend).resolveVoiceIdentifier(identifier)
     }
 
     func playNow(text: String, messageID: String, voiceIdentifier: String?, rate: Float) {
@@ -213,6 +222,8 @@ final class SpeechController {
             return avSpeechDriver
         case .systemVoice:
             return systemVoiceDriver
+        case .elevenLabs:
+            return elevenLabsDriver
         }
     }
 
