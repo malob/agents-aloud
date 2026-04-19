@@ -12,6 +12,7 @@ struct MessageRowView: View, Equatable {
     let message: TranscriptMessage
     let isActive: Bool
     let onPlay: () -> Void
+    let onPlayFromHere: () -> Void
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.message == rhs.message && lhs.isActive == rhs.isActive
@@ -67,6 +68,9 @@ struct MessageRowView: View, Equatable {
                 .contextMenu {
                     Button("Copy Message") {
                         copyMessageText()
+                    }
+                    Button("Speak from Here", systemImage: "speaker.wave.2.fill") {
+                        onPlayFromHere()
                     }
                 }
         }

@@ -59,7 +59,8 @@ struct TranscriptDetailView: View {
                             MessageRowView(
                                 message: message,
                                 isActive: model.speechController.currentMessageID == message.id,
-                                onPlay: { model.playMessage(message) }
+                                onPlay: { model.playMessage(message) },
+                                onPlayFromHere: { model.playMessagesFromHere(message) }
                             )
                             .equatable()
                             .id(message.id)

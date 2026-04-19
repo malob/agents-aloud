@@ -200,6 +200,33 @@ final class AppModel {
         )
     }
 
+    // Start playback at `message` (or the first assistant message after it, if
+    // `message` is a user prompt) and enqueue every subsequent assistant
+    // message in the same session. Intended for "read from here onward" UX.
+    // Does nothing if there are no speakable assistant messages at/after this
+    // point.
+    func playMessagesFromHere(_ message: TranscriptMessage) {
+        let messages = transcriptState.messages
+        guard let startIndex = messages.firstIndex(where: { $0.id == message.id }) else { return }
+        let fromHere = messages[startIndex...].filter(\.isAssistant)
+        guard let first = fromHere.first else { return }
+
+        speechController.playNow(
+            text: first.text,
+            messageID: first.id,
+            voiceIdentifier: preferredVoiceIdentifier,
+            rate: Float(preferredSpeechRate)
+        )
+        for next in fromHere.dropFirst() {
+            speechController.enqueue(
+                text: next.text,
+                messageID: next.id,
+                voiceIdentifier: preferredVoiceIdentifier,
+                rate: Float(preferredSpeechRate)
+            )
+        }
+    }
+
     func dismissErrorMessage() {
         errorMessage = nil
     }
