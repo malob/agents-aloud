@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Observation
 import OSLog
 
 // SpeechBackendDriver over ElevenLabs' streaming TTS API. Architecture:
@@ -17,23 +18,28 @@ import OSLog
 // gives the UI an immediate "speaking" signal on button-click; the
 // ~200-500ms gap before first byte plays is the inherent cost of a
 // network TTS backend.
+// @Observable so `availableVoices` changes (populated async via
+// `refreshVoices()` after an API key is entered) trigger SwiftUI
+// re-renders wherever they're read through the `SpeechController`
+// facade.
 @MainActor
+@Observable
 final class ElevenLabsBackendDriver: SpeechBackendDriver {
     static let defaultModelID = "eleven_turbo_v2_5"
 
     // `client` is a var because the API key lives in Keychain / AppModel;
     // when the user enters (or changes) their key, AppModel hands us a
     // fresh client configured with the new key.
-    private var client: ElevenLabsClientType
-    private let player: StreamingAudioPlayer
-    private let modelID: String
-    private let logger = Logger(subsystem: "local.claudecodevoice", category: "ElevenLabsDriver")
+    @ObservationIgnored private var client: ElevenLabsClientType
+    @ObservationIgnored private let player: StreamingAudioPlayer
+    @ObservationIgnored private let modelID: String
+    @ObservationIgnored private let logger = Logger(subsystem: "local.claudecodevoice", category: "ElevenLabsDriver")
 
     private(set) var availableVoices: [SpeechVoiceOption] = []
     var wordsPerMinute: Int? { nil }
 
-    private var currentRequest: SpeechRequest?
-    private var currentEventHandler: ((SpeechDriverEvent) -> Void)?
+    @ObservationIgnored private var currentRequest: SpeechRequest?
+    @ObservationIgnored private var currentEventHandler: ((SpeechDriverEvent) -> Void)?
 
     enum DriverError: LocalizedError, Equatable {
         case noVoiceSelected

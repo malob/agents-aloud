@@ -28,7 +28,7 @@ struct KeychainStorage {
     }
 
     func get(_ account: String) throws -> String? {
-        var query: [CFString: Any] = [
+        let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrAccount: account,
@@ -39,7 +39,6 @@ struct KeychainStorage {
         let status = withUnsafeMutablePointer(to: &result) {
             SecItemCopyMatching(query as CFDictionary, $0)
         }
-        _ = query
         switch status {
         case errSecSuccess:
             guard let data = result as? Data, let string = String(data: data, encoding: .utf8) else {
