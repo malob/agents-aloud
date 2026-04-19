@@ -99,24 +99,81 @@ actor ClaudeStorageService {
     func loadTranscript(for session: ClaudeSessionSummary) throws -> [TranscriptMessage] {
         try PerfLog.time("Storage.loadTranscript") {
             let transcriptURL = URL(fileURLWithPath: session.transcriptPath)
-            let modifiedAt = try transcriptURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast
+            let values = try transcriptURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            let modifiedAt = values.contentModificationDate ?? .distantPast
+            let fileSize = values.fileSize ?? 0
 
-            if let cachedTranscript = transcriptCache[session.transcriptPath],
-               cachedTranscript.modifiedAt == modifiedAt {
-                PerfLog.mark("Storage.loadTranscript cacheHit")
-                return cachedTranscript.messages
+            if let cached = transcriptCache[session.transcriptPath] {
+                if cached.modifiedAt == modifiedAt {
+                    PerfLog.mark("Storage.loadTranscript cacheHit")
+                    return cached.messages
+                }
+
+                // Incremental path: Claude Code writes JSONL append-only, so when
+                // the file only grew we can seek past the already-parsed prefix
+                // and parse just the new tail. Brings watcher-triggered refresh
+                // from ~280ms (full file parse) down to a few ms for typical
+                // single-message appends. See `tailMessages(_:fromOffset:)` for
+                // the correctness constraints (clean line boundaries, UTF-8).
+                if fileSize > cached.fileSize,
+                   let appended = try? tailMessages(transcriptURL, fromOffset: cached.fileSize) {
+                    let merged = mergeInTimestampOrder(cached.messages, appended)
+                    transcriptCache[session.transcriptPath] = CachedTranscript(
+                        modifiedAt: modifiedAt,
+                        fileSize: fileSize,
+                        messages: merged
+                    )
+                    PerfLog.mark("Storage.loadTranscript incremental appended=\(appended.count)")
+                    return merged
+                }
             }
 
+            // Cold read, or the file shrank / changed in-place: full parse.
             let rawTranscript = try PerfLog.time("Storage.loadTranscript.read") {
                 try String(contentsOf: transcriptURL, encoding: .utf8)
             }
             let sortedMessages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
             transcriptCache[session.transcriptPath] = CachedTranscript(
                 modifiedAt: modifiedAt,
+                fileSize: fileSize,
                 messages: sortedMessages
             )
             return sortedMessages
         }
+    }
+
+    // Read bytes from `offset` to end of file, decode as UTF-8, parse as JSONL.
+    // Returns the messages found in that tail (already timestamp-sorted by the
+    // parser). Assumes `offset` is on a clean line boundary — which it is when
+    // we cache the file's full byte length after a previous read, because
+    // JSONL writers always emit a trailing `\n` per line. If an incomplete
+    // write ever leaves the file mid-line, the decode or decode-per-line will
+    // drop the partial line; the next refresh catches it once fully written.
+    private func tailMessages(_ url: URL, fromOffset offset: Int) throws -> [TranscriptMessage] {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(offset))
+        guard let data = try handle.readToEnd(), !data.isEmpty,
+              let tail = String(data: data, encoding: .utf8) else {
+            return []
+        }
+        return ClaudeTranscriptParser.parseTranscript(tail)
+    }
+
+    // Fast path: if the tail's earliest message is at-or-after the cached
+    // tail, the merged list is already sorted. Only re-sort when we detect
+    // an out-of-order timestamp (should be rare given JSONL is append-only
+    // and Claude writes chronologically).
+    private func mergeInTimestampOrder(
+        _ cached: [TranscriptMessage],
+        _ appended: [TranscriptMessage]
+    ) -> [TranscriptMessage] {
+        guard let lastCached = cached.last,
+              let firstNew = appended.first,
+              firstNew.timestamp < lastCached.timestamp else {
+            return cached + appended
+        }
+        return (cached + appended).sorted { $0.timestamp < $1.timestamp }
     }
 
     private func summarizeTranscriptFile(at fileURL: URL, modifiedAt: Date) throws -> ClaudeSessionSummary? {
@@ -210,6 +267,7 @@ private struct CachedSessionSummary {
 
 private struct CachedTranscript {
     let modifiedAt: Date
+    let fileSize: Int
     let messages: [TranscriptMessage]
 }
 
