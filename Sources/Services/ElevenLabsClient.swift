@@ -4,6 +4,12 @@ import OSLog
 // Testable surface the driver depends on. Let the real client hit the
 // network; let tests inject a fake that emits scripted stream chunks
 // and voice lists.
+//
+// Sendable is required because `listVoices()` is async and may hop
+// executors; the compiler needs to know the client reference is safe
+// to cross the isolation boundary. Fakes with mutable test-scripting
+// state can opt into `@unchecked Sendable` with the understanding that
+// they're accessed from a single actor context within a test.
 protocol ElevenLabsClientType: Sendable {
     func streamSynthesize(
         voiceID: String,
