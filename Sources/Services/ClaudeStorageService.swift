@@ -317,12 +317,18 @@ actor ClaudeStorageService {
             return nil
         }
 
-        let rawValue = try String(contentsOf: fileURL, encoding: .utf8)
-        guard let data = rawValue.data(using: .utf8) else {
+        let data = try Data(contentsOf: fileURL)
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            // Log decode failures loudly so Claude Code schema drift
+            // surfaces in Console. Returning nil keeps behavior graceful
+            // (falls back to first-prompt summary) but never silent.
+            logger.error(
+                "Metadata decode failed for \(fileURL.lastPathComponent, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
             return nil
         }
-
-        return try? JSONDecoder().decode(T.self, from: data)
     }
 }
 

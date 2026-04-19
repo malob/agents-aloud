@@ -131,12 +131,17 @@ final class AppModel {
         let storedRate = userDefaults.double(forKey: Self.preferredSpeechRateKey)
         preferredSpeechRate = storedRate == 0 ? Double(AVSpeechUtteranceDefaultSpeechRate) : storedRate
 
-        // ElevenLabs prefs. API key from Keychain; swallow-log on missing
-        // keychain access (e.g. sandboxed test run) so init still succeeds.
+        // ElevenLabs prefs. Log-then-swallow keychain read failures so init
+        // still succeeds (e.g. sandboxed test run, user denied ACL). Without
+        // the log, a user whose key silently "disappears" across launches
+        // has no trace to debug from.
         let storedKey: String?
         do {
             storedKey = try keychain.get(Self.elevenLabsAPIKeyAccount)
         } catch {
+            logger.error(
+                "Failed to load ElevenLabs API key from Keychain: \(error.localizedDescription, privacy: .public)"
+            )
             storedKey = nil
         }
         elevenLabsAPIKey = storedKey

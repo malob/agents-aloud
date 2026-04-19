@@ -44,11 +44,17 @@ struct AppModelTests {
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
+        // Pass a test-scoped Keychain service so AppModel.init doesn't
+        // read from the real app's Keychain item. Without this, every
+        // `swift test` run prompts "swiftpm-testing-helper wants to
+        // access local.claudecodevoice" because the test binary's
+        // identity doesn't match the real app's ACL.
         let model = AppModel(
             storageService: ClaudeStorageService(projectsRoot: projectsRoot),
             speechController: SpeechController(),
             userDefaults: userDefaults,
-            selectedTranscriptWatcher: watcher
+            selectedTranscriptWatcher: watcher,
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
         )
 
         await model.start()

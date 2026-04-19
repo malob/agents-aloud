@@ -120,7 +120,13 @@ struct ElevenLabsClient: ElevenLabsClientType {
                     var buffer = Data()
                     buffer.reserveCapacity(Self.defaultChunkSize)
                     for try await byte in bytes {
-                        if Task.isCancelled { break }
+                        if Task.isCancelled {
+                            // Emit a cancellation error rather than a clean
+                            // finish — downstream consumers (StreamingAudioPlayer)
+                            // would otherwise fire `onFinish` on a truncated
+                            // stream, playing partial audio as if complete.
+                            throw CancellationError()
+                        }
                         buffer.append(byte)
                         if buffer.count >= Self.defaultChunkSize {
                             continuation.yield(buffer)

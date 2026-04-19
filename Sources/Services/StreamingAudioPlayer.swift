@@ -193,12 +193,20 @@ final class StreamingAudioPlayer {
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
             return nil
         }
-        buffer.frameLength = frameCount
-        data.withUnsafeBytes { raw in
+        // Copy first, then publish frameLength. If either pointer is nil
+        // (int16ChannelData can be nil for e.g. non-interleaved formats or
+        // zero-frame buffers), return nil so the caller drops the chunk
+        // rather than schedule a buffer full of uninitialized memory.
+        let copied = data.withUnsafeBytes { raw -> Bool in
             guard let src = raw.baseAddress?.assumingMemoryBound(to: Int16.self),
-                  let dst = buffer.int16ChannelData?.pointee else { return }
+                  let dst = buffer.int16ChannelData?.pointee else {
+                return false
+            }
             dst.update(from: src, count: Int(frameCount))
+            return true
         }
+        guard copied else { return nil }
+        buffer.frameLength = frameCount
         return buffer
     }
 }
