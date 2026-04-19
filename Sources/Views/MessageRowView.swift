@@ -14,12 +14,21 @@ struct MessageRowView: View, Equatable {
     let onPlay: () -> Void
     let onPlayFromHere: () -> Void
 
+    @State private var isHoveringSpeakButton = false
+    @State private var isOptionHeld = false
+
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.message == rhs.message && lhs.isActive == rhs.isActive
     }
 
     private var roleAppearance: RoleAppearance {
         RoleAppearance(role: message.role)
+    }
+
+    // When the user hovers the Speak button with Option held, the button
+    // offers the batch action instead of single-message playback.
+    private var useFromHereAction: Bool {
+        isHoveringSpeakButton && isOptionHeld
     }
 
     var body: some View {
@@ -36,9 +45,17 @@ struct MessageRowView: View, Equatable {
                 Spacer(minLength: 8)
 
                 if message.isAssistant {
-                    Button(action: onPlay) {
+                    Button {
+                        if useFromHereAction {
+                            onPlayFromHere()
+                        } else {
+                            onPlay()
+                        }
+                    } label: {
                         Label(
-                            isActive ? "Speaking" : "Speak",
+                            useFromHereAction ? "Speak from Here"
+                                : isActive ? "Speaking"
+                                : "Speak",
                             systemImage: isActive ? "speaker.wave.3.fill" : "speaker.wave.2.fill"
                         )
                         .font(.caption.weight(.medium))
@@ -47,7 +64,23 @@ struct MessageRowView: View, Equatable {
                     .buttonStyle(.borderless)
                     .controlSize(.small)
                     .foregroundStyle(isActive ? Color.accentColor : Color.accentColor.opacity(0.8))
-                    .help(isActive ? "This message is being spoken aloud." : "Speak this assistant message aloud.")
+                    .help(
+                        useFromHereAction ? "Speak this message and every message after."
+                            : isActive ? "This message is being spoken aloud."
+                            : "Speak this assistant message aloud. Hold ⌥ for ‘from here’."
+                    )
+                    .onHover { hovering in
+                        isHoveringSpeakButton = hovering
+                        if hovering {
+                            // Snapshot the modifier state at hover-start so the
+                            // affordance is correct even if Option was held
+                            // before the pointer entered the button.
+                            isOptionHeld = NSEvent.modifierFlags.contains(.option)
+                        }
+                    }
+                    .onModifierKeysChanged(mask: .option) { _, new in
+                        isOptionHeld = new.contains(.option)
+                    }
                 }
             }
 
