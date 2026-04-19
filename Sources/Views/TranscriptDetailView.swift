@@ -3,9 +3,8 @@ import SwiftUI
 struct TranscriptDetailView: View {
     let model: AppModel
     let session: ClaudeSessionSummary
-    @State private var isPinnedToBottom = true
-    @State private var scrollPosition = ScrollPosition(edge: .bottom)
-    @State private var initialScrollSettled = false
+    @State private var userSetAtBottom = true
+    @State private var liveIsAtBottom = true
 
     private var transcriptMessages: [TranscriptMessage] {
         model.transcriptState.messages(for: session.id)
@@ -19,65 +18,64 @@ struct TranscriptDetailView: View {
         model.transcriptState.errorMessage(for: session.id)
     }
 
-    private var transcriptSignal: TranscriptSignal {
-        TranscriptSignal(
-            count: transcriptMessages.count,
-            firstID: transcriptMessages.first?.id,
-            lastID: transcriptMessages.last?.id
-        )
-    }
-
     var body: some View {
         let _ = BodyCounter.tick("TranscriptDetailView")
         ZStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(transcriptMessages) { message in
-                        MessageRowView(message: message) {
-                            model.playMessage(message)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(transcriptMessages) { message in
+                            MessageRowView(message: message) {
+                                model.playMessage(message)
+                            }
+                            .equatable()
+                            .id(message.id)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
                         }
-                        .equatable()
-                        .id(message.id)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .background(.clear)
+                .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                .onScrollGeometryChange(for: CGSize.self, of: { $0.contentSize }) { _, _ in
+                    // Any content size change — initial render, cells materializing,
+                    // new message appended, existing message growing — re-pin to
+                    // the last message, but only if the user hasn't deliberately
+                    // scrolled away from the bottom.
+                    guard userSetAtBottom else {
+                        PerfLog.mark("Scroll skip pin (user scrolled up)")
+                        return
+                    }
+                    if let lastID = transcriptMessages.last?.id {
+                        proxy.scrollTo(lastID, anchor: .bottom)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .background(.clear)
-            .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
-            .scrollPosition($scrollPosition)
-            .onScrollGeometryChange(
-                for: Bool.self,
-                of: { geometry in
-                    let visibleBottom = geometry.contentOffset.y + geometry.containerSize.height
-                    let bottomDistance = geometry.contentSize.height - visibleBottom
-                    return bottomDistance <= 24
+                .onScrollGeometryChange(for: Bool.self, of: { geo in
+                    // ~165px of the natural scroll extent is reserved by
+                    // .scrollEdgeEffectStyle(.soft) / scroll physics — the user's
+                    // "visual bottom" lands there, not at remaining=0.
+                    let remaining = geo.contentSize.height - (geo.contentOffset.y + geo.containerSize.height)
+                    return remaining <= 250
+                }) { _, newIsAtBottom in
+                    liveIsAtBottom = newIsAtBottom
                 }
-            ) { _, isNearBottom in
-                isPinnedToBottom = isNearBottom
-            }
-            .onChange(of: transcriptSignal) { oldSignal, newSignal in
-                let wasAppend =
-                    newSignal.count > oldSignal.count &&
-                    (oldSignal.lastID == nil || newSignal.firstID == oldSignal.firstID)
-
-                if wasAppend && isPinnedToBottom {
-                    scrollPosition.scrollTo(edge: .bottom)
+                .onScrollPhaseChange { old, new in
+                    PerfLog.mark("Scroll phase \(old)->\(new) liveAtBottom=\(liveIsAtBottom)")
+                    // Sample userSetAtBottom ONLY when a user-driven scroll ends.
+                    // Do NOT update from .animating (programmatic scroll) or .idle
+                    // transitions caused by content growth — those would erroneously
+                    // latch userSetAtBottom=false and break auto-pinning.
+                    let userInitiated = old == .tracking || old == .decelerating || old == .interacting
+                    if new == .idle && userInitiated {
+                        let before = userSetAtBottom
+                        userSetAtBottom = liveIsAtBottom
+                        if before != userSetAtBottom {
+                            PerfLog.mark("Scroll userSetAtBottom=\(userSetAtBottom)")
+                        }
+                    }
                 }
-            }
-            .task(id: transcriptSignal.count) {
-                // ScrollPosition(edge: .bottom) may land short of the true bottom
-                // when the LazyVStack has inaccurate height estimates for unmaterialized
-                // items. Re-scroll once after layout has refined its measurements.
-                guard transcriptSignal.count > 0, !initialScrollSettled else {
-                    return
-                }
-
-                try? await Task.sleep(for: .milliseconds(150))
-                scrollPosition.scrollTo(edge: .bottom)
-                initialScrollSettled = true
             }
 
             if isLoadingTranscript {
@@ -103,12 +101,6 @@ struct TranscriptDetailView: View {
             SessionHeaderView(model: model, session: session)
         }
     }
-}
-
-private struct TranscriptSignal: Equatable {
-    let count: Int
-    let firstID: String?
-    let lastID: String?
 }
 
 private struct SessionHeaderView: View {
