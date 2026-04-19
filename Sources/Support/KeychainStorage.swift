@@ -6,13 +6,53 @@ import Security
 // across devices — we use kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
 // so entries stay on this Mac and don't leave via iCloud Keychain.
 //
+// We prefer the **data protection keychain** (iOS-style, available on
+// macOS 10.15+) via `kSecUseDataProtectionKeychain: true`. This matters
+// for dev builds: `swift build` produces adhoc-signed binaries whose
+// hash changes every rebuild. The *legacy* macOS keychain scopes items
+// by a per-binary ACL, so every rebuild triggers a "Allow access?"
+// prompt. The data protection keychain scopes by bundle ID instead,
+// which is stable across rebuilds.
+//
+// The data protection keychain requires a signed bundle with a bundle
+// ID. A proper .app bundle (what `build_and_run.sh` produces) has one;
+// a bare `swift test` helper binary does not and gets back
+// `errSecMissingEntitlement` (-34018). When that happens we transparently
+// fall back to the legacy keychain so tests can still round-trip values.
+// End users only ever hit the .app path.
+//
 // API shape: `get` returns nil for "not found" and throws only on
 // unexpected errors; `set(nil)` deletes the entry; `set(value)` upserts.
 struct KeychainStorage {
     let service: String
+    let useDataProtection: Bool
 
+    // Pick the keychain mode once. The .app bundle we ship has a bundle
+    // identifier in its Info.plist; swift test's helper binary does not.
+    // Mixing modes mid-process causes a write-here / read-there split,
+    // so we lock it in at init.
     init(service: String) {
+        self.init(
+            service: service,
+            useDataProtection: Bundle.main.bundleIdentifier != nil
+        )
+    }
+
+    init(service: String, useDataProtection: Bool) {
         self.service = service
+        self.useDataProtection = useDataProtection
+    }
+
+    private func baseQuery(account: String) -> [CFString: Any] {
+        var query: [CFString: Any] = [
+            kSecClass: kSecClassGenericPassword,
+            kSecAttrService: service,
+            kSecAttrAccount: account,
+        ]
+        if useDataProtection {
+            query[kSecUseDataProtectionKeychain] = true
+        }
+        return query
     }
 
     enum KeychainError: LocalizedError, Equatable {
@@ -28,13 +68,9 @@ struct KeychainStorage {
     }
 
     func get(_ account: String) throws -> String? {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-            kSecReturnData: true,
-            kSecMatchLimit: kSecMatchLimitOne,
-        ]
+        var query = baseQuery(account: account)
+        query[kSecReturnData] = true
+        query[kSecMatchLimit] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = withUnsafeMutablePointer(to: &result) {
             SecItemCopyMatching(query as CFDictionary, $0)
@@ -59,11 +95,7 @@ struct KeychainStorage {
             return
         }
         let data = Data(value.utf8)
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-        ]
+        let query = baseQuery(account: account)
         let attributes: [CFString: Any] = [
             kSecValueData: data,
             kSecAttrAccessible: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
@@ -87,11 +119,7 @@ struct KeychainStorage {
     }
 
     func delete(_ account: String) throws {
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: service,
-            kSecAttrAccount: account,
-        ]
+        let query = baseQuery(account: account)
         let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unexpectedStatus(status)
