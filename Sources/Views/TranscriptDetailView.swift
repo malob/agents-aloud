@@ -51,7 +51,6 @@ struct TranscriptDetailView: View {
     }
 
     var body: some View {
-        let _ = BodyCounter.tick("TranscriptDetailView")
         ZStack {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -76,10 +75,7 @@ struct TranscriptDetailView: View {
                     // new message appended, existing message growing — re-pin to
                     // the last message, but only if the user hasn't deliberately
                     // scrolled away from the bottom.
-                    guard userSetAtBottom else {
-                        PerfLog.mark("Scroll skip pin (user scrolled up)")
-                        return
-                    }
+                    guard userSetAtBottom else { return }
                     if let lastID = transcriptMessages.last?.id {
                         proxy.scrollTo(lastID, anchor: .bottom)
                     }
@@ -94,7 +90,6 @@ struct TranscriptDetailView: View {
                     liveIsAtBottom = newIsAtBottom
                 }
                 .onScrollPhaseChange { old, new in
-                    PerfLog.mark("Scroll phase \(old)->\(new) liveAtBottom=\(liveIsAtBottom)")
                     // Sample userSetAtBottom ONLY when a user-driven scroll ends.
                     // Do NOT update from .animating (programmatic scroll) or .idle
                     // transitions caused by content growth — those would erroneously
@@ -159,7 +154,6 @@ private struct SessionHeaderView: View {
     }
 
     var body: some View {
-        let _ = BodyCounter.tick("SessionHeaderView")
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
