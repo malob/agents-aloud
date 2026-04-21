@@ -11,6 +11,19 @@ struct ClaudeCodeVoiceApp: App {
                 .task {
                     await model.start()
                 }
+                // Space as play/pause via .onKeyPress rather than a
+                // menu .keyboardShortcut(.space, modifiers: []) — bare
+                // Space as a menu shortcut is intercepted by whatever
+                // control is first responder (sidebar List, buttons, etc.)
+                // and silently no-ops. onKeyPress bubbles from the first
+                // responder and catches Space at the view level.
+                .onKeyPress(.space) {
+                    guard model.speechController.isSpeaking || model.speechController.isPaused else {
+                        return .ignored
+                    }
+                    togglePlayPause()
+                    return .handled
+                }
         }
         .defaultSize(width: 1200, height: 800)
         .windowResizability(.contentSize)
@@ -20,10 +33,13 @@ struct ClaudeCodeVoiceApp: App {
             CommandGroup(replacing: .newItem) {}
 
             CommandMenu("Playback") {
+                // Menu entry without a keyboard shortcut: Space is handled
+                // by the onKeyPress above (menu shortcuts require modifiers
+                // on macOS to avoid clobbering text input and first-responder
+                // Space handling).
                 Button(playPauseLabel) {
                     togglePlayPause()
                 }
-                .keyboardShortcut(.space, modifiers: [])
                 .disabled(!model.speechController.isSpeaking && !model.speechController.isPaused)
 
                 Button("Stop") {
