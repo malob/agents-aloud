@@ -6,7 +6,7 @@ struct ClaudeSessionSummary: Identifiable, Hashable {
     let firstPrompt: String?
     let modifiedAt: Date?
     let projectPath: String
-    let transcriptPath: String
+    let transcriptURL: URL
     let messageCount: Int
 
     var projectName: String {

@@ -102,16 +102,16 @@ struct ClaudeStorageServiceTests {
         let twentyFourHoursAgo = now.addingTimeInterval(-24 * 60 * 60)
         let recentOnly = try await service.loadSessions(since: twentyFourHoursAgo, minimumCount: 0)
         #expect(recentOnly.count == 1)
-        #expect(recentOnly.first?.transcriptPath.hasSuffix("fresh.jsonl") == true)
+        #expect(recentOnly.first?.transcriptURL.lastPathComponent == "fresh.jsonl")
 
         // Same window, minimum floor of 2 → falls back to the two most recent
         // (fresh + old), even though `old` is outside the window.
         let withFloor = try await service.loadSessions(since: twentyFourHoursAgo, minimumCount: 2)
         #expect(withFloor.count == 2)
-        let paths = withFloor.map(\.transcriptPath)
-        #expect(paths.contains(where: { $0.hasSuffix("fresh.jsonl") }))
-        #expect(paths.contains(where: { $0.hasSuffix("old.jsonl") }))
-        #expect(!paths.contains(where: { $0.hasSuffix("ancient.jsonl") }))
+        let names = withFloor.map(\.transcriptURL.lastPathComponent)
+        #expect(names.contains("fresh.jsonl"))
+        #expect(names.contains("old.jsonl"))
+        #expect(!names.contains("ancient.jsonl"))
     }
 
     private func writeTranscript(at url: URL, mtime: Date) throws {

@@ -107,7 +107,7 @@ enum ClaudeTranscriptParser {
             firstPrompt: firstPrompt,
             modifiedAt: modifiedAt,
             projectPath: projectPath ?? fallbackProjectPath,
-            transcriptPath: fileURL.path,
+            transcriptURL: fileURL,
             messageCount: messageCount
         )
     }

@@ -472,7 +472,7 @@ final class AppModel {
         }
 
         let sessionID = selectedSession.id
-        let transcriptURL = URL(fileURLWithPath: selectedSession.transcriptPath)
+        let transcriptURL = selectedSession.transcriptURL
 
         selectedTranscriptWatcher.startWatching(
             fileURL: transcriptURL,

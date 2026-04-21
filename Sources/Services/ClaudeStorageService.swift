@@ -146,12 +146,18 @@ actor ClaudeStorageService {
 
     func loadTranscript(for session: ClaudeSessionSummary) throws -> [TranscriptMessage] {
         try PerfLog.time("Storage.loadTranscript") {
-            let transcriptURL = URL(fileURLWithPath: session.transcriptPath)
+            // URL caches resourceValues on the instance, which would make
+            // mtime/fileSize reads stale when loadTranscript is invoked
+            // multiple times for the same session after the file grows.
+            // Flush the cache so the subsequent read hits disk.
+            var transcriptURL = session.transcriptURL
+            transcriptURL.removeAllCachedResourceValues()
+            let cacheKey = transcriptURL.path
             let values = try transcriptURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             let modifiedAt = values.contentModificationDate ?? .distantPast
             let fileSize = values.fileSize ?? 0
 
-            if let cached = transcriptCache[session.transcriptPath] {
+            if let cached = transcriptCache[cacheKey] {
                 if cached.modifiedAt == modifiedAt {
                     PerfLog.mark("Storage.loadTranscript cacheHit")
                     return cached.messages
@@ -176,7 +182,7 @@ actor ClaudeStorageService {
                    let appended = try? tailMessages(transcriptURL, fromOffset: cached.fileSize) {
                     let merged = mergeInTimestampOrder(cached.messages, appended)
                     let newSignature = (try? readTailSignature(transcriptURL, upTo: fileSize)) ?? Data()
-                    transcriptCache[session.transcriptPath] = CachedTranscript(
+                    transcriptCache[cacheKey] = CachedTranscript(
                         modifiedAt: modifiedAt,
                         fileSize: fileSize,
                         tailSignature: newSignature,
@@ -194,7 +200,7 @@ actor ClaudeStorageService {
             }
             let sortedMessages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
             let signature = (try? readTailSignature(transcriptURL, upTo: fileSize)) ?? Data()
-            transcriptCache[session.transcriptPath] = CachedTranscript(
+            transcriptCache[cacheKey] = CachedTranscript(
                 modifiedAt: modifiedAt,
                 fileSize: fileSize,
                 tailSignature: signature,
