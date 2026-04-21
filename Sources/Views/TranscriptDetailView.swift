@@ -72,6 +72,20 @@ struct TranscriptDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .background(.clear)
+                // Initial anchor only. Without this, sessions with
+                // variable-height messages (big code blocks, XML dumps)
+                // land mid-transcript on first render because LazyVStack's
+                // estimated cell heights diverge from actuals — summing
+                // estimates gives a contentSize smaller than reality, so
+                // `proxy.scrollTo(lastID, anchor: .bottom)` lands one or
+                // two messages short of the true bottom. `.defaultScrollAnchor(.bottom)`
+                // sidesteps this by letting SwiftUI compute the initial
+                // offset against the true laid-out content. We deliberately
+                // don't use `.defaultScrollAnchor(.bottom, for: .sizeChanges)`
+                // because the manual machinery below handles new-message
+                // auto-scroll and needs userSetAtBottom gating to respect
+                // scroll-up; the sizeChanges anchor fights that.
+                .defaultScrollAnchor(.bottom)
                 .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
                 .onScrollGeometryChange(for: CGSize.self, of: { $0.contentSize }) { _, _ in
                     // Any content size change — initial render, cells materializing,
