@@ -133,3 +133,34 @@ private struct RoleAppearance {
         }
     }
 }
+
+#Preview("MessageRowView — user + assistant") {
+    VStack(spacing: 0) {
+        MessageRowView(
+            message: TranscriptMessage(
+                id: "preview-user",
+                role: .user,
+                text: "What does SpeechController do when the user switches backend mid-playback?",
+                timestamp: .now,
+                sessionID: "preview-session"
+            ),
+            isActive: false,
+            onPlay: {},
+            onPlayFromHere: {}
+        )
+        MessageRowView(
+            message: TranscriptMessage(
+                id: "preview-assistant",
+                role: .assistant,
+                text: "It stops the outgoing driver and drops the queue. The new backend starts clean.",
+                timestamp: .now,
+                sessionID: "preview-session"
+            ),
+            isActive: true,  // show the active-highlight border
+            onPlay: {},
+            onPlayFromHere: {}
+        )
+    }
+    .padding()
+    .frame(width: 720)
+}

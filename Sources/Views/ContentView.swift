@@ -59,8 +59,8 @@ struct ContentView: View {
             }
             .padding(.horizontal)
             .padding(.top, 8)
-            .animation(.easeInOut(duration: 0.2), value: model.errorMessage)
-            .animation(.easeInOut(duration: 0.2), value: model.speechController.playbackError)
+            .animation(.smooth, value: model.errorMessage)
+            .animation(.smooth, value: model.speechController.playbackError)
         }
     }
 }
