@@ -33,7 +33,7 @@ struct StreamingAudioPlayerTests {
             }
         }
 
-        #expect(player.state == .idle)
+        #expect(player.isIdle)
     }
 
     @Test
@@ -52,14 +52,14 @@ struct StreamingAudioPlayerTests {
             onFinish: { finishedCalls += 1 },
             onError: { _ in errorCalls += 1 }
         )
-        #expect(player.state == .playing)
+        #expect(player.isPlaying)
 
         // Let a couple of buffers get scheduled, then stop.
         try await Task.sleep(for: .milliseconds(50))
         player.stop()
         continuation.finish()
 
-        #expect(player.state == .idle)
+        #expect(player.isIdle)
 
         // Wait past the natural completion time to confirm no late callback fires.
         try await Task.sleep(for: .milliseconds(200))
@@ -80,22 +80,22 @@ struct StreamingAudioPlayerTests {
             onFinish: {},
             onError: { _ in }
         )
-        #expect(player.state == .playing)
+        #expect(player.isPlaying)
 
         player.pause()
-        #expect(player.state == .paused)
+        #expect(player.isPaused)
 
         player.resume()
-        #expect(player.state == .playing)
+        #expect(player.isPlaying)
 
         // pause() from .paused should be a no-op, not a state flip
         player.pause()
         player.pause()
-        #expect(player.state == .paused)
+        #expect(player.isPaused)
 
         player.stop()
         continuation.finish()
-        #expect(player.state == .idle)
+        #expect(player.isIdle)
     }
 
     @Test
@@ -121,6 +121,6 @@ struct StreamingAudioPlayerTests {
             }
         }
 
-        #expect(player.state == .idle)
+        #expect(player.isIdle)
     }
 }
