@@ -181,13 +181,17 @@ final class AVSpeechBackendDriver: NSObject, SpeechBackendDriver {
             }
     }
 
+    // AVSpeechSynthesizerDelegate callbacks are documented to fire on
+    // the main queue, so we can assume MainActor isolation without the
+    // Task hop a plain `Task { @MainActor in ... }` would incur. That's
+    // one less executor trampoline per delegate event.
     nonisolated private func forwardEvent(
         for utterance: AVSpeechUtterance,
         removesTracking: Bool = false,
         event: @escaping @Sendable (UUID) -> SpeechDriverEvent
     ) {
         let utteranceID = ObjectIdentifier(utterance)
-        Task { @MainActor in
+        MainActor.assumeIsolated {
             guard let playbackID = self.playbackID(for: utteranceID) else {
                 return
             }

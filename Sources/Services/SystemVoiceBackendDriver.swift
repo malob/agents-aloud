@@ -1,29 +1,28 @@
 import Darwin
 import Foundation
+import Synchronization
 
 @MainActor
 final class SystemVoiceBackendDriver: SpeechBackendDriver {
     private static let defaultWordsPerMinute = 400
 
-    private final class StandardErrorBuffer: @unchecked Sendable {
-        private let lock = NSLock()
-        private var data = Data()
+    // Accumulates stderr chunks from /usr/bin/say. The readability
+    // handler fires on a DispatchQueue (not an actor), and we read the
+    // accumulated output from the main actor after the process exits —
+    // Mutex gives us the write-from-any-thread + Sendable conformance
+    // without `@unchecked Sendable` and without manual NSLock dance.
+    private final class StandardErrorBuffer: Sendable {
+        private let data = Mutex(Data())
 
         func append(_ newData: Data) {
             guard !newData.isEmpty else {
                 return
             }
-
-            lock.lock()
-            data.append(newData)
-            lock.unlock()
+            data.withLock { $0.append(newData) }
         }
 
         func output() -> String? {
-            lock.lock()
-            let snapshot = data
-            lock.unlock()
-
+            let snapshot = data.withLock { $0 }
             guard let output = String(data: snapshot, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
                   !output.isEmpty else {
