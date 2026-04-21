@@ -18,4 +18,3 @@ enum PerfLog {
         logger.info("\(name, privacy: .public)")
     }
 }
-
