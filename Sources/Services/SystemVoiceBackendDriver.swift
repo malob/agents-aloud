@@ -104,8 +104,22 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         }
     }
 
+    // Injectable so tests can swap /usr/bin/say for a shell that
+    // simulates lifecycle (exits normally, exits with error, runs
+    // until stopped) without actually playing audio.
+    private let executableURL: URL
+    private let arguments: [String]
+
     private var eventHandler: (@MainActor @Sendable (SpeechDriverEvent) -> Void)?
     private var currentJob: SystemVoiceJob?
+
+    init(
+        executableURL: URL = URL(fileURLWithPath: "/usr/bin/say"),
+        arguments: [String] = ["-r", String(SystemVoiceBackendDriver.defaultWordsPerMinute)]
+    ) {
+        self.executableURL = executableURL
+        self.arguments = arguments
+    }
 
     var availableVoices: [SpeechVoiceOption] {
         []
@@ -140,8 +154,8 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         self.eventHandler = eventHandler
         currentJob = job
 
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
-        process.arguments = ["-r", String(Self.defaultWordsPerMinute)]
+        process.executableURL = executableURL
+        process.arguments = arguments
         process.standardInput = inputPipe
         process.standardError = errorPipe
         errorPipe.fileHandleForReading.readabilityHandler = { handle in
