@@ -36,8 +36,15 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
     private(set) var availableVoices: [SpeechVoiceOption] = []
     var wordsPerMinute: Int? { nil }
 
-    @ObservationIgnored private var currentRequest: SpeechRequest?
-    @ObservationIgnored private var currentEventHandler: ((SpeechDriverEvent) -> Void)?
+    // Active playback — the pair of (request, event handler) must move
+    // together: non-nil when a stream is playing, nil between calls. A
+    // single optional prevents the "cleared one, forgot the other" class
+    // of bug across start/stop/finish/error paths.
+    private struct Active {
+        let request: SpeechRequest
+        let eventHandler: @MainActor @Sendable (SpeechDriverEvent) -> Void
+    }
+    @ObservationIgnored private var active: Active?
 
     enum DriverError: LocalizedError, Equatable {
         case noVoiceSelected
@@ -110,8 +117,7 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
         // but be defensive: we never want two utterances overlapping.
         player.stop()
 
-        currentRequest = request
-        currentEventHandler = eventHandler
+        active = Active(request: request, eventHandler: eventHandler)
 
         let speed = Self.mapRateToSpeed(request.rate)
         let stream = client.streamSynthesize(
@@ -133,8 +139,7 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
                 }
             )
         } catch {
-            currentRequest = nil
-            currentEventHandler = nil
+            active = nil
             throw error
         }
 
@@ -142,39 +147,36 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
     }
 
     func pause() {
-        guard let request = currentRequest else { return }
+        guard let active else { return }
         player.pause()
-        currentEventHandler?(.didPause(request.playbackID))
+        active.eventHandler(.didPause(active.request.playbackID))
     }
 
     func resume() {
-        guard let request = currentRequest else { return }
+        guard let active else { return }
         player.resume()
-        currentEventHandler?(.didResume(request.playbackID))
+        active.eventHandler(.didResume(active.request.playbackID))
     }
 
     func stop() {
         player.stop()
-        currentRequest = nil
-        currentEventHandler = nil
+        active = nil
     }
 
     // MARK: -
 
     private func handleFinish(for playbackID: UUID) {
-        guard currentRequest?.playbackID == playbackID else { return }
-        let handler = currentEventHandler
-        currentRequest = nil
-        currentEventHandler = nil
-        handler?(.didFinish(playbackID))
+        guard let active, active.request.playbackID == playbackID else { return }
+        let handler = active.eventHandler
+        self.active = nil
+        handler(.didFinish(playbackID))
     }
 
     private func handleError(_ error: Error, for playbackID: UUID) {
-        guard currentRequest?.playbackID == playbackID else { return }
-        let handler = currentEventHandler
-        currentRequest = nil
-        currentEventHandler = nil
-        handler?(.didFail(playbackID, description: error.localizedDescription))
+        guard let active, active.request.playbackID == playbackID else { return }
+        let handler = active.eventHandler
+        self.active = nil
+        handler(.didFail(playbackID, description: error.localizedDescription))
     }
 
     // Maps our 0.2-0.6 speech rate slider (AVSpeech-calibrated, middle ~=

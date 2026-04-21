@@ -25,8 +25,16 @@ enum TranscriptFileWatcherError: LocalizedError, Equatable {
 
 @MainActor
 final class TranscriptFileWatcher: TranscriptFileWatching {
-    private var watchedURL: URL?
-    private var source: DispatchSourceFileSystemObject?
+    // A successful arm owns both a watched URL and the DispatchSource on
+    // its file descriptor. Bundling them keeps the two-optionals-that-
+    // must-move-together invariant structural instead of enforced by
+    // convention across stop() / armWatcher() / deinit.
+    private struct ActiveWatch {
+        let url: URL
+        let source: DispatchSourceFileSystemObject
+    }
+
+    private var active: ActiveWatch?
     private var retryTask: Task<Void, Never>?
 
     func startWatching(
@@ -34,7 +42,7 @@ final class TranscriptFileWatcher: TranscriptFileWatching {
         onChange: @escaping @MainActor @Sendable () -> Void,
         onFailure: @escaping @MainActor @Sendable (TranscriptFileWatcherError) -> Void
     ) {
-        guard watchedURL != fileURL else {
+        guard active?.url != fileURL else {
             return
         }
 
@@ -113,20 +121,18 @@ final class TranscriptFileWatcher: TranscriptFileWatching {
         }
         source.resume()
 
-        watchedURL = fileURL
-        self.source = source
+        active = ActiveWatch(url: fileURL, source: source)
     }
 
     func stop() {
         retryTask?.cancel()
         retryTask = nil
-        watchedURL = nil
-        source?.cancel()
-        source = nil
+        active?.source.cancel()
+        active = nil
     }
 
     deinit {
         retryTask?.cancel()
-        source?.cancel()
+        active?.source.cancel()
     }
 }
