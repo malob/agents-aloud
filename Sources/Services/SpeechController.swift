@@ -15,17 +15,32 @@ final class SpeechController {
         let backend: SpeechBackend
     }
 
+    // PlaybackState fuses "what's playing" with "what's queued behind it".
+    // Previously the queue was a free-standing field whose invariant ("empty
+    // when idle") was convention-enforced across many callers. Bundling the
+    // queue into the non-idle cases makes the invariant structural, and
+    // transitions through helper mutators keep it correct without caller
+    // ceremony.
     private enum PlaybackState {
         case idle
-        case speaking(ActivePlayback)
-        case paused(ActivePlayback)
+        case speaking(ActivePlayback, queue: [SpeechRequest])
+        case paused(ActivePlayback, queue: [SpeechRequest])
 
         var activePlayback: ActivePlayback? {
             switch self {
             case .idle:
                 return nil
-            case let .speaking(activePlayback), let .paused(activePlayback):
+            case let .speaking(activePlayback, _), let .paused(activePlayback, _):
                 return activePlayback
+            }
+        }
+
+        var queue: [SpeechRequest] {
+            switch self {
+            case .idle:
+                return []
+            case let .speaking(_, queue), let .paused(_, queue):
+                return queue
             }
         }
 
@@ -37,7 +52,6 @@ final class SpeechController {
             if case .speaking = self {
                 return true
             }
-
             return false
         }
 
@@ -45,13 +59,33 @@ final class SpeechController {
             if case .paused = self {
                 return true
             }
-
             return false
+        }
+
+        // Replace the queue on the active state; no-op on .idle (idle has
+        // no queue by construction).
+        mutating func setQueue(_ newQueue: [SpeechRequest]) {
+            switch self {
+            case .idle:
+                return
+            case let .speaking(active, _):
+                self = .speaking(active, queue: newQueue)
+            case let .paused(active, _):
+                self = .paused(active, queue: newQueue)
+            }
+        }
+
+        // Remove and return the first queued request, if any.
+        mutating func popQueue() -> SpeechRequest? {
+            var current = queue
+            guard !current.isEmpty else { return nil }
+            let first = current.removeFirst()
+            setQueue(current)
+            return first
         }
     }
 
     @ObservationIgnored private let logger = Logger(subsystem: "local.claudecodevoice", category: "Speech")
-    @ObservationIgnored private var queuedRequests: [SpeechRequest] = []
     @ObservationIgnored private var playbackErrorDismissTask: Task<Void, Never>?
     @ObservationIgnored private let avSpeechDriver: any SpeechBackendDriver
     @ObservationIgnored private let systemVoiceDriver: any SpeechBackendDriver
@@ -68,7 +102,6 @@ final class SpeechController {
                 return
             }
 
-            queuedRequests.removeAll()
             driver(for: oldValue).stop()
             playbackState = .idle
         }
@@ -133,12 +166,11 @@ final class SpeechController {
             rate: rate
         )
 
+        // Cancel whatever's currently playing (if anything), drop its
+        // queue, and start fresh with just this one request.
         if playbackState.activePlayback != nil {
-            queuedRequests = [request]
             (activeDriver ?? currentDriver).stop()
             playbackState = .idle
-            playNextQueuedRequestIfNeeded()
-            return
         }
 
         speak(request)
@@ -154,7 +186,7 @@ final class SpeechController {
         )
 
         if playbackState.activePlayback != nil {
-            queuedRequests.append(request)
+            playbackState.setQueue(playbackState.queue + [request])
         } else {
             speak(request)
         }
@@ -169,7 +201,6 @@ final class SpeechController {
     }
 
     func stop() {
-        queuedRequests.removeAll()
         (activeDriver ?? currentDriver).stop()
         playbackState = .idle
     }
@@ -179,7 +210,7 @@ final class SpeechController {
     // text promise that no new messages will be spoken without cutting off
     // whatever's currently being read.
     func drainQueue() {
-        queuedRequests.removeAll()
+        playbackState.setQueue([])
     }
 
     func dismissPlaybackError() {
@@ -188,7 +219,11 @@ final class SpeechController {
         playbackError = nil
     }
 
-    private func speak(_ request: SpeechRequest) {
+    // `queue` is the set of requests to run after `request` finishes. Passed
+    // explicitly rather than read from playbackState so the caller controls
+    // whether to preserve existing queue (e.g. on didFinish, pop next +
+    // carry the tail) or drop it (playNow explicitly replaces).
+    private func speak(_ request: SpeechRequest, queue: [SpeechRequest] = []) {
         let driver = currentDriver
         let activePlayback = ActivePlayback(request: request, backend: backend)
 
@@ -197,25 +232,19 @@ final class SpeechController {
                 request: request,
                 eventHandler: handleDriverEvent(_:)
             )
-            playbackState = .speaking(activePlayback)
+            playbackState = .speaking(activePlayback, queue: queue)
         } catch {
             logger.error(
                 "Playback failed to start for \(request.messageID, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
             showPlaybackError(error.localizedDescription)
             playbackState = .idle
-            playNextQueuedRequestIfNeeded()
+            // Failure drops the current attempt; try draining the next queued
+            // request instead of leaving the rest of the queue stranded.
+            if let next = queue.first {
+                speak(next, queue: Array(queue.dropFirst()))
+            }
         }
-    }
-
-    private func playNextQueuedRequestIfNeeded() {
-        guard !queuedRequests.isEmpty else {
-            playbackState = .idle
-            return
-        }
-
-        let nextRequest = queuedRequests.removeFirst()
-        speak(nextRequest)
     }
 
     private var currentDriver: any SpeechBackendDriver {
@@ -266,8 +295,13 @@ final class SpeechController {
             return
         }
 
+        // Capture the queue BEFORE clearing state; .idle has no queue
+        // by construction so reading playbackState.queue afterward gives [].
+        let remainingQueue = playbackState.queue
         playbackState = .idle
-        playNextQueuedRequestIfNeeded()
+        if let next = remainingQueue.first {
+            speak(next, queue: Array(remainingQueue.dropFirst()))
+        }
     }
 
     private func handleDriverEvent(_ event: SpeechDriverEvent) {
@@ -276,14 +310,15 @@ final class SpeechController {
             return
         }
 
+        let currentQueue = playbackState.queue
         switch event {
         case .didStart:
             dismissPlaybackError()
-            playbackState = .speaking(activePlayback)
+            playbackState = .speaking(activePlayback, queue: currentQueue)
         case .didResume:
-            playbackState = .speaking(activePlayback)
+            playbackState = .speaking(activePlayback, queue: currentQueue)
         case .didPause:
-            playbackState = .paused(activePlayback)
+            playbackState = .paused(activePlayback, queue: currentQueue)
         case .didFinish:
             finishCurrentPlayback(playbackID: activePlayback.request.playbackID)
         case let .didFail(_, description):
