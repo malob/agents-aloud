@@ -39,7 +39,7 @@ struct ElevenLabsClientLiveTests {
             totalBytes += chunk.count
         }
 
-        // PCM 44.1kHz 16-bit ≈ 88KB/sec. A short phrase should produce
+        // PCM 24kHz 16-bit ≈ 48KB/sec. A short phrase should produce
         // at least 20KB of audio — anything less suggests a malformed
         // or empty response.
         #expect(totalBytes > 20_000)

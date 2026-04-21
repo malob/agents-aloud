@@ -56,6 +56,12 @@ final class TranscriptFileWatcher: TranscriptFileWatching {
         let fileDescriptor = open(fileURL.path, O_EVTONLY)
         let openErrorNumber = errno
         guard fileDescriptor >= 0 else {
+            // Brief retry window: Claude Code writes transcripts via atomic
+            // temp-file rename, so open() can hit ENOENT in the millisecond
+            // gap between the old file being unlinked and the new one
+            // appearing. Three tries at 100ms covers that race; anything
+            // persistent after 300ms is a real missing-file and surfaces
+            // via onFailure.
             if openErrorNumber == ENOENT, retryCount < 3 {
                 retryTask = Task { [weak self] in
                     try? await Task.sleep(for: .milliseconds(100))

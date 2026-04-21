@@ -65,7 +65,6 @@ struct KeychainStorage {
         }
     }
 
-    // Upserts `value`. Passing nil deletes the entry.
     func set(_ value: String?, for account: String) throws {
         guard let value else {
             try delete(account)

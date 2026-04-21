@@ -7,14 +7,13 @@ import OSLog
 // (as delivered by ElevenLabsClient.streamSynthesize) and schedules each
 // chunk on the player node as an AVAudioPCMBuffer.
 //
-// WHY not use the Kit's player: the Kit exposes play/stop but not
-// pause/resume. This is our replacement that does. AudioQueue / AVAudio*
-// support pause natively — the Kit just never surfaced it. See the
-// ElevenLabs plan doc for the full reasoning.
+// Why hand-roll: we need pause/resume. AVAudioEngine + AVAudioPlayerNode
+// support that natively; wrapping them in a streaming-friendly shell
+// was the simplest path.
 //
 // Usage pattern from the driver:
 //   let player = StreamingAudioPlayer()
-//   try player.play(stream: ..., sampleRate: 44_100,
+//   try player.play(stream: ..., sampleRate: ElevenLabsClient.pcmSampleRate,
 //                   onFinish: { ... }, onError: { error in ... })
 //   player.pause() / player.resume() / player.stop()
 //
@@ -58,9 +57,8 @@ final class StreamingAudioPlayer {
         engine.attach(playerNode)
     }
 
-    // Begins playback. Throws synchronously if the format / engine setup
-    // fails; otherwise returns immediately and invokes onFinish (stream
-    // drained + all buffers consumed) or onError (stream threw) later.
+    // Throws synchronously on format/engine setup failure; otherwise
+    // returns immediately and delivers completion via onFinish / onError.
     func play(
         stream: AsyncThrowingStream<Data, Error>,
         sampleRate: Double,
@@ -117,8 +115,7 @@ final class StreamingAudioPlayer {
         state = .playing
     }
 
-    // Stops playback immediately. No onFinish or onError fires after this —
-    // callers are expected to know they just stopped.
+    // Neither onFinish nor onError fires after stop().
     func stop() {
         teardownWithoutCallback()
     }

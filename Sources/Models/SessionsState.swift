@@ -19,12 +19,4 @@ enum SessionsState: Equatable {
 
         return false
     }
-
-    var errorMessage: String? {
-        if case let .failed(_, message) = self {
-            return message
-        }
-
-        return nil
-    }
 }

@@ -11,6 +11,11 @@ struct TranscriptMessage: Identifiable, Hashable {
         case plainText(String)
         case markdown(String)
 
+        // XML-ish envelopes Claude Code injects into prompts (hook
+        // notifications, slash-command metadata, etc.). Rendered verbatim
+        // because they aren't user-intended content — skipping markdown
+        // detection keeps them from getting mangled by asterisks or
+        // pipe-table heuristics further below.
         private static let literalPrefixes = [
             "<task-notification>",
             "<command-message>",

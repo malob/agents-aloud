@@ -152,9 +152,6 @@ final class AppModel {
             userDefaults.string(forKey: Self.preferredVoiceIdentifierKey)
         )
 
-        // If an API key is already stored, seed the driver with a live
-        // client and trigger voice-list fetch so the Settings picker
-        // populates on first open.
         applyElevenLabsAPIKey()
     }
 
@@ -234,6 +231,12 @@ final class AppModel {
         sessionsState = .loading(sessionsState.sessions)
         await refreshSessions()
 
+        // 5s poll is a backstop for session additions/removals (new
+        // sessions appearing on disk, deletions, renames). The per-file
+        // watcher in updateSelectedTranscriptObservation handles real-time
+        // updates to the selected transcript; this loop only needs to be
+        // fast enough that a newly-created session shows up quickly in
+        // the sidebar.
         sessionRefreshTask = Task { [weak self] in
             guard let self else {
                 return
@@ -304,11 +307,8 @@ final class AppModel {
         )
     }
 
-    // Start playback at `message` (or the first assistant message after it, if
-    // `message` is a user prompt) and enqueue every subsequent assistant
-    // message in the same session. Intended for "read from here onward" UX.
-    // Does nothing if there are no speakable assistant messages at/after this
-    // point.
+    // If `message` is a user prompt, start at the next assistant; otherwise
+    // start at `message`. Enqueues every following assistant message.
     func playMessagesFromHere(_ message: TranscriptMessage) {
         let messages = transcriptState.messages
         guard let startIndex = messages.firstIndex(where: { $0.id == message.id }) else { return }
@@ -356,8 +356,6 @@ final class AppModel {
                 return
             }
 
-            // Clear selection when the previously selected session is no longer available.
-            // The user picks which session to view from the sidebar.
             selectedSessionID = nil
             transcriptState = .none
             updateSelectedTranscriptObservation()
@@ -490,7 +488,11 @@ final class AppModel {
                 return
             }
 
-            // Debounce rapid file-system events while Claude is still appending to the transcript.
+            // Debounce rapid file-system events while Claude is still
+            // appending to the transcript. 150ms balances responsiveness
+            // for users watching live-read against the coalescing of
+            // bursts of appends during streaming assistant output
+            // (otherwise every token write would trigger a full parse).
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else {
                 return

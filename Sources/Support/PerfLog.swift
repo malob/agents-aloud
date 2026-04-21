@@ -18,19 +18,3 @@ enum PerfLog {
         logger.info("\(name, privacy: .public)")
     }
 }
-
-@MainActor
-enum BodyCounter {
-    private static let logger = Logger(subsystem: "local.claudecodevoice", category: "Body")
-    private static var counts: [String: Int] = [:]
-
-    static func tick(_ name: String) {
-        let next = (counts[name] ?? 0) + 1
-        counts[name] = next
-        logger.info("\(name, privacy: .public) #\(next, privacy: .public)")
-    }
-
-    static func reset() {
-        counts.removeAll(keepingCapacity: true)
-    }
-}

@@ -5,9 +5,8 @@ enum ClaudeTranscriptParser {
     private static let logger = Logger(subsystem: "local.claudecodevoice", category: "TranscriptParser")
 
     // NB: JSONDecoder is documented as NOT thread-safe. Each call creates its
-    // own instance so this parser is safe to call concurrently from multiple
-    // tasks (e.g. the parallel cold-start in ClaudeStorageService.loadSessions).
-    // Allocation is microseconds; the parse itself dominates runtime.
+    // own instance so this parser is safe to call concurrently. Allocation
+    // is microseconds; the parse itself dominates runtime.
 
     static func parseTranscript(_ rawTranscript: String) -> [TranscriptMessage] {
         PerfLog.time("Parser.parseTranscript") {

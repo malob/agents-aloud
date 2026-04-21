@@ -74,22 +74,15 @@ final class AVSpeechBackendDriver: NSObject, SpeechBackendDriver {
     }
 
     private var defaultVoiceIdentifier: String? {
-        guard !supportedVoices.isEmpty else {
-            return nil
-        }
-
-        let preferredEnglishLanguages = preferredEnglishLanguageCodes()
-
-        for languageCode in preferredEnglishLanguages {
+        // Try to match the user's preferred English locale first. If nothing
+        // matches, fall through to `supportedVoices.first?.id` — that IS the
+        // en-US voice when one exists, because `loadSupportedVoices()` sorts
+        // by `voicePriority` which ranks en-US first.
+        for languageCode in preferredEnglishLanguageCodes() {
             if let exactMatch = supportedVoices.first(where: { $0.language == languageCode }) {
                 return exactMatch.id
             }
         }
-
-        if let usEnglishVoice = supportedVoices.first(where: { $0.language == "en-US" }) {
-            return usEnglishVoice.id
-        }
-
         return supportedVoices.first?.id
     }
 
@@ -106,6 +99,12 @@ final class AVSpeechBackendDriver: NSObject, SpeechBackendDriver {
     }
 
     private static func loadSupportedVoices() -> [SpeechVoiceOption] {
+        // Filter to Apple's modern voice bundles (com.apple.voice.*); this
+        // excludes legacy Eloquence voices and a long tail of novelty
+        // voices that clutter the picker. When any Enhanced-quality voice
+        // is installed we prefer those exclusively; otherwise fall back
+        // to the default set (which older machines without downloaded
+        // voice packs are stuck with).
         let englishVoices = AVSpeechSynthesisVoice.speechVoices()
             .filter { voice in
                 voice.language.hasPrefix("en-") || voice.language == "en"

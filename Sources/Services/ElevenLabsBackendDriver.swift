@@ -27,9 +27,7 @@ import OSLog
 final class ElevenLabsBackendDriver: SpeechBackendDriver {
     static let defaultModelID = "eleven_turbo_v2_5"
 
-    // `client` is a var because the API key lives in Keychain / AppModel;
-    // when the user enters (or changes) their key, AppModel hands us a
-    // fresh client configured with the new key.
+    // var because AppModel swaps it via replaceClient() when the API key changes.
     @ObservationIgnored private var client: ElevenLabsClientType
     @ObservationIgnored private let player: StreamingAudioPlayer
     @ObservationIgnored private let modelID: String
@@ -62,11 +60,10 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
         self.modelID = modelID
     }
 
-    // Re-fetches the voice list from ElevenLabs. Intended to be called
-    // by AppModel when the API key is (re-)entered or on app launch if
-    // a key is already stored. Silent-fails to an empty list on error
-    // so the picker still shows something (a "type a voice ID" affordance
-    // can live in Settings for the failure case).
+    // Re-fetches the voice list from ElevenLabs. Called by AppModel when
+    // the API key is (re-)entered or on app launch if a key is stored.
+    // On error, clears to an empty list; SettingsView surfaces a diagnostic
+    // message when empty so the user knows to check their key/network.
     func refreshVoices() async {
         do {
             let voices = try await client.listVoices()
@@ -85,9 +82,6 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
         }
     }
 
-    // Replace the underlying client — cancels any in-flight playback and
-    // invalidates the cached voice list. Call this when the API key changes.
-    // Tests also use this to swap a new fake client in mid-scenario.
     func replaceClient(_ client: ElevenLabsClientType) {
         stop()
         self.client = client
@@ -105,7 +99,7 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
         request: SpeechRequest,
         eventHandler: @escaping @MainActor @Sendable (SpeechDriverEvent) -> Void
     ) throws {
-        guard let voiceID = request.voiceIdentifier?.nonEmpty else {
+        guard let voiceID = request.voiceIdentifier?.nilIfEmpty else {
             throw DriverError.noVoiceSelected
         }
 
@@ -192,8 +186,3 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
     }
 }
 
-private extension String {
-    var nonEmpty: String? {
-        isEmpty ? nil : self
-    }
-}

@@ -175,7 +175,9 @@ final class SpeechController {
     }
 
     func dismissPlaybackError() {
-        clearPlaybackError()
+        playbackErrorDismissTask?.cancel()
+        playbackErrorDismissTask = nil
+        playbackError = nil
     }
 
     private func speak(_ request: SpeechRequest) {
@@ -250,12 +252,6 @@ final class SpeechController {
         }
     }
 
-    private func clearPlaybackError() {
-        playbackErrorDismissTask?.cancel()
-        playbackErrorDismissTask = nil
-        playbackError = nil
-    }
-
     private func finishCurrentPlayback(playbackID: UUID) {
         guard let activePlayback = playbackState.activePlayback,
               activePlayback.request.playbackID == playbackID else {
@@ -274,7 +270,7 @@ final class SpeechController {
 
         switch event {
         case .didStart:
-            clearPlaybackError()
+            dismissPlaybackError()
             playbackState = .speaking(activePlayback)
         case .didResume:
             playbackState = .speaking(activePlayback)
