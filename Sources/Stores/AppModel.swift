@@ -22,6 +22,7 @@ final class AppModel {
     @ObservationIgnored private let userDefaults: UserDefaults
     @ObservationIgnored private let keychain: KeychainStorage
     @ObservationIgnored private var elevenLabsVoiceRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var speechTextProcessor: any SpeechTextProcessor
 
     var sessionsState: SessionsState = .loading([])
     var selectedSessionID: ClaudeSessionSummary.ID? {
@@ -142,13 +143,15 @@ final class AppModel {
         speechController: SpeechController = SpeechController(),
         userDefaults: UserDefaults = .standard,
         selectedTranscriptWatcher: any TranscriptFileWatching = TranscriptFileWatcher(),
-        keychain: KeychainStorage = KeychainStorage(service: AppModel.defaultKeychainService)
+        keychain: KeychainStorage = KeychainStorage(service: AppModel.defaultKeychainService),
+        speechTextProcessor: any SpeechTextProcessor = PassthroughSpeechProcessor()
     ) {
         self.storageService = storageService
         self.speechController = speechController
         self.userDefaults = userDefaults
         self.selectedTranscriptWatcher = selectedTranscriptWatcher
         self.keychain = keychain
+        self.speechTextProcessor = speechTextProcessor
 
         if let storedValue = userDefaults.string(forKey: Self.preferredSpeechBackendKey),
            let backend = SpeechBackend(rawValue: storedValue) {
@@ -314,12 +317,16 @@ final class AppModel {
     }
 
     func playMessage(_ message: TranscriptMessage) {
-        speechController.playNow(
-            text: message.text,
-            messageID: message.id,
-            voiceIdentifier: currentVoiceIdentifier,
-            rate: Float(preferredSpeechRate)
-        )
+        Task { [weak self] in
+            guard let self else { return }
+            let processed = await speechTextProcessor.process(text: message.text)
+            speechController.playNow(
+                text: processed,
+                messageID: message.id,
+                voiceIdentifier: currentVoiceIdentifier,
+                rate: Float(preferredSpeechRate)
+            )
+        }
     }
 
     // If `message` is a user prompt, start at the next assistant; otherwise
@@ -332,19 +339,30 @@ final class AppModel {
 
         let voice = currentVoiceIdentifier
         let rate = Float(preferredSpeechRate)
-        speechController.playNow(
-            text: first.text,
-            messageID: first.id,
-            voiceIdentifier: voice,
-            rate: rate
-        )
-        for next in fromHere.dropFirst() {
-            speechController.enqueue(
-                text: next.text,
-                messageID: next.id,
+
+        Task { [weak self] in
+            guard let self else { return }
+            let processedFirst = await speechTextProcessor.process(text: first.text)
+            speechController.playNow(
+                text: processedFirst,
+                messageID: first.id,
                 voiceIdentifier: voice,
                 rate: rate
             )
+
+            // Process subsequent messages serially and enqueue as each
+            // becomes ready. Serial (not parallel) keeps peak model load
+            // bounded and hides later-message latency behind playback of
+            // earlier ones.
+            for next in fromHere.dropFirst() {
+                let processedNext = await speechTextProcessor.process(text: next.text)
+                speechController.enqueue(
+                    text: processedNext,
+                    messageID: next.id,
+                    voiceIdentifier: voice,
+                    rate: rate
+                )
+            }
         }
     }
 
@@ -441,8 +459,13 @@ final class AppModel {
                         break
                     }
 
+                    let processed = await speechTextProcessor.process(text: message.text)
+                    guard selectedSessionID == sessionID, liveReadSessionID == sessionID else {
+                        break
+                    }
+
                     speechController.enqueue(
-                        text: message.text,
+                        text: processed,
                         messageID: message.id,
                         voiceIdentifier: currentVoiceIdentifier,
                         rate: Float(preferredSpeechRate)

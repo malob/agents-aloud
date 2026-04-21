@@ -176,14 +176,16 @@ struct AppModelTests {
         // Both assistant messages should be driven: first via playNow (started),
         // second via enqueue (started once first finishes). The fake driver
         // doesn't auto-finish, so only the first reaches the driver.
-        #expect(fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-1"])
-        // But SpeechController's currentMessageID should be the first; after
-        // we emit didFinish, the second should start.
-        #expect(fixture.model.speechController.currentMessageID == "assistant-1")
+        // Wait for the async processing + playNow to land.
+        try await waitUntil { fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-1"] }
+        // And the next message must have been enqueued before we emit didFinish.
+        try await waitUntil { fixture.model.speechController.currentMessageID == "assistant-1" }
 
         fixture.avDriver.emit(.didFinish(fixture.avDriver.startedRequests[0].playbackID))
 
-        #expect(fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-1", "assistant-2"])
+        try await waitUntil {
+            fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-1", "assistant-2"]
+        }
     }
 
     @Test
@@ -204,7 +206,7 @@ struct AppModelTests {
 
         // user-2 should be skipped; assistant-2 is the first speakable
         // message at-or-after the anchor.
-        #expect(fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-2"])
+        try await waitUntil { fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-2"] }
     }
 
     @Test
@@ -224,7 +226,7 @@ struct AppModelTests {
         fixture.model.playMessagesFromHere(lastAssistant)
 
         // Last assistant plays; nothing queued after.
-        #expect(fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-2"])
+        try await waitUntil { fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-2"] }
 
         fixture.avDriver.emit(.didFinish(fixture.avDriver.startedRequests[0].playbackID))
         // Still only one started — queue drained.
