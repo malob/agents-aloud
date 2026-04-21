@@ -80,6 +80,7 @@ final class AppModel {
                 try keychain.set(elevenLabsAPIKey, for: Self.elevenLabsAPIKeyAccount)
             } catch {
                 logger.error("Failed to persist ElevenLabs API key: \(error.localizedDescription, privacy: .public)")
+                errorMessage = "Couldn't save ElevenLabs API key to Keychain: \(error.localizedDescription). It will work for this session but you'll need to re-enter it next launch."
             }
             applyElevenLabsAPIKey()
         }
@@ -171,7 +172,19 @@ final class AppModel {
 
         speechController.elevenLabsDriver.replaceClient(ElevenLabsClient(apiKey: key))
         elevenLabsVoiceRefreshTask = Task { [weak self] in
-            await self?.speechController.elevenLabsDriver.refreshVoices()
+            guard let self else { return }
+            do {
+                try await speechController.elevenLabsDriver.refreshVoices()
+            } catch is CancellationError {
+                // Replaced by a newer refresh; nothing to report.
+            } catch {
+                // Only banner the error if ElevenLabs is actually the
+                // active backend — otherwise a stale key reload in the
+                // background shouldn't blast the user with a toast.
+                if preferredSpeechBackend == .elevenLabs {
+                    errorMessage = "Couldn't load ElevenLabs voices: \(error.localizedDescription)"
+                }
+            }
         }
     }
 
@@ -295,6 +308,10 @@ final class AppModel {
         } else if liveReadSessionID == selectedSessionID {
             liveReadSessionID = nil
             selectedTranscriptRefreshTask?.cancel()
+            // Drop queued messages so "Stop Live Speak" actually stops
+            // reading new messages; the current utterance is allowed
+            // to finish so the user isn't cut off mid-sentence.
+            speechController.drainQueue()
         }
     }
 

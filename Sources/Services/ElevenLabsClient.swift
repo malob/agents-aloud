@@ -192,16 +192,13 @@ struct ElevenLabsClient: ElevenLabsClientType {
             throw ClientError.invalidResponse
         }
 
-        var body: [String: Any] = [
+        let body: [String: Any] = [
             "text": text,
             "model_id": modelID,
             "voice_settings": [
                 "speed": speed,
             ],
         ]
-        // Belt-and-suspenders — the Kit's observations indicated some
-        // tenants prefer output_format in the body too.
-        body["output_format"] = Self.pcmOutputFormat
 
         var request = URLRequest(url: finalURL)
         request.httpMethod = "POST"

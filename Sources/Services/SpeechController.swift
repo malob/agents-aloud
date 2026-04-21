@@ -174,6 +174,14 @@ final class SpeechController {
         playbackState = .idle
     }
 
+    // Drop anything queued but let the current utterance finish on its own.
+    // Used when the user disables Live Speak mid-playback — honors the help
+    // text promise that no new messages will be spoken without cutting off
+    // whatever's currently being read.
+    func drainQueue() {
+        queuedRequests.removeAll()
+    }
+
     func dismissPlaybackError() {
         playbackErrorDismissTask?.cancel()
         playbackErrorDismissTask = nil

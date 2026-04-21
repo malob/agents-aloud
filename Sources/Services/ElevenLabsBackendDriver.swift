@@ -62,9 +62,10 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
 
     // Re-fetches the voice list from ElevenLabs. Called by AppModel when
     // the API key is (re-)entered or on app launch if a key is stored.
-    // On error, clears to an empty list; SettingsView surfaces a diagnostic
-    // message when empty so the user knows to check their key/network.
-    func refreshVoices() async {
+    // On error, clears availableVoices and rethrows so the caller can
+    // surface the failure (AppModel puts it in the error banner when
+    // ElevenLabs is the active backend).
+    func refreshVoices() async throws {
         do {
             let voices = try await client.listVoices()
             availableVoices = voices.map { voice in
@@ -79,6 +80,7 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
         } catch {
             logger.error("Failed to list ElevenLabs voices: \(error.localizedDescription, privacy: .public)")
             availableVoices = []
+            throw error
         }
     }
 

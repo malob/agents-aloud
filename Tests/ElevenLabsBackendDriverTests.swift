@@ -72,7 +72,7 @@ struct ElevenLabsBackendDriverTests {
         ]
         let driver = ElevenLabsBackendDriver(client: client)
 
-        await driver.refreshVoices()
+        try await driver.refreshVoices()
 
         #expect(driver.availableVoices.map(\.id) == ["v1", "v2"])
         #expect(driver.availableVoices.map(\.name) == ["Rachel", "Adam"])
@@ -80,12 +80,14 @@ struct ElevenLabsBackendDriverTests {
 
     @Test
     @MainActor
-    func refreshVoicesReturnsEmptyListOnError() async throws {
+    func refreshVoicesThrowsAndEmptiesListOnError() async throws {
         let client = FakeElevenLabsClient()
         client.listVoicesError = NSError(domain: "test", code: 401)
         let driver = ElevenLabsBackendDriver(client: client)
 
-        await driver.refreshVoices()
+        await #expect(throws: NSError.self) {
+            try await driver.refreshVoices()
+        }
         #expect(driver.availableVoices.isEmpty)
     }
 
