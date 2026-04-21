@@ -61,15 +61,20 @@ struct AppModelTests {
 
         let firstSession = try #require(model.sessions.first)
         model.selectedSessionID = firstSession.id
-        try await Task.sleep(for: .milliseconds(250))
+
+        // Wait for the async refreshTranscript kicked off by selectedSessionID.didSet.
+        try await waitUntil { model.transcriptState.messages(for: firstSession.id).count == 2 }
 
         let selectedSessionID = try #require(model.selectedSessionID)
         let originalMessages = model.transcriptState.messages(for: selectedSessionID)
-        #expect(originalMessages.count == 2)
 
         try fileManager.removeItem(at: transcriptURL)
         watcher.emitChange()
-        try await Task.sleep(for: .milliseconds(250))
+
+        // Wait for the file-read error to propagate into .failed state.
+        try await waitUntil {
+            model.transcriptState.errorMessage(for: selectedSessionID) != nil
+        }
 
         #expect(model.transcriptState.messages(for: selectedSessionID) == originalMessages)
         #expect(model.transcriptState.errorMessage(for: selectedSessionID)?.contains("Unable to load transcript") == true)

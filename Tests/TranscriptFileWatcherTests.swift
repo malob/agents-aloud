@@ -47,12 +47,13 @@ struct TranscriptFileWatcherTests {
 
         try fileManager.moveItem(at: watchedFileURL, to: oldFileURL)
         try "replacement".write(to: watchedFileURL, atomically: true, encoding: .utf8)
-        try await Task.sleep(for: .milliseconds(250))
 
-        try append(" more", to: watchedFileURL)
-
+        // Poke the new file repeatedly until the watcher's rearm takes
+        // hold. If rearm already happened, the first append fires onChange;
+        // if not, subsequent appends catch the newly-armed watcher.
         try await waitUntil(timeout: .seconds(2)) {
-            recorder.changeCount > 0 || !recorder.failures.isEmpty
+            try? append(" more", to: watchedFileURL)
+            return recorder.changeCount > 0 || !recorder.failures.isEmpty
         }
 
         #expect(recorder.failures.isEmpty)
@@ -104,19 +105,4 @@ struct TranscriptFileWatcherTests {
         try handle.write(contentsOf: data)
     }
 
-    private func waitUntil(
-        timeout: Duration,
-        condition: @escaping @MainActor () -> Bool
-    ) async throws {
-        let deadline = ContinuousClock.now + timeout
-        while ContinuousClock.now < deadline {
-            if await condition() {
-                return
-            }
-
-            try await Task.sleep(for: .milliseconds(25))
-        }
-
-        Issue.record("Timed out waiting for watcher condition")
-    }
 }
