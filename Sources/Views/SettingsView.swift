@@ -1,4 +1,5 @@
 import AVFoundation
+import FoundationModels
 import SwiftUI
 
 struct SettingsView: View {
@@ -30,11 +31,49 @@ struct SettingsView: View {
             }
 
             speechRateSection
+            speechOptimizationSection
         }
         .formStyle(.grouped)
         .padding()
         .onAppear {
             apiKeyDraft = model.elevenLabsAPIKey ?? ""
+        }
+    }
+
+    @ViewBuilder
+    private var speechOptimizationSection: some View {
+        Section("Speech Text Optimization") {
+            Toggle(
+                "Rewrite messages for speech (Apple Intelligence)",
+                isOn: $model.speechTextOptimizationEnabled
+            )
+            .disabled(!isSpeechOptimizationAvailable)
+
+            Text(speechOptimizationHelperText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var isSpeechOptimizationAvailable: Bool {
+        if case .available = model.speechTextOptimizationAvailability {
+            return true
+        }
+        return false
+    }
+
+    private var speechOptimizationHelperText: String {
+        switch model.speechTextOptimizationAvailability {
+        case .available:
+            return "Rewrites code blocks, tables, and dense structures into speech-friendly prose before playback. Runs entirely on-device. Adds about 1–3 seconds of latency per message the first time it's spoken."
+        case .unavailable(.deviceNotEligible):
+            return "This Mac doesn't support Apple Intelligence, so on-device speech optimization isn't available."
+        case .unavailable(.appleIntelligenceNotEnabled):
+            return "Turn on Apple Intelligence in System Settings > Apple Intelligence & Siri to enable on-device speech optimization."
+        case .unavailable(.modelNotReady):
+            return "Apple Intelligence is still downloading. Speech optimization will become available once it's ready."
+        case .unavailable:
+            return "On-device speech optimization isn't available right now."
         }
     }
 

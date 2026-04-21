@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import FoundationModels
 import Observation
 import OSLog
 
@@ -10,6 +11,7 @@ final class AppModel {
     private static let preferredVoiceIdentifierKey = "preferredVoiceIdentifier"
     private static let preferredSpeechRateKey = "preferredSpeechRate"
     private static let preferredElevenLabsVoiceIDKey = "preferredElevenLabsVoiceID"
+    private static let speechTextOptimizationEnabledKey = "speechTextOptimizationEnabled"
     static let defaultKeychainService = "local.claudecodevoice"
     static let elevenLabsAPIKeyAccount = "elevenlabs_api_key"
     // How far back to show sessions in the sidebar. The session list is for
@@ -129,6 +131,21 @@ final class AppModel {
         }
     }
 
+    // When true, message text is routed through the FoundationModels
+    // on-device LLM to refine it for speech (code → prose, tables →
+    // bullets, etc.) before being handed to the TTS backend. Off by
+    // default — opt-in so users can decide whether the ~1-3s latency
+    // per message is worth the improved listening experience.
+    var speechTextOptimizationEnabled: Bool {
+        didSet {
+            guard oldValue != speechTextOptimizationEnabled else {
+                return
+            }
+            userDefaults.set(speechTextOptimizationEnabled, forKey: Self.speechTextOptimizationEnabledKey)
+            applySpeechTextProcessor()
+        }
+    }
+
     let speechController: SpeechController
 
     @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
@@ -178,6 +195,7 @@ final class AppModel {
         }
         elevenLabsAPIKey = storedKey
         preferredElevenLabsVoiceID = userDefaults.string(forKey: Self.preferredElevenLabsVoiceIDKey)
+        speechTextOptimizationEnabled = userDefaults.bool(forKey: Self.speechTextOptimizationEnabledKey)
 
         speechController.backend = preferredSpeechBackend
         preferredVoiceIdentifier = speechController.resolveVoiceIdentifier(
@@ -185,6 +203,33 @@ final class AppModel {
         )
 
         applyElevenLabsAPIKey()
+        applySpeechTextProcessor()
+    }
+
+    // Swap the speech text processor based on the user's preference.
+    // When enabled, use the on-device FoundationModels refiner; when
+    // disabled, passthrough. Called from init and on setting toggle.
+    //
+    // The FM processor handles its own availability gating — if Apple
+    // Intelligence is disabled or unsupported, it passes through
+    // without user intervention (logs once). We still call prewarm on
+    // enable so the first real playback doesn't pay the model-load
+    // cost.
+    private func applySpeechTextProcessor() {
+        if speechTextOptimizationEnabled {
+            let processor = FoundationModelSpeechProcessor()
+            speechTextProcessor = processor
+            processor.prewarm()
+        } else {
+            speechTextProcessor = PassthroughSpeechProcessor()
+        }
+    }
+
+    // Whether on-device Apple Intelligence is available for speech
+    // refinement. Surfaced in Settings so users who toggle the feature
+    // on but don't see any behavior change understand why.
+    var speechTextOptimizationAvailability: SystemLanguageModel.Availability {
+        SystemLanguageModel.default.availability
     }
 
     // Swap the ElevenLabs driver's client to one configured with the
