@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+@testable import ClaudeCodeVoice
 
 // Poll a @MainActor-isolated condition until it becomes true or the timeout
 // elapses. Preferred over a fixed `Task.sleep(for: .milliseconds(X))` when
@@ -26,4 +27,59 @@ func waitUntil(
     }
 
     Issue.record("Timed out after \(timeout) waiting for condition")
+}
+
+// Shared fake driver for tests that need to drive SpeechController without
+// playing real audio. Records started requests + pause/resume/stop calls so
+// assertions can check what the controller routed to the driver.
+@MainActor
+final class FakeSpeechBackendDriver: SpeechBackendDriver {
+    struct StartFailure: LocalizedError {
+        let description: String
+        var errorDescription: String? { description }
+    }
+
+    let availableVoices: [SpeechVoiceOption]
+    let wordsPerMinute: Int?
+    private(set) var startedRequests: [SpeechRequest] = []
+    private(set) var pauseCallCount = 0
+    private(set) var resumeCallCount = 0
+    private(set) var stopCallCount = 0
+    var startError: Error?
+    private var eventHandler: (@MainActor @Sendable (SpeechDriverEvent) -> Void)?
+
+    init(
+        availableVoices: [SpeechVoiceOption] = [],
+        wordsPerMinute: Int? = nil
+    ) {
+        self.availableVoices = availableVoices
+        self.wordsPerMinute = wordsPerMinute
+    }
+
+    func resolveVoiceIdentifier(_ identifier: String?) -> String? {
+        if let identifier {
+            return identifier
+        }
+        return availableVoices.first?.id
+    }
+
+    func start(
+        request: SpeechRequest,
+        eventHandler: @escaping @MainActor @Sendable (SpeechDriverEvent) -> Void
+    ) throws {
+        if let startError {
+            throw startError
+        }
+
+        self.eventHandler = eventHandler
+        startedRequests.append(request)
+    }
+
+    func pause() { pauseCallCount += 1 }
+    func resume() { resumeCallCount += 1 }
+    func stop() { stopCallCount += 1 }
+
+    func emit(_ event: SpeechDriverEvent) {
+        eventHandler?(event)
+    }
 }
