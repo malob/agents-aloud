@@ -201,7 +201,7 @@ private struct SessionHeaderView: View {
                 HStack(spacing: 8) {
                     if let modifiedAt = session.modifiedAt {
                         SessionStatusBadge(
-                            title: DateFormatting.sessionTimestamp.string(from: modifiedAt),
+                            title: modifiedAt.formatted(date: .abbreviated, time: .shortened),
                             systemImage: "clock"
                         )
                         .glassEffectID("updated-at", in: glassNamespace)

@@ -1,15 +1,10 @@
 import SwiftUI
 
 struct SidebarView: View {
-    let model: AppModel
+    @Bindable var model: AppModel
 
     var body: some View {
-        List(
-            selection: Binding(
-                get: { model.selectedSessionID },
-                set: { model.selectSession(id: $0) }
-            )
-        ) {
+        List(selection: $model.selectedSessionID) {
             ForEach(model.sessions) { session in
                 SessionRowView(
                     session: session,
@@ -68,7 +63,7 @@ private struct SessionRowView: View {
 
                 if let modifiedAt = session.modifiedAt {
                     SidebarMetadataBadge(
-                        text: DateFormatting.sessionRelativeTimestamp.localizedString(for: modifiedAt, relativeTo: .now),
+                        text: modifiedAt.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated)),
                         systemImage: "clock"
                     )
                 }

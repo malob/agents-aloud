@@ -60,7 +60,7 @@ struct AppModelTests {
         await model.start()
 
         let firstSession = try #require(model.sessions.first)
-        model.selectSession(id: firstSession.id)
+        model.selectedSessionID = firstSession.id
         try await Task.sleep(for: .milliseconds(250))
 
         let selectedSessionID = try #require(model.selectedSessionID)

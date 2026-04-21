@@ -24,7 +24,35 @@ final class AppModel {
     @ObservationIgnored private var elevenLabsVoiceRefreshTask: Task<Void, Never>?
 
     var sessionsState: SessionsState = .loading([])
-    var selectedSessionID: ClaudeSessionSummary.ID?
+    var selectedSessionID: ClaudeSessionSummary.ID? {
+        didSet {
+            guard oldValue != selectedSessionID else {
+                return
+            }
+
+            PerfLog.mark("AppModel.selectedSessionID change id=\(selectedSessionID ?? "nil")")
+            selectionRefreshTask?.cancel()
+            selectedTranscriptRefreshTask?.cancel()
+            updateSelectedTranscriptObservation()
+
+            guard let id = selectedSessionID else {
+                transcriptState = .none
+                return
+            }
+
+            let cached = cachedTranscriptMessages(for: id)
+            PerfLog.mark("AppModel.selectedSessionID setLoading cached=\(cached.count)")
+            transcriptState = .loading(sessionID: id, messages: cached)
+
+            selectionRefreshTask = Task { [weak self] in
+                guard let self else {
+                    return
+                }
+
+                await refreshTranscript(for: id, allowLiveRead: false, showLoadingState: true)
+            }
+        }
+    }
     var transcriptState: TranscriptState = .none
     var errorMessage: String?
     var liveReadSessionID: ClaudeSessionSummary.ID?
@@ -262,36 +290,6 @@ final class AppModel {
         }
     }
 
-    func selectSession(id: ClaudeSessionSummary.ID?) {
-        guard selectedSessionID != id else {
-            return
-        }
-
-        PerfLog.mark("AppModel.selectSession start id=\(id ?? "nil")")
-
-        selectionRefreshTask?.cancel()
-        selectedTranscriptRefreshTask?.cancel()
-        selectedSessionID = id
-        updateSelectedTranscriptObservation()
-
-        guard let id else {
-            transcriptState = .none
-            return
-        }
-
-        let cached = cachedTranscriptMessages(for: id)
-        PerfLog.mark("AppModel.selectSession setLoading cached=\(cached.count)")
-        transcriptState = .loading(sessionID: id, messages: cached)
-
-        selectionRefreshTask = Task { [weak self] in
-            guard let self else {
-                return
-            }
-
-            await refreshTranscript(for: id, allowLiveRead: false, showLoadingState: true)
-        }
-    }
-
     func setLiveReadEnabled(_ isEnabled: Bool) {
         guard let selectedSessionID else {
             liveReadSessionID = nil
@@ -373,9 +371,8 @@ final class AppModel {
                 return
             }
 
+            // didSet on selectedSessionID handles transcriptState + watcher cleanup.
             selectedSessionID = nil
-            transcriptState = .none
-            updateSelectedTranscriptObservation()
         } catch {
             let newErrorMessage = sessionLoadErrorMessage(for: error)
             sessionsState = .failed(existingSessions, message: newErrorMessage)

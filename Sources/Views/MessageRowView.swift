@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 // Equatable + `.equatable()` at the call site lets SwiftUI skip re-rendering
@@ -38,7 +37,7 @@ struct MessageRowView: View, Equatable {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(roleAppearance.color)
 
-                Text(DateFormatting.messageTimestamp.string(from: message.timestamp))
+                Text(message.timestamp.formatted(date: .omitted, time: .shortened))
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -71,14 +70,12 @@ struct MessageRowView: View, Equatable {
                     )
                     .onHover { hovering in
                         isHoveringSpeakButton = hovering
-                        if hovering {
-                            // Snapshot the modifier state at hover-start so the
-                            // affordance is correct even if Option was held
-                            // before the pointer entered the button.
-                            isOptionHeld = NSEvent.modifierFlags.contains(.option)
-                        }
                     }
-                    .onModifierKeysChanged(mask: .option) { _, new in
+                    // initial: true seeds isOptionHeld with the current modifier
+                    // state on view appear — handles the case where Option is
+                    // already held before the pointer enters the button, so we
+                    // don't need NSEvent.modifierFlags peeks from view code.
+                    .onModifierKeysChanged(mask: .option, initial: true) { _, new in
                         isOptionHeld = new.contains(.option)
                     }
                 }
