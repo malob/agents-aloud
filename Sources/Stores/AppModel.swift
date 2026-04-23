@@ -69,6 +69,13 @@ final class AppModel {
     var transcriptState: TranscriptState = .none
     var errorMessage: String?
     var liveReadSessionID: ClaudeSessionSummary.ID?
+
+    // True while a playback preparation Task is running (typically the
+    // 1-3s window the FoundationModel refiner takes to process a
+    // message). Surfaced so UI can enable a "Stop" affordance during
+    // preparation — without this, the user has no way to cancel a
+    // multi-second refine they've changed their mind about.
+    private(set) var isPreparingPlayback: Bool = false
     var preferredSpeechBackend: SpeechBackend {
         didSet {
             guard oldValue != preferredSpeechBackend else {
@@ -386,7 +393,9 @@ final class AppModel {
 
     func playMessage(_ message: TranscriptMessage) {
         playbackPreparationTask?.cancel()
+        isPreparingPlayback = true
         playbackPreparationTask = Task { [weak self] in
+            defer { self?.isPreparingPlayback = false }
             guard let self else { return }
             let processed = await speechTextProcessor.process(text: message.text)
             // User intent may have changed during the await (pressed Stop,
@@ -414,7 +423,9 @@ final class AppModel {
         let rate = Float(preferredSpeechRate)
 
         playbackPreparationTask?.cancel()
+        isPreparingPlayback = true
         playbackPreparationTask = Task { [weak self] in
+            defer { self?.isPreparingPlayback = false }
             guard let self else { return }
             let processedFirst = await speechTextProcessor.process(text: first.text)
             guard !Task.isCancelled else { return }
@@ -450,6 +461,7 @@ final class AppModel {
     func stopPlayback() {
         playbackPreparationTask?.cancel()
         playbackPreparationTask = nil
+        isPreparingPlayback = false
         speechController.stop()
     }
 

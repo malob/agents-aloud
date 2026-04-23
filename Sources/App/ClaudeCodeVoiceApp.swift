@@ -46,7 +46,11 @@ struct ClaudeCodeVoiceApp: App {
                     model.stopPlayback()
                 }
                 .keyboardShortcut(".", modifiers: .command)
-                .disabled(!model.speechController.isSpeaking && !model.speechController.isPaused)
+                .disabled(
+                    !model.speechController.isSpeaking
+                        && !model.speechController.isPaused
+                        && !model.isPreparingPlayback
+                )
             }
         }
 

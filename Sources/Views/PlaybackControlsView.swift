@@ -35,7 +35,10 @@ struct PlaybackControlsView: View {
             } label: {
                 Label("Stop", systemImage: "stop.fill")
             }
-            .disabled(!controller.isSpeaking && !controller.isPaused)
+            // Enabled during FM preprocessing too — otherwise a user
+            // who changed their mind during the 1-3s refine window has
+            // no way to cancel.
+            .disabled(!controller.isSpeaking && !controller.isPaused && !model.isPreparingPlayback)
             .help("Stop speech")
         }
         .labelStyle(.iconOnly)

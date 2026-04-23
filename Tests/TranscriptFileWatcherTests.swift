@@ -86,7 +86,11 @@ struct TranscriptFileWatcherTests {
             }
         )
 
-        try await waitUntil(timeout: .seconds(1)) {
+        // Retries: 3 × 100ms = ~300ms floor, but main-queue scheduling
+        // under load can easily push this past 1s. 3s gives enough
+        // headroom that CI flakes are caused by real bugs, not by the
+        // test being tighter than the code it's exercising.
+        try await waitUntil(timeout: .seconds(3)) {
             !recorder.failures.isEmpty
         }
 

@@ -119,6 +119,56 @@ struct ClaudeStorageServiceTests {
         try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
     }
 
+    @Test
+    func loadSessionsRecomputesSummaryWhenMetadataChangesWithoutTranscriptChange() async throws {
+        // Regression: the summary cache was keyed on transcript mtime only,
+        // so Claude updating a session title in .session_cache.json or
+        // sessions-index.json without touching the JSONL left the sidebar
+        // showing a stale summary until the transcript was re-touched.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
+        let sessionsIndexURL = projectDirectory.appendingPathComponent("sessions-index.json", isDirectory: false)
+
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        // Start with a transcript whose first prompt is "Initial prompt.";
+        // no metadata yet so the summary falls back to the first prompt.
+        try initialTranscript.write(to: transcriptURL, atomically: true, encoding: .utf8)
+
+        let service = ClaudeStorageService(projectsRoot: projectsRoot)
+        let firstPass = try await service.loadSessions()
+        let initialSummary = try #require(firstPass.first?.summary)
+        #expect(initialSummary.contains("Initial prompt"))
+
+        // Now write a sessions-index.json with an AI-generated title,
+        // WITHOUT touching the transcript. Old cache logic would keep
+        // returning the first-prompt fallback.
+        let indexJSON = """
+        {
+          "entries": [
+            {
+              "sessionId": "session-1",
+              "fullPath": "\(transcriptURL.path)",
+              "summary": "AI-generated distinctive title"
+            }
+          ]
+        }
+        """
+        // Small sleep to ensure metadata mtime advances past transcript mtime
+        // on filesystems with 1-second mtime resolution.
+        try await Task.sleep(for: .milliseconds(50))
+        try indexJSON.write(to: sessionsIndexURL, atomically: true, encoding: .utf8)
+
+        let secondPass = try await service.loadSessions()
+        let refreshedSummary = try #require(secondPass.first?.summary)
+        #expect(refreshedSummary == "AI-generated distinctive title")
+    }
+
     private var rewrittenTranscript: String {
         """
         {"type":"user","uuid":"user-A","timestamp":"2026-04-17T18:00:00Z","sessionId":"session-1","cwd":"/tmp/demo-project","message":{"role":"user","content":"A different first prompt after the rewind."}}

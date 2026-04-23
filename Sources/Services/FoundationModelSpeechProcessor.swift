@@ -2,6 +2,21 @@ import Foundation
 import FoundationModels
 import OSLog
 
+// Tiny seam so tests can drive the processor's availability transitions
+// (unavailable → available, available → stays available) without
+// depending on the state of Apple Intelligence on the test machine.
+protocol LanguageModelAvailabilityProviding: Sendable {
+    @MainActor
+    var availability: SystemLanguageModel.Availability { get }
+}
+
+struct DefaultLanguageModelAvailabilityProvider: LanguageModelAvailabilityProviding {
+    @MainActor
+    var availability: SystemLanguageModel.Availability {
+        SystemLanguageModel.default.availability
+    }
+}
+
 // Uses Apple's on-device Foundation Models framework to rewrite
 // visually-structured assistant output (code blocks, tables, URLs,
 // bullet lists) into speech-friendly prose. Falls back to the input
@@ -14,9 +29,11 @@ import OSLog
 //   with the same Instructions on every call. The session is a single
 //   context window; we reset it between calls so token usage doesn't
 //   accumulate.
-// - Synchronous availability check before the first call. If
-//   .available is false, log once and permanently passthrough for the
-//   lifetime of this processor instance.
+// - Availability checked on each call; `.available` is cached
+//   (monotonic — the model doesn't become un-downloaded mid-session)
+//   but any unavailable state re-checks so the user enabling Apple
+//   Intelligence or finishing a model download mid-session takes effect
+//   without a toggle restart.
 // - Length pre-check: skip messages longer than maxInputChars to leave
 //   output room within the 4096-token context window.
 // - Short-circuit trivial input (empty, whitespace-only, or clearly-
@@ -71,8 +88,13 @@ final class FoundationModelSpeechProcessor: SpeechTextProcessor {
     // toggle-on dance.
     private var knownAvailable = false
     private var session: LanguageModelSession?
+    private let availabilityProvider: any LanguageModelAvailabilityProviding
 
-    init() {}
+    init(
+        availabilityProvider: any LanguageModelAvailabilityProviding = DefaultLanguageModelAvailabilityProvider()
+    ) {
+        self.availabilityProvider = availabilityProvider
+    }
 
     // Returns true iff the on-device model is currently available.
     // Property reads on SystemLanguageModel.default are cheap — the
@@ -81,7 +103,7 @@ final class FoundationModelSpeechProcessor: SpeechTextProcessor {
         if knownAvailable {
             return true
         }
-        switch SystemLanguageModel.default.availability {
+        switch availabilityProvider.availability {
         case .available:
             knownAvailable = true
             Self.logger.info("FoundationModel available; speech processor active")
