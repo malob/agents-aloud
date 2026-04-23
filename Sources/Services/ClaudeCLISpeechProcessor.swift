@@ -3,24 +3,25 @@ import OSLog
 import Synchronization
 
 // Speech text optimizer that shells out to `claude` CLI (Claude Code)
-// with the Haiku model. Strictly better output than the on-device
-// FoundationModel for this task — handles code blocks, markdown tables,
-// URLs, file paths, bullet/numbered lists, and headings correctly.
-// The latency cost is real (~5s for short messages, 40–60s for
-// structure-heavy 1–2KB messages); the passthrough fallback kicks in
-// past a hard cap so the user isn't stranded on an outlier response.
+// with Sonnet. Strictly better output than the on-device FoundationModel
+// — handles code blocks, markdown tables, URLs, file paths, bullet and
+// numbered lists, and headings correctly. Sonnet was chosen over Haiku
+// after benchmarking: on our representative 1.3KB structure-heavy
+// input Sonnet averaged ~9.6s with 0.2s run-to-run variance, versus
+// Haiku's ~18s with 12s variance (Haiku 4.5 has much noisier inference
+// provisioning than Sonnet). Cost per rewrite is ~$0.01 worst case,
+// absorbed by the user's OAuth'd Claude Code subscription.
 //
 // The invocation recipe is copied from the user's TTS plugin
 // (~/.config/nix-config/configs/claude/plugins/tts/skills/say/scripts/speak.sh),
-// which took the naive `claude --print` from 44s down to ~5s on small
-// inputs by avoiding per-project CLAUDE.md, MCP, hook, and plugin
+// which took the naive `claude --print` from 44s down to the numbers
+// above by avoiding per-project CLAUDE.md, MCP, hook, and plugin
 // discovery:
 //
 //   cd "${TMPDIR:-/tmp}" && \
 //     TTS_SUBPROCESS=1 CLAUDECODE='' \
 //     command claude --print \
-//       --model haiku \
-//       --session-id <fresh-uuid> \
+//       --model sonnet \
 //       --no-session-persistence \
 //       --tools "" \
 //       --disable-slash-commands \
@@ -32,11 +33,10 @@ import Synchronization
 // - `CLAUDECODE=''`: unsets "already inside Claude Code" guard
 // - `TTS_SUBPROCESS=1`: short-circuits user's own TTS stop-hook so it
 //   doesn't recurse if they have one installed
-// - `--session-id UUID + --no-session-persistence`: the combination
-//   suppresses JSONL session-file creation entirely (neither flag alone
-//   does). Without this our ephemeral rewrite calls would pollute
-//   `~/.claude/projects/-private-var-folders.../` and show up as
-//   "sessions" in our own sidebar.
+// - `--no-session-persistence`: suppresses JSONL session-file creation
+//   entirely. Earlier we paired it with `--session-id UUID`, but that
+//   combination actually creates an empty (zero-message) session file,
+//   which is worse — the flag alone does the right thing.
 // - `--tools ""`: no built-in tools (saves init time)
 // - `--disable-slash-commands`: no skills scan
 // - `--strict-mcp-config` (without any `--mcp-config`): no MCP servers
@@ -73,20 +73,47 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
     // a better UX than making the user wait 60+ seconds on an outlier.
     private static let maxInputChars = 4000
 
-    // Hard timeout on the subprocess. Measured empirically: Haiku on a
-    // ~1300-char structure-heavy input (tables + code + lists) via this
-    // invocation recipe takes ~40–50s end to end. Earlier 30s cap was
-    // killing legitimate rewrites mid-stream. 90s gives comfortable
-    // headroom without stranding the user forever on a real hang.
-    private static let subprocessTimeout: Duration = .seconds(90)
+    // Hard timeout on the subprocess. Sonnet averages ~10s on a ~1.3KB
+    // structure-heavy input with very tight run-to-run variance, but
+    // network hiccups and auth-refresh paths can stretch it. 60s caps
+    // the worst case without stranding the user forever on a real hang.
+    private static let subprocessTimeout: Duration = .seconds(60)
 
+    // System prompt steering the model toward "rewrite for speech,
+    // preserve everything." The two NEVER lines are both load-bearing:
+    //
+    //  - Without the URL/path-spelling line, the model (Haiku and
+    //    Sonnet both) dot-slash-spells URLs and paths letter by letter.
+    //  - Without the dot-extension line, the model leaves bare
+    //    filenames like `AppConfig.swift` intact — TTS then reads
+    //    them as "AppConfig dot swift." Caught this in a 4-run
+    //    benchmark: 3/4 runs leaked filename-with-extension.
+    //
+    // Keep both rules. They add ~300 chars to the prompt and the
+    // latency impact is within API-side noise.
     static let defaultInstructions = """
-    Rewrite the input as plain spoken English suitable for text-to-speech. \
-    Strip all markdown (headings, bold, italic), code fences, table pipes, \
-    list markers (bullets and numbered), URLs, and file paths. Describe \
-    code in natural English preserving identifier names. Preserve every \
-    piece of information — do not summarize or drop detail. Do not add \
-    preamble, commentary, or framing — return only the rewritten text.
+    Rewrite the input as plain spoken English suitable for text-to-speech.
+
+    Strip all markdown (headings, bold, italic, code fences, table pipes, \
+    bullet and numbered list markers).
+
+    NEVER spell URLs or file paths out loud character by character \
+    (no "dot com slash benchmarks," no "slash Users slash malo slash …"). \
+    Replace a URL with a short natural phrase like "a link to the \
+    benchmark methodology."
+
+    NEVER include filenames with their dot-extensions — not \
+    "AppConfig.swift," not "fixtures.sh," not "benchmarks.csv." Refer \
+    to files by their short name plus the language or purpose, for \
+    example "the AppConfig Swift file," "the regenerate-fixtures \
+    script," "the benchmarks CSV." Never use full paths.
+
+    Describe code in natural English, preserving every identifier name \
+    exactly as written.
+
+    Preserve every piece of information — do not summarize or drop \
+    detail. Do not add preamble, commentary, or framing. Return only \
+    the rewritten text.
     """
 
     private let instructions: String
@@ -96,7 +123,7 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
 
     init(
         instructions: String = ClaudeCLISpeechProcessor.defaultInstructions,
-        model: String = "haiku",
+        model: String = "sonnet",
         binaryLocator: @escaping @Sendable () -> URL? = { ClaudeCLISpeechProcessor.findClaudeBinary() }
     ) {
         self.instructions = instructions
@@ -140,7 +167,6 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
             process.arguments = [
                 "--print",
                 "--model", model,
-                "--session-id", UUID().uuidString,
                 "--no-session-persistence",
                 "--tools", "",
                 "--disable-slash-commands",
