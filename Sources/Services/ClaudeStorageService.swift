@@ -58,18 +58,30 @@ actor ClaudeStorageService {
 
         var sessions: [ClaudeSessionSummary] = []
         for candidate in selected {
+            let projectURL = candidate.url.deletingLastPathComponent()
+            let sessionCacheModifiedAt = fileModificationDate(
+                for: projectURL.appendingPathComponent(".session_cache.json", isDirectory: false)
+            )
+            let sessionsIndexModifiedAt = fileModificationDate(
+                for: projectURL.appendingPathComponent("sessions-index.json", isDirectory: false)
+            )
+
             if let cached = sessionSummaryCache[candidate.url.path],
-               cached.modifiedAt == candidate.modifiedAt {
+               cached.modifiedAt == candidate.modifiedAt,
+               cached.sessionCacheModifiedAt == sessionCacheModifiedAt,
+               cached.sessionsIndexModifiedAt == sessionsIndexModifiedAt {
                 sessions.append(cached.summary)
                 continue
             }
-            let projectURL = candidate.url.deletingLastPathComponent()
+
             let metadata = try loadProjectMetadataIndex(for: projectURL)
             guard let summary = try Self.summarize(candidate: candidate, metadata: metadata) else {
                 continue
             }
             sessionSummaryCache[candidate.url.path] = CachedSessionSummary(
                 modifiedAt: candidate.modifiedAt,
+                sessionCacheModifiedAt: sessionCacheModifiedAt,
+                sessionsIndexModifiedAt: sessionsIndexModifiedAt,
                 summary: summary
             )
             sessions.append(summary)
@@ -345,6 +357,13 @@ private struct TranscriptCandidate: Sendable {
 
 private struct CachedSessionSummary {
     let modifiedAt: Date
+    // Metadata mtimes captured when this summary was computed. If either
+    // has changed since, the cached summary may have a stale title / AI
+    // summary and must be recomputed even though the transcript mtime is
+    // unchanged. (Claude sometimes updates .session_cache.json /
+    // sessions-index.json without touching the JSONL.)
+    let sessionCacheModifiedAt: Date?
+    let sessionsIndexModifiedAt: Date?
     let summary: ClaudeSessionSummary
 }
 

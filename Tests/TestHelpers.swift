@@ -83,3 +83,42 @@ final class FakeSpeechBackendDriver: SpeechBackendDriver {
         eventHandler?(event)
     }
 }
+
+// Slow fake processor for testing cancellation semantics. Awaits an
+// external "release" signal before returning the processed text.
+// Tests: spawn a playback, then trigger a user-intent change (stop,
+// session switch, Live Speak off), then release — processed text
+// should NOT reach the driver.
+@MainActor
+final class ControllableSpeechTextProcessor: SpeechTextProcessor {
+    // `continuations` keyed by invocation id so a test can release
+    // specific calls in order.
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var invocationCount = 0
+
+    func process(text: String) async -> String {
+        invocationCount += 1
+        await withCheckedContinuation { cc in
+            waiters.append(cc)
+        }
+        return text + " [processed]"
+    }
+
+    // Release the next-earliest pending process() call.
+    func releaseNext() {
+        guard !waiters.isEmpty else { return }
+        let cc = waiters.removeFirst()
+        cc.resume()
+    }
+
+    // Release all pending process() calls.
+    func releaseAll() {
+        let pending = waiters
+        waiters.removeAll()
+        for cc in pending {
+            cc.resume()
+        }
+    }
+
+    var pendingCount: Int { waiters.count }
+}

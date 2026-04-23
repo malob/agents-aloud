@@ -63,39 +63,41 @@ final class FoundationModelSpeechProcessor: SpeechTextProcessor {
     // call entirely. Saves the 1-3s round-trip on plain-prose messages.
     private static let structuralMarkers: [Character] = ["`", "|", "#", "*", "_", "[", "]", "(", ")", "{", "}", "<", ">", "\\"]
 
-    private enum Availability {
-        case unchecked
-        case available
-        case unavailable(String)
-    }
-
-    private var availabilityCache: Availability = .unchecked
+    // Cache `.available` once we see it (stable — model doesn't become
+    // un-downloaded mid-session) but re-check anything else every call.
+    // That way if the user turns on Apple Intelligence, finishes the
+    // model download, or the device becomes eligible while the app is
+    // open, the processor starts working without needing a toggle-off /
+    // toggle-on dance.
+    private var knownAvailable = false
     private var session: LanguageModelSession?
 
     init() {}
 
-    // Check once, cache, so the hot path doesn't re-query availability
-    // on every message.
-    private func resolvedAvailability() -> Availability {
-        if case .unchecked = availabilityCache {
-            let model = SystemLanguageModel.default
-            switch model.availability {
-            case .available:
-                availabilityCache = .available
-                Self.logger.info("FoundationModel available; speech processor active")
-            case .unavailable(let reason):
-                let description = String(describing: reason)
-                availabilityCache = .unavailable(description)
-                Self.logger.info("FoundationModel unavailable (\(description, privacy: .public)); passthrough")
-            }
+    // Returns true iff the on-device model is currently available.
+    // Property reads on SystemLanguageModel.default are cheap — the
+    // re-check on unavailable doesn't meaningfully impact hot-path cost.
+    private func checkAvailable() -> Bool {
+        if knownAvailable {
+            return true
         }
-        return availabilityCache
+        switch SystemLanguageModel.default.availability {
+        case .available:
+            knownAvailable = true
+            Self.logger.info("FoundationModel available; speech processor active")
+            return true
+        case .unavailable(let reason):
+            Self.logger.debug(
+                "FoundationModel unavailable (\(String(describing: reason), privacy: .public)); passthrough"
+            )
+            return false
+        }
     }
 
     // Pre-warm so the first real call doesn't pay cold-start cost. Safe
     // to call when unavailable (no-ops).
     func prewarm() {
-        guard case .available = resolvedAvailability() else { return }
+        guard checkAvailable() else { return }
         ensureSession().prewarm()
     }
 
@@ -127,7 +129,7 @@ final class FoundationModelSpeechProcessor: SpeechTextProcessor {
             // Plain prose — the model would return it unchanged anyway.
             return text
         }
-        guard case .available = resolvedAvailability() else { return text }
+        guard checkAvailable() else { return text }
 
         // Real call.
         let session = ensureSession()

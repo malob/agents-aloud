@@ -1,7 +1,11 @@
 import SwiftUI
 
 struct PlaybackControlsView: View {
-    let controller: SpeechController
+    let model: AppModel
+
+    private var controller: SpeechController {
+        model.speechController
+    }
 
     var body: some View {
         ControlGroup {
@@ -23,7 +27,11 @@ struct PlaybackControlsView: View {
             }
 
             Button {
-                controller.stop()
+                // model.stopPlayback() cancels in-flight preprocessing
+                // too, so a pending FM refine can't sneak through after
+                // the user hit Stop. Don't route through controller.stop()
+                // directly.
+                model.stopPlayback()
             } label: {
                 Label("Stop", systemImage: "stop.fill")
             }

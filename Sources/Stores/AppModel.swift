@@ -25,6 +25,13 @@ final class AppModel {
     @ObservationIgnored private let keychain: KeychainStorage
     @ObservationIgnored private var elevenLabsVoiceRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var speechTextProcessor: any SpeechTextProcessor
+    // Task for the currently-in-flight preprocessing-then-playback call
+    // (playMessage / playMessagesFromHere). Tracked so that user-initiated
+    // intent changes (stop, new Speak, session switch, disable Live Speak)
+    // can cancel a pending preprocess before its result races into the
+    // audio pipeline. Without this, a 2s processor await after the user
+    // pressed Stop would still end up calling playNow when it resumed.
+    @ObservationIgnored private var playbackPreparationTask: Task<Void, Never>?
 
     var sessionsState: SessionsState = .loading([])
     var selectedSessionID: ClaudeSessionSummary.ID? {
@@ -36,6 +43,9 @@ final class AppModel {
             PerfLog.mark("AppModel.selectedSessionID change id=\(selectedSessionID ?? "nil")")
             selectionRefreshTask?.cancel()
             selectedTranscriptRefreshTask?.cancel()
+            // Cancel any in-flight playback preprocessing too; the user
+            // switching sessions is a clear intent change.
+            playbackPreparationTask?.cancel()
             updateSelectedTranscriptObservation()
 
             guard let id = selectedSessionID else {
@@ -161,14 +171,18 @@ final class AppModel {
         userDefaults: UserDefaults = .standard,
         selectedTranscriptWatcher: any TranscriptFileWatching = TranscriptFileWatcher(),
         keychain: KeychainStorage = KeychainStorage(service: AppModel.defaultKeychainService),
-        speechTextProcessor: any SpeechTextProcessor = PassthroughSpeechProcessor()
+        // Tests can inject an explicit processor to control latency /
+        // behavior. nil = derive from the persisted setting at init
+        // (passthrough by default, FoundationModel when enabled).
+        speechTextProcessor: (any SpeechTextProcessor)? = nil
     ) {
         self.storageService = storageService
         self.speechController = speechController
         self.userDefaults = userDefaults
         self.selectedTranscriptWatcher = selectedTranscriptWatcher
         self.keychain = keychain
-        self.speechTextProcessor = speechTextProcessor
+        let explicitProcessor = speechTextProcessor
+        self.speechTextProcessor = explicitProcessor ?? PassthroughSpeechProcessor()
 
         if let storedValue = userDefaults.string(forKey: Self.preferredSpeechBackendKey),
            let backend = SpeechBackend(rawValue: storedValue) {
@@ -203,7 +217,11 @@ final class AppModel {
         )
 
         applyElevenLabsAPIKey()
-        applySpeechTextProcessor()
+        // Only derive from the setting if the caller didn't inject one
+        // explicitly. Tests need their injected processor to survive init.
+        if explicitProcessor == nil {
+            applySpeechTextProcessor()
+        }
     }
 
     // Swap the speech text processor based on the user's preference.
@@ -310,6 +328,7 @@ final class AppModel {
         selectionRefreshTask?.cancel()
         selectedTranscriptRefreshTask?.cancel()
         elevenLabsVoiceRefreshTask?.cancel()
+        playbackPreparationTask?.cancel()
     }
 
     func start() async {
@@ -354,6 +373,10 @@ final class AppModel {
         } else if liveReadSessionID == selectedSessionID {
             liveReadSessionID = nil
             selectedTranscriptRefreshTask?.cancel()
+            // Also cancel any in-flight preprocessing so a pending
+            // processor call for a yet-to-be-enqueued assistant message
+            // can't sneak through after the user disabled Live Speak.
+            playbackPreparationTask?.cancel()
             // Drop queued messages so "Stop Live Speak" actually stops
             // reading new messages; the current utterance is allowed
             // to finish so the user isn't cut off mid-sentence.
@@ -362,9 +385,14 @@ final class AppModel {
     }
 
     func playMessage(_ message: TranscriptMessage) {
-        Task { [weak self] in
+        playbackPreparationTask?.cancel()
+        playbackPreparationTask = Task { [weak self] in
             guard let self else { return }
             let processed = await speechTextProcessor.process(text: message.text)
+            // User intent may have changed during the await (pressed Stop,
+            // clicked another message, switched session). Bail before
+            // re-starting playback with stale input.
+            guard !Task.isCancelled else { return }
             speechController.playNow(
                 text: processed,
                 messageID: message.id,
@@ -385,9 +413,11 @@ final class AppModel {
         let voice = currentVoiceIdentifier
         let rate = Float(preferredSpeechRate)
 
-        Task { [weak self] in
+        playbackPreparationTask?.cancel()
+        playbackPreparationTask = Task { [weak self] in
             guard let self else { return }
             let processedFirst = await speechTextProcessor.process(text: first.text)
+            guard !Task.isCancelled else { return }
             speechController.playNow(
                 text: processedFirst,
                 messageID: first.id,
@@ -398,9 +428,11 @@ final class AppModel {
             // Process subsequent messages serially and enqueue as each
             // becomes ready. Serial (not parallel) keeps peak model load
             // bounded and hides later-message latency behind playback of
-            // earlier ones.
+            // earlier ones. Check cancellation before each enqueue so Stop
+            // mid-sequence actually stops the sequence.
             for next in fromHere.dropFirst() {
                 let processedNext = await speechTextProcessor.process(text: next.text)
+                guard !Task.isCancelled else { return }
                 speechController.enqueue(
                     text: processedNext,
                     messageID: next.id,
@@ -409,6 +441,16 @@ final class AppModel {
                 )
             }
         }
+    }
+
+    // User-initiated "stop everything" — cancels any in-flight preprocessing
+    // AND the active playback. Views should call this instead of reaching
+    // into speechController.stop() directly, so no pending Task sneaks a
+    // playNow through after the user's Stop.
+    func stopPlayback() {
+        playbackPreparationTask?.cancel()
+        playbackPreparationTask = nil
+        speechController.stop()
     }
 
     func dismissErrorMessage() {
@@ -473,7 +515,14 @@ final class AppModel {
             }
 
             transcriptMessagesBySession[sessionID] = loadedTranscript
-            let previousIDs = knownAssistantMessageIDsBySession[sessionID] ?? []
+            // Read presence explicitly (not `?? []`) so we can distinguish
+            // "seeded with zero assistant messages" (Live Speak enabled on
+            // a fresh session — the first reply should be spoken) from
+            // "never seeded" (Live Speak not enabled — don't replay any
+            // history). The old `!previousIDs.isEmpty` guard conflated the
+            // two and made Live Speak miss the first response in empty
+            // sessions.
+            let previousIDs: Set<TranscriptMessage.ID>? = knownAssistantMessageIDsBySession[sessionID]
             let assistantMessages = loadedTranscript.filter(\.isAssistant)
             let latestAssistantIDs = Set(assistantMessages.map(\.id))
 
@@ -497,7 +546,7 @@ final class AppModel {
                 }
             }
 
-            if allowLiveRead, !previousIDs.isEmpty {
+            if allowLiveRead, let previousIDs {
                 let newAssistantMessages = assistantMessages.filter { !previousIDs.contains($0.id) }
                 for message in newAssistantMessages {
                     guard selectedSessionID == sessionID, liveReadSessionID == sessionID else {

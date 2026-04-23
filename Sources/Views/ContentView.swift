@@ -35,7 +35,7 @@ struct ContentView: View {
         .toolbar {
             if model.selectedSession != nil {
                 ToolbarItemGroup(placement: .navigation) {
-                    PlaybackControlsView(controller: model.speechController)
+                    PlaybackControlsView(model: model)
                 }
             }
         }
