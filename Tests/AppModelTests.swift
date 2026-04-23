@@ -442,10 +442,12 @@ struct AppModelTests {
     @Test
     @MainActor
     func rapidSpeakReclickDoesNotClearPreparingFlagEarly() async throws {
-        // Regression: isPreparingPlayback was a single Bool cleared from
-        // each prep task's defer unconditionally. In a rapid Speak-A then
-        // Speak-B sequence, A's late defer cleared the flag while B was
-        // still preparing, hiding the Stop affordance the user needs.
+        // When one prep Task completes, the shared isPreparingPlayback
+        // flag must stay true as long as another prep Task is still in
+        // flight. Under the current concurrent-rewrites model this is
+        // natural: each Task removes only its own messageID from the
+        // set, so B's membership keeps the set non-empty after A
+        // resolves.
         let processor = ControllableSpeechTextProcessor()
         let fixture = try makeTestAppModel(
             transcripts: ["session-1.jsonl": fourMessageTranscript],
@@ -466,34 +468,34 @@ struct AppModelTests {
         try await waitUntil { processor.pendingCount == 1 }
         #expect(fixture.model.isPreparingPlayback)
 
-        // Second click while first is still preparing.
+        // Second click while first is still preparing — both now in
+        // flight concurrently.
         fixture.model.playMessage(second)
         try await waitUntil { processor.pendingCount == 2 }
         #expect(fixture.model.isPreparingPlayback)
 
-        // Release the first pending process() call. Its Task will see
-        // it's been cancelled and hit the defer — but the defer must
-        // NOT clear isPreparingPlayback because the second prep is
-        // still the active one.
+        // Release the first pending process() call. First's ID leaves
+        // the set; second's is still there → flag stays true.
         processor.releaseNext()
-        // Give the first task time to run through defer.
-        try await Task.sleep(for: .milliseconds(50))
+        try await waitUntil { fixture.model.preparingMessageIDs == ["assistant-2"] }
 
         #expect(fixture.model.isPreparingPlayback)
         #expect(processor.pendingCount == 1)
 
-        // Now release the second. THAT defer should clear the flag.
+        // Release the second. Set empties, flag clears.
         processor.releaseNext()
         try await waitUntil { !fixture.model.isPreparingPlayback }
     }
 
     @Test
     @MainActor
-    func preparingMessageIDTracksWhichMessageIsBeingRewritten() async throws {
-        // The transcript row uses preparingMessageID to know "is MY
-        // row the one being rewritten right now," so it can render
-        // the "Rewriting…" label + border during the CLI wait. This
-        // test pins that contract.
+    func clickingSpeakOnSecondMessageDoesNotCancelFirstsRewrite() async throws {
+        // Regression guard: earlier implementation used a single
+        // in-flight preparation Task that playMessage always cancelled
+        // at entry — so clicking Speak on B while A was still rewriting
+        // dropped A entirely, and only B ever played. Concurrent-rewrite
+        // model: both A and B show "Rewriting…", both finish, both
+        // play in rewrite-completion order.
         let processor = ControllableSpeechTextProcessor()
         let fixture = try makeTestAppModel(
             transcripts: ["session-1.jsonl": fourMessageTranscript],
@@ -513,18 +515,60 @@ struct AppModelTests {
         fixture.model.playMessage(assistantOne)
         try await waitUntil { processor.pendingCount == 1 }
 
-        #expect(fixture.model.preparingMessageID == "assistant-1")
-        #expect(fixture.model.isPreparingPlayback)
+        #expect(fixture.model.preparingMessageIDs == ["assistant-1"])
 
-        // Switch to a second message — preparingMessageID should track
-        // the newest-clicked message, not linger on the first.
+        // Click on the second message while the first is still being
+        // rewritten. The first must NOT be cancelled — both rows stay
+        // marked as preparing.
         fixture.model.playMessage(assistantTwo)
         try await waitUntil { processor.pendingCount == 2 }
 
-        #expect(fixture.model.preparingMessageID == "assistant-2")
+        #expect(fixture.model.preparingMessageIDs == ["assistant-1", "assistant-2"])
+        #expect(fixture.model.isPreparingPlayback)
+
+        // Release both; both should complete, both should land in the
+        // driver queue. Release order == play-order if the controller
+        // was idle when the first came out, else head-of-queue for the
+        // second.
+        processor.releaseAll()
+        try await waitUntil { fixture.model.preparingMessageIDs.isEmpty }
+    }
+
+    @Test
+    @MainActor
+    func clickingSpeakOnSameMessageTwiceDoesNotDoubleRewrite() async throws {
+        // Dedupe: a second click on a message that's already being
+        // rewritten is a no-op. The user's click is interpreted as
+        // "I want this spoken," which is already in motion.
+        let processor = ControllableSpeechTextProcessor()
+        let fixture = try makeTestAppModel(
+            transcripts: ["session-1.jsonl": fourMessageTranscript],
+            speechTextProcessor: processor
+        )
+        defer { fixture.cleanup() }
+
+        await fixture.model.start()
+        let firstSession = try #require(fixture.model.sessions.first)
+        fixture.model.selectedSessionID = firstSession.id
+        try await waitUntil { fixture.model.transcriptState.messages(for: firstSession.id).count == 4 }
+
+        let assistantOne = try #require(
+            fixture.model.transcriptState.messages(for: firstSession.id)
+                .first(where: { $0.id == "assistant-1" })
+        )
+
+        fixture.model.playMessage(assistantOne)
+        try await waitUntil { processor.pendingCount == 1 }
+
+        fixture.model.playMessage(assistantOne)
+        fixture.model.playMessage(assistantOne)
+        // pendingCount MUST stay at 1 — second / third click were
+        // deduped, not forwarded to the processor.
+        try await Task.sleep(for: .milliseconds(30))
+        #expect(processor.pendingCount == 1)
 
         processor.releaseAll()
-        try await waitUntil { fixture.model.preparingMessageID == nil }
+        try await waitUntil { fixture.model.preparingMessageIDs.isEmpty }
     }
 
     @Test
@@ -593,13 +637,13 @@ struct AppModelTests {
         // Processor is suspended — we should see the row marked as
         // preparing for the duration of the rewrite.
         try await waitUntil { processor.pendingCount == 1 }
-        #expect(model.preparingMessageID == "assistant-1")
+        #expect(model.preparingMessageIDs.contains("assistant-1"))
         #expect(model.isPreparingPlayback)
 
         // Resolve the rewrite; the label should clear and the message
         // should land in the speech queue.
         processor.releaseAll()
-        try await waitUntil { model.preparingMessageID == nil }
+        try await waitUntil { model.preparingMessageIDs.isEmpty }
         try await waitUntil { avDriver.startedRequests.contains(where: { $0.messageID == "assistant-1" }) }
     }
 
@@ -628,15 +672,18 @@ struct AppModelTests {
         fixture.model.playMessagesFromHere(assistantOne)
         try await waitUntil { processor.pendingCount == 1 }
 
-        #expect(fixture.model.preparingMessageID == "assistant-1")
+        #expect(fixture.model.preparingMessageIDs == ["assistant-1"])
 
         // Release the first; the prep Task then asks the processor to
-        // rewrite the second message.
+        // rewrite the second message. Only one of the sequence's
+        // messages is marked preparing at a time (serial walk).
         processor.releaseNext()
-        try await waitUntil { processor.pendingCount == 1 && fixture.model.preparingMessageID == "assistant-2" }
+        try await waitUntil {
+            processor.pendingCount == 1 && fixture.model.preparingMessageIDs == ["assistant-2"]
+        }
 
         processor.releaseAll()
-        try await waitUntil { fixture.model.preparingMessageID == nil }
+        try await waitUntil { fixture.model.preparingMessageIDs.isEmpty }
     }
 
     @Test
