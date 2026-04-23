@@ -332,6 +332,11 @@ struct AppModelTests {
         // Flag MUST clear synchronously — otherwise the Stop button
         // appears briefly still-enabled after user pressed it.
         #expect(!fixture.model.isPreparingPlayback)
+
+        // Resume the suspended continuation so the prep Task can exit
+        // cleanly (its guard `!Task.isCancelled` then bails). Otherwise
+        // the Task lingers until process exit, holding references.
+        processor.releaseAll()
     }
 
     @Test
@@ -358,6 +363,8 @@ struct AppModelTests {
 
         fixture.model.selectedSessionID = nil
         #expect(!fixture.model.isPreparingPlayback)
+
+        processor.releaseAll()
     }
 
     @Test
@@ -389,6 +396,8 @@ struct AppModelTests {
 
         fixture.model.setLiveReadEnabled(false)
         #expect(!fixture.model.isPreparingPlayback)
+
+        processor.releaseAll()
     }
 
     // MARK: - Preprocessing cancellation
