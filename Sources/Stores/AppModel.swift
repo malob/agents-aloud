@@ -52,7 +52,7 @@ final class AppModel {
             selectedTranscriptRefreshTask?.cancel()
             // Cancel any in-flight playback preprocessing too; the user
             // switching sessions is a clear intent change.
-            playbackPreparationTask?.cancel()
+            cancelPreparation()
             updateSelectedTranscriptObservation()
 
             guard let id = selectedSessionID else {
@@ -390,7 +390,7 @@ final class AppModel {
             // Also cancel any in-flight preprocessing so a pending
             // processor call for a yet-to-be-enqueued assistant message
             // can't sneak through after the user disabled Live Speak.
-            playbackPreparationTask?.cancel()
+            cancelPreparation()
             // Drop queued messages so "Stop Live Speak" actually stops
             // reading new messages; the current utterance is allowed
             // to finish so the user isn't cut off mid-sentence.
@@ -470,15 +470,20 @@ final class AppModel {
     // into speechController.stop() directly, so no pending Task sneaks a
     // playNow through after the user's Stop.
     func stopPlayback() {
+        cancelPreparation()
+        speechController.stop()
+    }
+
+    // Cancel any in-flight preparation task + clear the preparing flag.
+    // Shared by stopPlayback(), session-switch, and Live Speak disable.
+    // Bumps the generation so any stale Task's defer sees its captured
+    // generation no longer matches current and skips its clear (already
+    // done here).
+    private func cancelPreparation() {
         playbackPreparationTask?.cancel()
         playbackPreparationTask = nil
-        // Bump generation so any stale Task's defer sees its captured
-        // generation doesn't match current and skips clearing (which we
-        // just did explicitly here anyway — but the invariant is easier
-        // to reason about if no path ever clears the flag out-of-turn).
         playbackPreparationGeneration &+= 1
         isPreparingPlayback = false
-        speechController.stop()
     }
 
     // Called from each prep Task's defer. Only clears the shared flag
