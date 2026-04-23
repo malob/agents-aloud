@@ -6,10 +6,19 @@ import OSLog
 // what order." The queue holds PendingSpeechItems carrying their own
 // rewrite state, so ordering is set by queue position (not by which
 // rewrite happened to finish first). A single serial rewriter walks
-// the queue top-down: whichever item is earliest-in-queue AND still
-// needs rewriting is the one currently being rewritten. When the
-// earliest-in-queue is ready AND no active playback, we promote it
-// to activePlayback and start the driver.
+// the queue top-down, one item at a time. When the head of the queue
+// is .ready AND no active playback, we promote it to activePlayback
+// and start the driver.
+//
+// Committed-head semantic: once the rewriter starts on an item, that
+// item is committed to play next — subsequent inserts go AFTER it,
+// not ahead of it. The only things that can interrupt a committed
+// rewrite are stop() / session switch / backend switch / drainAuto
+// (the last only if the rewriter was working on an auto item that
+// got drained). A manual Speak click while something is rewriting
+// queues the new message behind the committed one, matching the
+// user mental model: "the thing at the top of the queue is set,
+// nothing jumps it."
 @MainActor
 @Observable
 final class SpeechController {
@@ -71,9 +80,11 @@ final class SpeechController {
     private(set) var queue: [PendingSpeechItem] = []
 
     // The Task currently performing a SpeechTextProcessor.process call.
-    // Only one at a time — rewrites are serial. A queue mutation may
-    // cancel this task if the earliest-pending item has changed (new
-    // manual insert ahead of the one being rewritten).
+    // Only one at a time — rewrites are serial. Once a target is
+    // picked it runs to completion; inserts never cancel an in-flight
+    // rewrite (that's the committed-head invariant). Cancellation
+    // only happens via stop / session switch / backend switch /
+    // drainAutoQueue-where-target-was-auto.
     @ObservationIgnored private var rewriterTask: Task<Void, Never>?
     @ObservationIgnored private var rewriterTargetID: String?
 
@@ -287,46 +298,34 @@ final class SpeechController {
         return queue.contains(where: { $0.id == messageID })
     }
 
-    // Manual insert position: index after the last manual item in the
-    // queue. If no manual items, index 0 (right after the playhead,
-    // which lives outside the queue).
+    // Manual insert position: after the last manual item in the
+    // queue, AND after the committed frontier. "Committed" means any
+    // item the rewriter has already touched — .rewriting or .ready.
+    // Only .pending items are still uncommitted. Taking the max of
+    // those two bounds preserves:
+    //  - manual beats auto (manual items cluster ahead of auto tail
+    //    among uncommitted items)
+    //  - FIFO among manual clicks (new manual after previous manual)
+    //  - committed-head (never jumps a rewrite already in progress or
+    //    an item that's finished rewriting and is waiting behind
+    //    active playback)
     private func indexForManualInsert() -> Int {
-        if let lastManual = queue.lastIndex(where: { $0.source == .manual }) {
-            return lastManual + 1
-        }
-        return 0
+        let committedFrontier = queue.lastIndex(where: { item in
+            if case .pending = item.rewriteState { return false }
+            return true
+        }) ?? -1
+        let lastManual = queue.lastIndex(where: { $0.source == .manual }) ?? -1
+        return max(committedFrontier + 1, lastManual + 1)
     }
 
     // Called after any queue mutation. Two jobs:
-    //  1. (Re-)target the rewriter at the earliest not-yet-ready item.
-    //     If that's changed from what the rewriter is currently doing,
-    //     cancel the current rewrite (reset its state to .pending) and
-    //     start on the new target. "Reactive rewriter" — a new manual
-    //     click jumps the rewrite pipeline.
+    //  1. If the rewriter isn't running and there's a .pending item in
+    //     the queue, start a rewrite.
     //  2. If activePlayback is nil and head of queue is .ready, promote
     //     it and start the driver.
     private func onQueueChanged() {
-        retargetRewriter()
-        promoteHeadIfReady()
-    }
-
-    private func retargetRewriter() {
-        let newTargetID = queue.first(where: { item in
-            switch item.rewriteState {
-            case .pending, .rewriting: return true
-            case .ready: return false
-            }
-        })?.id
-
-        if newTargetID == rewriterTargetID {
-            return  // already rewriting the right thing (or both nil)
-        }
-
-        // Target changed: cancel the current rewrite, reset that item
-        // to .pending so a subsequent retarget can pick it back up,
-        // then kick off on the new target.
-        cancelRewriterIfRunning()
         startRewriterIfNeeded()
+        promoteHeadIfReady()
     }
 
     private func cancelRewriterIfRunning() {

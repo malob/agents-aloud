@@ -63,51 +63,57 @@ struct SpeechControllerTests {
 
     @Test
     @MainActor
-    func manualInsertGoesAfterLastManualItem() async throws {
+    func manualInsertGoesAfterCommittedAndAfterLastManual() async throws {
         let (controller, avDriver) = makeController()
 
         // m1 starts playing (manual, idle → speak).
         controller.insertManual(messageID: "m1", sourceText: "M1", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
 
-        // Live Speak queues X, Y behind m1.
+        // Live Speak queues x. The passthrough rewriter hops through
+        // Task land; by the next synchronous insert x is the committed
+        // head (being rewritten), and y hasn't started yet.
         controller.insertAuto(messageID: "x", sourceText: "X", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
         controller.insertAuto(messageID: "y", sourceText: "Y", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
-        // User clicks Speak on m2 — lands before x, y (manual beats
-        // auto) but after m1 (playhead).
+        // Manual click — lands AFTER the committed x (can't jump an
+        // in-flight rewrite) but AHEAD of the uncommitted y (manual
+        // beats auto among pending items).
         controller.insertManual(messageID: "m2", sourceText: "M2", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
-        // m3 manual — after m2 (FIFO among manual clicks).
+        // m3 — after m2 (FIFO among manual clicks), still ahead of y.
         controller.insertManual(messageID: "m3", sourceText: "M3", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
 
-        #expect(controller.queue.map(\.id) == ["m2", "m3", "x", "y"])
+        #expect(controller.queue.map(\.id) == ["x", "m2", "m3", "y"])
 
+        // When m1 finishes, x plays next — it was committed. m2 waits.
         let m1ID = try #require(avDriver.startedRequests.first?.playbackID)
         avDriver.emit(.didFinish(m1ID))
-        try await waitUntil { controller.currentMessageID == "m2" }
+        try await waitUntil { controller.currentMessageID == "x" }
     }
 
     @Test
     @MainActor
-    func manualSequenceStaysContiguous() async throws {
+    func manualSequenceStaysContiguousAfterCommittedAuto() async throws {
         let (controller, avDriver) = makeController()
 
         controller.insertManual(messageID: "m1", sourceText: "M1", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
+        // Live Speak queues x — x becomes the committed head.
         controller.insertAuto(messageID: "x", sourceText: "X", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
 
-        // Speak from Here on {b, c, d} — sequence goes after the last
-        // manual (m1, playing) and ahead of x.
+        // Speak from Here on {b, c, d} — sequence goes after the
+        // committed x, stays contiguous, before anything not yet
+        // touched.
         controller.insertManualSequence([
             (messageID: "b", sourceText: "B", voiceIdentifier: nil, rate: 0.4, sessionID: "s"),
             (messageID: "c", sourceText: "C", voiceIdentifier: nil, rate: 0.4, sessionID: "s"),
             (messageID: "d", sourceText: "D", voiceIdentifier: nil, rate: 0.4, sessionID: "s"),
         ])
 
-        #expect(controller.queue.map(\.id) == ["b", "c", "d", "x"])
+        #expect(controller.queue.map(\.id) == ["x", "b", "c", "d"])
 
         let m1ID = try #require(avDriver.startedRequests.first?.playbackID)
         avDriver.emit(.didFinish(m1ID))
-        try await waitUntil { controller.currentMessageID == "b" }
+        try await waitUntil { controller.currentMessageID == "x" }
     }
 
     @Test
@@ -168,7 +174,13 @@ struct SpeechControllerTests {
 
     @Test
     @MainActor
-    func reactiveRewriterSwitchesTargetOnManualJump() async throws {
+    func manualInsertDoesNotJumpACommittedAutoRewrite() async throws {
+        // Committed-head invariant: if an auto item is already being
+        // rewritten when the user clicks Speak on a manual message,
+        // the manual lands AFTER the auto (not ahead). The auto's
+        // in-flight rewrite runs to completion; the manual waits its
+        // turn. "Once a message is in the rewriting stage, nothing
+        // will interrupt it" — the user's preferred semantics.
         let processor = ControllableSpeechTextProcessor()
         let (controller, _) = makeController(processor: processor)
 
@@ -177,14 +189,36 @@ struct SpeechControllerTests {
         try await waitUntil { processor.pendingCount == 1 }
         #expect(controller.isRewriting(messageID: "auto-1"))
 
-        // User clicks Speak on a different message. Manual insert
-        // lands at the head of the queue (no manual items yet), so
-        // it becomes the new earliest-not-ready item. The reactive
-        // rewriter cancels auto-1's rewrite and starts manual-1.
+        // Manual click lands AFTER the committed auto-1.
         controller.insertManual(messageID: "manual-1", sourceText: "Manual", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        #expect(controller.queue.map(\.id) == ["auto-1", "manual-1"])
 
-        try await waitUntil { controller.isRewriting(messageID: "manual-1") }
-        #expect(controller.queue.map(\.id) == ["manual-1", "auto-1"])
+        // Rewriter is still working on auto-1 — no new process() call
+        // was issued for manual-1, and auto-1's rewrite wasn't cancelled.
+        #expect(processor.pendingCount == 1)
+        #expect(controller.isRewriting(messageID: "auto-1"))
+    }
+
+    @Test
+    @MainActor
+    func manualInsertStillJumpsUncommittedAutoItems() async throws {
+        // The committed-head rule only protects the item currently
+        // being rewritten — auto items queued behind still lose to
+        // manual clicks.
+        let processor = ControllableSpeechTextProcessor()
+        let (controller, _) = makeController(processor: processor)
+
+        // auto-1 starts rewriting (committed).
+        controller.insertAuto(messageID: "auto-1", sourceText: "A1", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        try await waitUntil { processor.pendingCount == 1 }
+        // auto-2 arrives behind it, still .pending.
+        controller.insertAuto(messageID: "auto-2", sourceText: "A2", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        #expect(controller.queue.map(\.id) == ["auto-1", "auto-2"])
+
+        // Manual click lands after the committed auto-1 but before
+        // the uncommitted auto-2.
+        controller.insertManual(messageID: "manual-1", sourceText: "M1", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        #expect(controller.queue.map(\.id) == ["auto-1", "manual-1", "auto-2"])
     }
 
     // MARK: - Pause / resume / stop
