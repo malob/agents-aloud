@@ -12,6 +12,7 @@ final class AppModel {
     private static let preferredSpeechRateKey = "preferredSpeechRate"
     private static let preferredElevenLabsVoiceIDKey = "preferredElevenLabsVoiceID"
     private static let speechTextOptimizationEnabledKey = "speechTextOptimizationEnabled"
+    private static let speechTextOptimizationModeKey = "speechTextOptimizationMode"
     static let defaultKeychainService = "local.claudecodevoice"
     static let elevenLabsAPIKeyAccount = "elevenlabs_api_key"
     // How far back to show sessions in the sidebar. The session list is for
@@ -155,17 +156,16 @@ final class AppModel {
         }
     }
 
-    // When true, message text is routed through the FoundationModels
-    // on-device LLM to refine it for speech (code → prose, tables →
-    // bullets, etc.) before being handed to the TTS backend. Off by
-    // default — opt-in so users can decide whether the ~1-3s latency
-    // per message is worth the improved listening experience.
-    var speechTextOptimizationEnabled: Bool {
+    // Which backend (if any) rewrites assistant message text for speech
+    // before handing it to the TTS engine. Off by default — opt-in so
+    // users can decide whether the added latency per message is worth
+    // the improved listening experience.
+    var speechTextOptimizationMode: SpeechTextOptimization {
         didSet {
-            guard oldValue != speechTextOptimizationEnabled else {
+            guard oldValue != speechTextOptimizationMode else {
                 return
             }
-            userDefaults.set(speechTextOptimizationEnabled, forKey: Self.speechTextOptimizationEnabledKey)
+            userDefaults.set(speechTextOptimizationMode.rawValue, forKey: Self.speechTextOptimizationModeKey)
             applySpeechTextProcessor()
         }
     }
@@ -223,7 +223,20 @@ final class AppModel {
         }
         elevenLabsAPIKey = storedKey
         preferredElevenLabsVoiceID = userDefaults.string(forKey: Self.preferredElevenLabsVoiceIDKey)
-        speechTextOptimizationEnabled = userDefaults.bool(forKey: Self.speechTextOptimizationEnabledKey)
+
+        // Read the new enum setting; fall back to deriving from the old
+        // Bool key for users upgrading from the pre-enum build. If the
+        // old Bool was true we pick `.claudeCLI` as the recommended
+        // default; the FoundationModel option underperformed enough
+        // that auto-migrating users onto it would be a regression.
+        if let modeRaw = userDefaults.string(forKey: Self.speechTextOptimizationModeKey),
+           let mode = SpeechTextOptimization(rawValue: modeRaw) {
+            speechTextOptimizationMode = mode
+        } else if userDefaults.bool(forKey: Self.speechTextOptimizationEnabledKey) {
+            speechTextOptimizationMode = .claudeCLI
+        } else {
+            speechTextOptimizationMode = .off
+        }
 
         speechController.backend = preferredSpeechBackend
         preferredVoiceIdentifier = speechController.resolveVoiceIdentifier(
@@ -238,30 +251,37 @@ final class AppModel {
         }
     }
 
-    // Swap the speech text processor based on the user's preference.
-    // When enabled, use the on-device FoundationModels refiner; when
-    // disabled, passthrough. Called from init and on setting toggle.
-    //
-    // The FM processor handles its own availability gating — if Apple
-    // Intelligence is disabled or unsupported, it passes through
-    // without user intervention (logs once). We still call prewarm on
-    // enable so the first real playback doesn't pay the model-load
-    // cost.
+    // Swap the speech text processor based on the user's selected mode.
+    // Called from init and on setting change. Each processor handles
+    // its own availability gating — if the underlying capability is
+    // unavailable (Apple Intelligence disabled, claude CLI not found,
+    // etc.), it falls back to passthrough internally without user
+    // intervention.
     private func applySpeechTextProcessor() {
-        if speechTextOptimizationEnabled {
+        switch speechTextOptimizationMode {
+        case .off:
+            speechTextProcessor = PassthroughSpeechProcessor()
+        case .claudeCLI:
+            speechTextProcessor = ClaudeCLISpeechProcessor()
+        case .foundationModel:
             let processor = FoundationModelSpeechProcessor()
             speechTextProcessor = processor
             processor.prewarm()
-        } else {
-            speechTextProcessor = PassthroughSpeechProcessor()
         }
     }
 
-    // Whether on-device Apple Intelligence is available for speech
-    // refinement. Surfaced in Settings so users who toggle the feature
-    // on but don't see any behavior change understand why.
-    var speechTextOptimizationAvailability: SystemLanguageModel.Availability {
+    // Whether the on-device Apple Intelligence model is available.
+    // Surfaced in Settings so the FM option can be disabled with an
+    // explanatory message when unavailable.
+    var foundationModelAvailability: SystemLanguageModel.Availability {
         SystemLanguageModel.default.availability
+    }
+
+    // Whether the claude CLI is currently findable on PATH. Surfaced
+    // in Settings to disable the Claude CLI option + show an install
+    // hint when not found.
+    var isClaudeCLIAvailable: Bool {
+        ClaudeCLISpeechProcessor.isAvailable
     }
 
     // Swap the ElevenLabs driver's client to one configured with the

@@ -43,37 +43,47 @@ struct SettingsView: View {
     @ViewBuilder
     private var speechOptimizationSection: some View {
         Section("Speech Text Optimization") {
-            Toggle(
-                "Rewrite messages for speech (Apple Intelligence)",
-                isOn: $model.speechTextOptimizationEnabled
-            )
-            .disabled(!isSpeechOptimizationAvailable)
+            Picker("Rewriter", selection: $model.speechTextOptimizationMode) {
+                ForEach(SpeechTextOptimization.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
 
-            Text(speechOptimizationHelperText)
+            Text(model.speechTextOptimizationMode.detailText)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            // Surface availability problems as a second-line hint
+            // beneath the picker so users who've selected an unavailable
+            // backend understand why playback isn't getting rewritten.
+            if let unavailabilityMessage {
+                Label(unavailabilityMessage, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
         }
     }
 
-    private var isSpeechOptimizationAvailable: Bool {
-        if case .available = model.speechTextOptimizationAvailability {
-            return true
-        }
-        return false
-    }
-
-    private var speechOptimizationHelperText: String {
-        switch model.speechTextOptimizationAvailability {
-        case .available:
-            return "Rewrites code blocks, tables, and dense structures into speech-friendly prose before playback. Runs entirely on-device. Adds about 1–3 seconds of latency per message the first time it's spoken."
-        case .unavailable(.deviceNotEligible):
-            return "This Mac doesn't support Apple Intelligence, so on-device speech optimization isn't available."
-        case .unavailable(.appleIntelligenceNotEnabled):
-            return "Turn on Apple Intelligence in System Settings > Apple Intelligence & Siri to enable on-device speech optimization."
-        case .unavailable(.modelNotReady):
-            return "Apple Intelligence is still downloading. Speech optimization will become available once it's ready."
-        case .unavailable:
-            return "On-device speech optimization isn't available right now."
+    private var unavailabilityMessage: String? {
+        switch model.speechTextOptimizationMode {
+        case .off:
+            return nil
+        case .claudeCLI:
+            guard !model.isClaudeCLIAvailable else { return nil }
+            return "`claude` CLI not found on PATH. Install from claude.ai/code or add its directory to PATH; until then, messages will be spoken unchanged."
+        case .foundationModel:
+            switch model.foundationModelAvailability {
+            case .available:
+                return nil
+            case .unavailable(.deviceNotEligible):
+                return "This Mac doesn't support Apple Intelligence. Messages will be spoken unchanged."
+            case .unavailable(.appleIntelligenceNotEnabled):
+                return "Apple Intelligence isn't enabled in System Settings. Messages will be spoken unchanged."
+            case .unavailable(.modelNotReady):
+                return "Apple Intelligence is still downloading. Messages will be spoken unchanged."
+            case .unavailable:
+                return "Apple Intelligence is currently unavailable. Messages will be spoken unchanged."
+            }
         }
     }
 

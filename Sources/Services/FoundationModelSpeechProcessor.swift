@@ -53,8 +53,10 @@ final class FoundationModelSpeechProcessor: SpeechTextProcessor {
     // estimate. Characters → tokens ratio is 3-4 for English.
 
     // Instructions: the system-prompt-equivalent steering the model
-    // toward "refine, don't summarize."
-    static let instructions = """
+    // toward "refine, don't summarize." Nonisolated — it's a pure
+    // literal and tests / the eval harness access it from non-MainActor
+    // static contexts.
+    nonisolated static let instructions = """
     You adapt text from a coding assistant for text-to-speech playback. \
     Your job is to make structure-heavy content listenable without \
     changing what it says.
