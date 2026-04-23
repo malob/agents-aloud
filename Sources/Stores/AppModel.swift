@@ -31,7 +31,7 @@ final class AppModel {
     // intent changes (stop, new Speak, session switch, disable Live Speak)
     // can cancel a pending preprocess before its result races into the
     // audio pipeline. Without this, a 2s processor await after the user
-    // pressed Stop would still end up calling playNow when it resumed.
+    // pressed Stop would still end up calling playNext when it resumed.
     @ObservationIgnored private var playbackPreparationTask: Task<Void, Never>?
     // Monotonic counter bumped on every start/cancel of preparation.
     // Each prep Task captures the generation at spawn so its defer can
@@ -444,7 +444,7 @@ final class AppModel {
             // clicked another message, switched session). Bail before
             // re-starting playback with stale input.
             guard !Task.isCancelled else { return }
-            speechController.playNow(
+            speechController.playNext(
                 text: processed,
                 messageID: message.id,
                 voiceIdentifier: currentVoiceIdentifier,
@@ -473,30 +473,33 @@ final class AppModel {
             guard let self else { return }
             let processedFirst = await speechTextProcessor.process(text: first.text)
             guard !Task.isCancelled else { return }
-            speechController.playNow(
+            speechController.playNext(
                 text: processedFirst,
                 messageID: first.id,
                 voiceIdentifier: voice,
                 rate: rate
             )
 
-            // Process subsequent messages serially and enqueue as each
-            // becomes ready. Serial (not parallel) keeps peak model load
-            // bounded and hides later-message latency behind playback of
-            // earlier ones. Check cancellation before each enqueue so Stop
-            // mid-sequence actually stops the sequence. The preparingMessageID
-            // moves with the head of the queue so the transcript row that's
-            // currently being rewritten gets the "Rewriting…" label.
+            // Process subsequent messages serially and thread them into the
+            // queue right after the previous message in the sequence, so
+            // the {first, second, third, …} block stays contiguous even if
+            // other items were already queued (Live Speak arrivals) when
+            // Speak from Here was invoked. The preparingMessageID moves
+            // with the head of the rewrite serial so the transcript row
+            // that's currently being rewritten gets the "Rewriting…" label.
+            var priorInSequence = first.id
             for next in fromHere.dropFirst() {
                 self.setPreparingIDIfCurrent(next.id, generation: generation)
                 let processedNext = await speechTextProcessor.process(text: next.text)
                 guard !Task.isCancelled else { return }
-                speechController.enqueue(
+                speechController.insertAfter(
+                    priorMessageID: priorInSequence,
                     text: processedNext,
                     messageID: next.id,
                     voiceIdentifier: voice,
                     rate: rate
                 )
+                priorInSequence = next.id
             }
         }
     }
@@ -504,7 +507,7 @@ final class AppModel {
     // User-initiated "stop everything" — cancels any in-flight preprocessing
     // AND the active playback. Views should call this instead of reaching
     // into speechController.stop() directly, so no pending Task sneaks a
-    // playNow through after the user's Stop.
+    // playNext through after the user's Stop.
     func stopPlayback() {
         cancelPreparation()
         speechController.stop()

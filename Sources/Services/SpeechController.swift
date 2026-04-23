@@ -157,7 +157,19 @@ final class SpeechController {
         driver(for: backend).resolveVoiceIdentifier(identifier)
     }
 
-    func playNow(text: String, messageID: String, voiceIdentifier: String?, rate: Float) {
+    // "Play this message next." Semantics depend on current state:
+    //
+    //  - idle → speak immediately (nothing to wait behind)
+    //  - speaking → insert at the head of the queue, DON'T interrupt
+    //    the active utterance. The user's click means "play this next,"
+    //    not "stop everything." Stop/Pause exist for the full-stop
+    //    intent. This preserves both narrative continuity of what's
+    //    currently being read AND anything Live Speak had queued up
+    //    behind it (those items stay in the queue after the new one).
+    //  - paused → the current utterance is parked and the user isn't
+    //    actively listening. A fresh "play this" click is a clear
+    //    start-over intent, so drop the paused state and speak.
+    func playNext(text: String, messageID: String, voiceIdentifier: String?, rate: Float) {
         let request = SpeechRequest(
             playbackID: UUID(),
             messageID: messageID,
@@ -166,11 +178,16 @@ final class SpeechController {
             rate: rate
         )
 
-        // Cancel whatever's currently playing (if anything), drop its
-        // queue, and start fresh with just this one request.
-        if playbackState.activePlayback != nil {
+        if playbackState.isPaused {
             (activeDriver ?? currentDriver).stop()
             playbackState = .idle
+            speak(request)
+            return
+        }
+
+        if playbackState.isSpeaking {
+            playbackState.setQueue([request] + playbackState.queue)
+            return
         }
 
         speak(request)
@@ -190,6 +207,46 @@ final class SpeechController {
         } else {
             speak(request)
         }
+    }
+
+    // Insert `request` immediately after `priorMessageID` in the play
+    // order. Used by playMessagesFromHere so a batch of messages
+    // ({B, C, D}) stays contiguous even when there's a pre-existing
+    // queue — without this, each call to enqueue would append at the
+    // back, letting earlier-queued items (Live Speak arrivals, etc.)
+    // slip between B and C.
+    //
+    // Placement cascade:
+    //  - priorMessageID is the currently-playing message → head of queue
+    //  - priorMessageID is in the queue → insert right after it
+    //  - priorMessageID not found (prior already finished and rolled off)
+    //    → head of queue, as the closest thing to "next in the sequence"
+    func insertAfter(priorMessageID: String, text: String, messageID: String, voiceIdentifier: String?, rate: Float) {
+        let request = SpeechRequest(
+            playbackID: UUID(),
+            messageID: messageID,
+            text: text,
+            voiceIdentifier: voiceIdentifier,
+            rate: rate
+        )
+
+        guard playbackState.activePlayback != nil else {
+            speak(request)
+            return
+        }
+
+        if playbackState.currentMessageID == priorMessageID {
+            playbackState.setQueue([request] + playbackState.queue)
+            return
+        }
+
+        var newQueue = playbackState.queue
+        if let index = newQueue.firstIndex(where: { $0.messageID == priorMessageID }) {
+            newQueue.insert(request, at: index + 1)
+        } else {
+            newQueue.insert(request, at: 0)
+        }
+        playbackState.setQueue(newQueue)
     }
 
     func pause() {
