@@ -195,4 +195,44 @@ struct ClaudeTranscriptParserTests {
         #expect(summary?.summary.count == 88)
         #expect(summary?.summary.hasSuffix("…") == true)
     }
+
+    // Our Claude-CLI speech rewriter runs `claude --print --no-session-
+    // persistence`, which still writes a tiny one-line JSONL containing just
+    // an `ai-title` record (no user/assistant turns). Those would flood the
+    // sidebar with 0-message titled sessions; the summarizer drops them.
+    @Test
+    func summarizeTranscriptDropsAiTitleOnlyArtifacts() {
+        let rawTranscript = """
+        {"type":"ai-title","sessionId":"session-123","aiTitle":"Compare ML model performance benchmarks"}
+        """
+
+        let summary = ClaudeTranscriptParser.summarizeTranscript(
+            rawTranscript,
+            fileURL: URL(fileURLWithPath: "/tmp/project/session-123.jsonl"),
+            modifiedAt: Date(timeIntervalSince1970: 1_713_374_400),
+            projectMetadataIndex: ProjectMetadataIndex()
+        )
+
+        #expect(summary == nil)
+    }
+
+    // A real session that happens to have only one assistant turn (e.g.
+    // --print output piped back) should still be summarized — the filter
+    // keys on "no turns AND no user prompt," not on turn count alone.
+    @Test
+    func summarizeTranscriptKeepsSessionsWithOnlyAssistantTurns() {
+        let rawTranscript = """
+        {"type":"assistant","uuid":"assistant-1","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-123","message":{"role":"assistant","content":[{"type":"text","text":"Rewritten output."}]}}
+        """
+
+        let summary = ClaudeTranscriptParser.summarizeTranscript(
+            rawTranscript,
+            fileURL: URL(fileURLWithPath: "/tmp/project/session-123.jsonl"),
+            modifiedAt: Date(timeIntervalSince1970: 1_713_374_400),
+            projectMetadataIndex: ProjectMetadataIndex()
+        )
+
+        #expect(summary != nil)
+        #expect(summary?.messageCount == 1)
+    }
 }

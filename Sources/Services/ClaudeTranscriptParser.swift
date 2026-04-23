@@ -33,6 +33,13 @@ enum ClaudeTranscriptParser {
         }
     }
 
+    // Returns nil when the file is a dead-artifact session — no user turns,
+    // no assistant turns, no user prompt. This primarily catches the tiny
+    // one-line JSONLs that `claude --print --no-session-persistence` writes
+    // to `~/.claude/projects/-private-var-folders-.../` containing only an
+    // `ai-title` record. Our own Claude-CLI speech rewriter produces one
+    // per invocation; without this filter the sidebar floods with
+    // 0-message "sessions" titled after whatever message was rewritten.
     static func summarizeTranscript(
         _ rawTranscript: String,
         fileURL: URL,
@@ -89,6 +96,13 @@ enum ClaudeTranscriptParser {
         }
 
         logDroppedLineCount(droppedLineCount, operation: "summarize")
+
+        // Drop sessions that are purely metadata (ai-title / custom-title
+        // without any real turns and no first prompt). See the comment on
+        // this function for the motivating case.
+        guard messageCount > 0 || firstPrompt != nil else {
+            return nil
+        }
 
         let fallbackProjectPath = fileURL.deletingLastPathComponent().lastPathComponent
         let sessionMetadata = projectMetadataIndex.metadata(
