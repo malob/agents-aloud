@@ -529,6 +529,82 @@ struct AppModelTests {
 
     @Test
     @MainActor
+    func liveSpeakRewritingSurfacesAsPreparingMessageID() async throws {
+        // Live Speak has its own rewrite loop inside refreshTranscript
+        // (separate from playMessage's prep Task). Without explicit
+        // preparingMessageID wiring there, arriving assistant messages
+        // would flow straight from file-watcher event → silent rewrite
+        // wait → enqueued audio, with zero UI feedback during the
+        // 5–10s CLI wait. This test pins that the row gets marked
+        // "preparing" for the duration of the rewrite.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+
+        let initialContent = """
+        {"type":"user","uuid":"user-1","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-1","cwd":"/Users/malo/Code/demo-project","message":{"role":"user","content":"Start question."}}
+        """
+        try initialContent.write(to: transcriptURL, atomically: true, encoding: .utf8)
+
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        let watcher = FakeTranscriptFileWatcher()
+        let avDriver = FakeSpeechBackendDriver(
+            availableVoices: [SpeechVoiceOption(id: "av.voice", name: "AV", language: "en-US", quality: .enhanced)]
+        )
+        let controller = SpeechController(
+            avSpeechDriver: avDriver,
+            systemVoiceDriver: FakeSpeechBackendDriver(wordsPerMinute: 400)
+        )
+        let processor = ControllableSpeechTextProcessor()
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            speechController: controller,
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: watcher,
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"),
+            speechTextProcessor: processor
+        )
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        await model.start()
+        let firstSession = try #require(model.sessions.first)
+        model.selectedSessionID = firstSession.id
+        try await waitUntil { model.transcriptState.messages(for: firstSession.id).count == 1 }
+
+        model.setLiveReadEnabled(true)
+
+        // Append the first assistant reply — live-read should pick it up
+        // and call the processor.
+        let assistantLine = "\n{\"type\":\"assistant\",\"uuid\":\"assistant-1\",\"timestamp\":\"2026-04-17T17:00:01Z\",\"sessionId\":\"session-1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"First reply.\"}]}}"
+        let handle = try FileHandle(forWritingTo: transcriptURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(assistantLine.utf8))
+        try handle.close()
+        watcher.emitChange()
+
+        // Processor is suspended — we should see the row marked as
+        // preparing for the duration of the rewrite.
+        try await waitUntil { processor.pendingCount == 1 }
+        #expect(model.preparingMessageID == "assistant-1")
+        #expect(model.isPreparingPlayback)
+
+        // Resolve the rewrite; the label should clear and the message
+        // should land in the speech queue.
+        processor.releaseAll()
+        try await waitUntil { model.preparingMessageID == nil }
+        try await waitUntil { avDriver.startedRequests.contains(where: { $0.messageID == "assistant-1" }) }
+    }
+
+    @Test
+    @MainActor
     func preparingMessageIDAdvancesThroughSpeakFromHereQueue() async throws {
         // In playMessagesFromHere the rewrite walks the queue serially
         // while the first message plays. The UI needs to know which

@@ -639,7 +639,19 @@ final class AppModel {
                         break
                     }
 
+                    // Mark the row as "Rewriting…" for the duration of this
+                    // process() call. Each iteration gets its own generation
+                    // so a concurrent user click on a different message (via
+                    // playMessage) can supersede the label without this loop
+                    // clobbering it back when its own process call returns.
+                    playbackPreparationGeneration &+= 1
+                    let generation = playbackPreparationGeneration
+                    preparingMessageID = message.id
+
                     let processed = await speechTextProcessor.process(text: message.text)
+
+                    clearPreparingIDIfCurrent(generation: generation)
+
                     guard selectedSessionID == sessionID, liveReadSessionID == sessionID else {
                         break
                     }
