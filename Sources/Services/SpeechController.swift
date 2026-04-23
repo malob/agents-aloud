@@ -141,17 +141,32 @@ final class SpeechController {
     var isPaused: Bool { playbackState.isPaused }
     var currentMessageID: String? { playbackState.activePlayback?.messageID }
 
-    // Whether a given message row should show the "Rewriting…" label.
-    // Reads from the queue's rewrite state — any item still being
-    // rewritten, or still pending rewrite, visibly "in flight" to the
-    // user. .ready items don't need the label; they'll get it via
-    // currentMessageID once promoted.
-    func isRewriting(messageID: String) -> Bool {
-        guard let item = queue.first(where: { $0.id == messageID }) else { return false }
-        switch item.rewriteState {
-        case .pending, .rewriting: return true
-        case .ready: return false
+    // Everything the UI needs to render per-row status for a given
+    // message. One enum instead of a grab-bag of booleans so the row
+    // view just switches on it.
+    enum MessageStatus: Equatable {
+        case idle
+        case speaking                        // currently playing
+        case rewriting                       // being rewritten (always queue head under committed-head)
+        case queued(position: Int)           // in queue, 0-indexed position
+
+        var isInFlight: Bool {
+            switch self {
+            case .speaking, .rewriting, .queued: return true
+            case .idle: return false
+            }
         }
+    }
+
+    func status(for messageID: String) -> MessageStatus {
+        if currentMessageID == messageID { return .speaking }
+        guard let index = queue.firstIndex(where: { $0.id == messageID }) else {
+            return .idle
+        }
+        if case .rewriting = queue[index].rewriteState {
+            return .rewriting
+        }
+        return .queued(position: index)
     }
 
     // Voice list is backend-scoped — AVSpeech voices and ElevenLabs voices

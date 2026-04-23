@@ -162,14 +162,14 @@ struct SpeechControllerTests {
         // Wait for the rewrite to reach the processor fixture.
         try await waitUntil { processor.pendingCount == 1 }
         // m1 is in-flight rewrite — still in queue, label should show.
-        #expect(controller.isRewriting(messageID: "m1"))
+        #expect(controller.status(for: "m1") == .rewriting)
         #expect(controller.currentMessageID == nil)
 
         // Release — m1 transitions to .ready, gets promoted, starts
         // playing. isRewriting flips back to false (item left the queue).
         processor.releaseAll()
         try await waitUntil { controller.currentMessageID == "m1" }
-        #expect(!controller.isRewriting(messageID: "m1"))
+        #expect(controller.status(for: "m1") != .rewriting)
     }
 
     @Test
@@ -187,7 +187,7 @@ struct SpeechControllerTests {
         // Live Speak arrival starts rewriting.
         controller.insertAuto(messageID: "auto-1", sourceText: "Auto", sessionID: "s")
         try await waitUntil { processor.pendingCount == 1 }
-        #expect(controller.isRewriting(messageID: "auto-1"))
+        #expect(controller.status(for: "auto-1") == .rewriting)
 
         // Manual click lands AFTER the committed auto-1.
         controller.insertManual(messageID: "manual-1", sourceText: "Manual", sessionID: "s")
@@ -196,7 +196,7 @@ struct SpeechControllerTests {
         // Rewriter is still working on auto-1 — no new process() call
         // was issued for manual-1, and auto-1's rewrite wasn't cancelled.
         #expect(processor.pendingCount == 1)
-        #expect(controller.isRewriting(messageID: "auto-1"))
+        #expect(controller.status(for: "auto-1") == .rewriting)
     }
 
     @Test

@@ -58,8 +58,7 @@ struct TranscriptDetailView: View {
                         ForEach(transcriptMessages) { message in
                             MessageRowView(
                                 message: message,
-                                isActive: model.speechController.currentMessageID == message.id,
-                                isPreparing: model.speechController.isRewriting(messageID: message.id),
+                                status: model.speechController.status(for: message.id),
                                 onPlay: { model.playMessage(message) },
                                 onPlayFromHere: { model.playMessagesFromHere(message) }
                             )

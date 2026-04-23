@@ -833,13 +833,13 @@ struct AppModelTests {
         // Processor is suspended — we should see the row marked as
         // preparing for the duration of the rewrite.
         try await waitUntil { processor.pendingCount == 1 }
-        #expect(model.speechController.isRewriting(messageID: "assistant-1"))
+        #expect(model.speechController.status(for: "assistant-1") == .rewriting)
         #expect(model.isPreparingPlayback)
 
         // Resolve the rewrite; the item promotes out of the queue into
         // active playback, so it leaves the "rewriting" set.
         processor.releaseAll()
-        try await waitUntil { !model.speechController.isRewriting(messageID: "assistant-1") }
+        try await waitUntil { model.speechController.status(for: "assistant-1") != .rewriting }
         try await waitUntil { avDriver.startedRequests.contains(where: { $0.messageID == "assistant-1" }) }
     }
 
