@@ -59,6 +59,7 @@ struct TranscriptDetailView: View {
                             MessageRowView(
                                 message: message,
                                 isActive: model.speechController.currentMessageID == message.id,
+                                isPreparing: model.preparingMessageID == message.id,
                                 onPlay: { model.playMessage(message) },
                                 onPlayFromHere: { model.playMessagesFromHere(message) }
                             )

@@ -10,6 +10,7 @@ import SwiftUI
 struct MessageRowView: View, Equatable {
     let message: TranscriptMessage
     let isActive: Bool
+    let isPreparing: Bool
     let onPlay: () -> Void
     let onPlayFromHere: () -> Void
 
@@ -17,7 +18,9 @@ struct MessageRowView: View, Equatable {
     @State private var isOptionHeld = false
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.message == rhs.message && lhs.isActive == rhs.isActive
+        lhs.message == rhs.message
+            && lhs.isActive == rhs.isActive
+            && lhs.isPreparing == rhs.isPreparing
     }
 
     private var roleAppearance: RoleAppearance {
@@ -28,6 +31,13 @@ struct MessageRowView: View, Equatable {
     // offers the batch action instead of single-message playback.
     private var useFromHereAction: Bool {
         isHoveringSpeakButton && isOptionHeld
+    }
+
+    // Border and tinted button foreground apply whenever the row is
+    // "owning attention" — actively speaking, or being rewritten in
+    // preparation to speak.
+    private var isHighlighted: Bool {
+        isActive || isPreparing
     }
 
     var body: some View {
@@ -51,23 +61,17 @@ struct MessageRowView: View, Equatable {
                             onPlay()
                         }
                     } label: {
-                        Label(
-                            useFromHereAction ? "Speak from Here"
-                                : isActive ? "Speaking"
-                                : "Speak",
-                            systemImage: isActive ? "speaker.wave.3.fill" : "speaker.wave.2.fill"
-                        )
-                        .font(.caption.weight(.medium))
-                        .symbolEffect(.variableColor.iterative.reversing, isActive: isActive)
+                        Label(speakButtonTitle, systemImage: speakButtonIcon)
+                            .font(.caption.weight(.medium))
+                            .symbolEffect(
+                                .variableColor.iterative.reversing,
+                                isActive: isActive || isPreparing
+                            )
                     }
                     .buttonStyle(.borderless)
                     .controlSize(.small)
-                    .foregroundStyle(isActive ? Color.accentColor : Color.accentColor.opacity(0.8))
-                    .help(
-                        useFromHereAction ? "Speak this message and every message after."
-                            : isActive ? "This message is being spoken aloud."
-                            : "Speak this assistant message aloud. Hold ⌥ for ‘from here’."
-                    )
+                    .foregroundStyle(isHighlighted ? Color.accentColor : Color.accentColor.opacity(0.8))
+                    .help(speakButtonHelp)
                     .onHover { hovering in
                         isHoveringSpeakButton = hovering
                     }
@@ -89,12 +93,12 @@ struct MessageRowView: View, Equatable {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(roleAppearance.background, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay {
-                    if isActive {
+                    if isHighlighted {
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(Color.accentColor.opacity(0.55), lineWidth: 1.5)
                     }
                 }
-                .animation(.easeInOut(duration: 0.2), value: isActive)
+                .animation(.easeInOut(duration: 0.2), value: isHighlighted)
                 .contextMenu {
                     Button("Copy Message") {
                         copyMessageText()
@@ -104,6 +108,31 @@ struct MessageRowView: View, Equatable {
                     }
                 }
         }
+    }
+
+    // Label-precedence order: hover-override first (so Option+hover
+    // always wins), then preparing (because preparing implies the user
+    // just clicked and deserves immediate feedback), then speaking, else
+    // idle. Never both "Speaking" and "Rewriting…" on the same row —
+    // preparing clears as soon as the TTS engine fires .didStart.
+    private var speakButtonTitle: String {
+        if useFromHereAction { return "Speak from Here" }
+        if isPreparing { return "Rewriting…" }
+        if isActive { return "Speaking" }
+        return "Speak"
+    }
+
+    private var speakButtonIcon: String {
+        if isPreparing { return "wand.and.sparkles" }
+        if isActive { return "speaker.wave.3.fill" }
+        return "speaker.wave.2.fill"
+    }
+
+    private var speakButtonHelp: String {
+        if useFromHereAction { return "Speak this message and every message after." }
+        if isPreparing { return "Rewriting this message for speech before playback." }
+        if isActive { return "This message is being spoken aloud." }
+        return "Speak this assistant message aloud. Hold ⌥ for ‘from here’."
     }
 
     private func copyMessageText() {
@@ -134,7 +163,7 @@ private struct RoleAppearance {
     }
 }
 
-#Preview("MessageRowView — user + assistant") {
+#Preview("MessageRowView — idle / preparing / speaking") {
     VStack(spacing: 0) {
         MessageRowView(
             message: TranscriptMessage(
@@ -145,18 +174,33 @@ private struct RoleAppearance {
                 sessionID: "preview-session"
             ),
             isActive: false,
+            isPreparing: false,
             onPlay: {},
             onPlayFromHere: {}
         )
         MessageRowView(
             message: TranscriptMessage(
-                id: "preview-assistant",
+                id: "preview-assistant-preparing",
                 role: .assistant,
                 text: "It stops the outgoing driver and drops the queue. The new backend starts clean.",
                 timestamp: .now,
                 sessionID: "preview-session"
             ),
-            isActive: true,  // show the active-highlight border
+            isActive: false,
+            isPreparing: true,  // show the "Rewriting…" label + border
+            onPlay: {},
+            onPlayFromHere: {}
+        )
+        MessageRowView(
+            message: TranscriptMessage(
+                id: "preview-assistant-active",
+                role: .assistant,
+                text: "Once the driver acknowledges .didStart the preparing state clears and the row flips to Speaking.",
+                timestamp: .now,
+                sessionID: "preview-session"
+            ),
+            isActive: true,
+            isPreparing: false,
             onPlay: {},
             onPlayFromHere: {}
         )

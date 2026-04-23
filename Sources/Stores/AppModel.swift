@@ -78,12 +78,25 @@ final class AppModel {
     var errorMessage: String?
     var liveReadSessionID: ClaudeSessionSummary.ID?
 
-    // True while a playback preparation Task is running (typically the
-    // 1-3s window the FoundationModel refiner takes to process a
-    // message). Surfaced so UI can enable a "Stop" affordance during
-    // preparation — without this, the user has no way to cancel a
-    // multi-second refine they've changed their mind about.
-    private(set) var isPreparingPlayback: Bool = false
+    // The message currently being prepared for playback (text-rewrite
+    // step before the TTS engine starts). nil when no preparation is
+    // in flight. Surfaced per-message so the transcript row can show
+    // a "Rewriting…" label + highlight during the 5–10s the CLI
+    // rewrite takes — without it the user clicks Speak, nothing
+    // visibly happens, and the UI only updates once audio starts.
+    //
+    // For playMessagesFromHere this moves through the queue: equal to
+    // the first message while it's being rewritten, then the second
+    // as that one is rewritten in the background (overlapping with
+    // the first's playback), etc.
+    private(set) var preparingMessageID: TranscriptMessage.ID? = nil
+
+    // True while a playback preparation Task is running. Kept for
+    // existing callers (toolbar Stop gating) that don't care about
+    // which message is being prepared. Derived from preparingMessageID.
+    var isPreparingPlayback: Bool {
+        preparingMessageID != nil
+    }
     var preferredSpeechBackend: SpeechBackend {
         didSet {
             guard oldValue != preferredSpeechBackend else {
@@ -422,9 +435,9 @@ final class AppModel {
         playbackPreparationTask?.cancel()
         playbackPreparationGeneration &+= 1
         let generation = playbackPreparationGeneration
-        isPreparingPlayback = true
+        preparingMessageID = message.id
         playbackPreparationTask = Task { [weak self] in
-            defer { self?.clearPreparingFlagIfCurrent(generation: generation) }
+            defer { self?.clearPreparingIDIfCurrent(generation: generation) }
             guard let self else { return }
             let processed = await speechTextProcessor.process(text: message.text)
             // User intent may have changed during the await (pressed Stop,
@@ -454,9 +467,9 @@ final class AppModel {
         playbackPreparationTask?.cancel()
         playbackPreparationGeneration &+= 1
         let generation = playbackPreparationGeneration
-        isPreparingPlayback = true
+        preparingMessageID = first.id
         playbackPreparationTask = Task { [weak self] in
-            defer { self?.clearPreparingFlagIfCurrent(generation: generation) }
+            defer { self?.clearPreparingIDIfCurrent(generation: generation) }
             guard let self else { return }
             let processedFirst = await speechTextProcessor.process(text: first.text)
             guard !Task.isCancelled else { return }
@@ -471,8 +484,11 @@ final class AppModel {
             // becomes ready. Serial (not parallel) keeps peak model load
             // bounded and hides later-message latency behind playback of
             // earlier ones. Check cancellation before each enqueue so Stop
-            // mid-sequence actually stops the sequence.
+            // mid-sequence actually stops the sequence. The preparingMessageID
+            // moves with the head of the queue so the transcript row that's
+            // currently being rewritten gets the "Rewriting…" label.
             for next in fromHere.dropFirst() {
+                self.setPreparingIDIfCurrent(next.id, generation: generation)
                 let processedNext = await speechTextProcessor.process(text: next.text)
                 guard !Task.isCancelled else { return }
                 speechController.enqueue(
@@ -494,7 +510,7 @@ final class AppModel {
         speechController.stop()
     }
 
-    // Cancel any in-flight preparation task + clear the preparing flag.
+    // Cancel any in-flight preparation task + clear the preparing state.
     // Shared by stopPlayback(), session-switch, and Live Speak disable.
     // Bumps the generation so any stale Task's defer sees its captured
     // generation no longer matches current and skips its clear (already
@@ -503,16 +519,24 @@ final class AppModel {
         playbackPreparationTask?.cancel()
         playbackPreparationTask = nil
         playbackPreparationGeneration &+= 1
-        isPreparingPlayback = false
+        preparingMessageID = nil
     }
 
-    // Called from each prep Task's defer. Only clears the shared flag
+    // Called from each prep Task's defer. Only clears the shared state
     // when this task is still the current one — without this guard, a
-    // late defer from a cancelled earlier prep can reset isPreparingPlayback
+    // late defer from a cancelled earlier prep can reset preparingMessageID
     // while the user's newer prep is still running.
-    private func clearPreparingFlagIfCurrent(generation: UInt64) {
+    private func clearPreparingIDIfCurrent(generation: UInt64) {
         guard generation == playbackPreparationGeneration else { return }
-        isPreparingPlayback = false
+        preparingMessageID = nil
+    }
+
+    // Same generation guard, used mid-Task in playMessagesFromHere to
+    // advance the preparingMessageID as the serial rewrite queue walks
+    // message-by-message.
+    private func setPreparingIDIfCurrent(_ id: TranscriptMessage.ID, generation: UInt64) {
+        guard generation == playbackPreparationGeneration else { return }
+        preparingMessageID = id
     }
 
     func dismissErrorMessage() {

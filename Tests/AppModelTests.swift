@@ -489,6 +489,82 @@ struct AppModelTests {
 
     @Test
     @MainActor
+    func preparingMessageIDTracksWhichMessageIsBeingRewritten() async throws {
+        // The transcript row uses preparingMessageID to know "is MY
+        // row the one being rewritten right now," so it can render
+        // the "Rewriting…" label + border during the CLI wait. This
+        // test pins that contract.
+        let processor = ControllableSpeechTextProcessor()
+        let fixture = try makeTestAppModel(
+            transcripts: ["session-1.jsonl": fourMessageTranscript],
+            speechTextProcessor: processor
+        )
+        defer { fixture.cleanup() }
+
+        await fixture.model.start()
+        let firstSession = try #require(fixture.model.sessions.first)
+        fixture.model.selectedSessionID = firstSession.id
+        try await waitUntil { fixture.model.transcriptState.messages(for: firstSession.id).count == 4 }
+
+        let messages = fixture.model.transcriptState.messages(for: firstSession.id)
+        let assistantOne = try #require(messages.first(where: { $0.id == "assistant-1" }))
+        let assistantTwo = try #require(messages.first(where: { $0.id == "assistant-2" }))
+
+        fixture.model.playMessage(assistantOne)
+        try await waitUntil { processor.pendingCount == 1 }
+
+        #expect(fixture.model.preparingMessageID == "assistant-1")
+        #expect(fixture.model.isPreparingPlayback)
+
+        // Switch to a second message — preparingMessageID should track
+        // the newest-clicked message, not linger on the first.
+        fixture.model.playMessage(assistantTwo)
+        try await waitUntil { processor.pendingCount == 2 }
+
+        #expect(fixture.model.preparingMessageID == "assistant-2")
+
+        processor.releaseAll()
+        try await waitUntil { fixture.model.preparingMessageID == nil }
+    }
+
+    @Test
+    @MainActor
+    func preparingMessageIDAdvancesThroughSpeakFromHereQueue() async throws {
+        // In playMessagesFromHere the rewrite walks the queue serially
+        // while the first message plays. The UI needs to know which
+        // row is currently being rewritten so the "Rewriting…" label
+        // moves with the head of the queue.
+        let processor = ControllableSpeechTextProcessor()
+        let fixture = try makeTestAppModel(
+            transcripts: ["session-1.jsonl": fourMessageTranscript],
+            speechTextProcessor: processor
+        )
+        defer { fixture.cleanup() }
+
+        await fixture.model.start()
+        let firstSession = try #require(fixture.model.sessions.first)
+        fixture.model.selectedSessionID = firstSession.id
+        try await waitUntil { fixture.model.transcriptState.messages(for: firstSession.id).count == 4 }
+
+        let messages = fixture.model.transcriptState.messages(for: firstSession.id)
+        let assistantOne = try #require(messages.first(where: { $0.id == "assistant-1" }))
+
+        fixture.model.playMessagesFromHere(assistantOne)
+        try await waitUntil { processor.pendingCount == 1 }
+
+        #expect(fixture.model.preparingMessageID == "assistant-1")
+
+        // Release the first; the prep Task then asks the processor to
+        // rewrite the second message.
+        processor.releaseNext()
+        try await waitUntil { processor.pendingCount == 1 && fixture.model.preparingMessageID == "assistant-2" }
+
+        processor.releaseAll()
+        try await waitUntil { fixture.model.preparingMessageID == nil }
+    }
+
+    @Test
+    @MainActor
     func sessionSwitchDuringPreprocessingCancelsPendingPlayback() async throws {
         let processor = ControllableSpeechTextProcessor()
         let fixture = try makeTestAppModel(
