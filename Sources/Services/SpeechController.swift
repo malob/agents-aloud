@@ -2,6 +2,14 @@ import Foundation
 import Observation
 import OSLog
 
+// Owns the single source of truth for "what's going to play and in
+// what order." The queue holds PendingSpeechItems carrying their own
+// rewrite state, so ordering is set by queue position (not by which
+// rewrite happened to finish first). A single serial rewriter walks
+// the queue top-down: whichever item is earliest-in-queue AND still
+// needs rewriting is the one currently being rewritten. When the
+// earliest-in-queue is ready AND no active playback, we promote it
+// to activePlayback and start the driver.
 @MainActor
 @Observable
 final class SpeechController {
@@ -13,75 +21,29 @@ final class SpeechController {
     private struct ActivePlayback {
         let request: SpeechRequest
         let backend: SpeechBackend
+        let messageID: String
     }
 
-    // PlaybackState fuses "what's playing" with "what's queued behind it".
-    // Previously the queue was a free-standing field whose invariant ("empty
-    // when idle") was convention-enforced across many callers. Bundling the
-    // queue into the non-idle cases makes the invariant structural, and
-    // transitions through helper mutators keep it correct without caller
-    // ceremony.
     private enum PlaybackState {
         case idle
-        case speaking(ActivePlayback, queue: [SpeechRequest])
-        case paused(ActivePlayback, queue: [SpeechRequest])
+        case speaking(ActivePlayback)
+        case paused(ActivePlayback)
 
         var activePlayback: ActivePlayback? {
             switch self {
-            case .idle:
-                return nil
-            case let .speaking(activePlayback, _), let .paused(activePlayback, _):
-                return activePlayback
+            case .idle: return nil
+            case let .speaking(active), let .paused(active): return active
             }
-        }
-
-        var queue: [SpeechRequest] {
-            switch self {
-            case .idle:
-                return []
-            case let .speaking(_, queue), let .paused(_, queue):
-                return queue
-            }
-        }
-
-        var currentMessageID: String? {
-            activePlayback?.request.messageID
         }
 
         var isSpeaking: Bool {
-            if case .speaking = self {
-                return true
-            }
+            if case .speaking = self { return true }
             return false
         }
 
         var isPaused: Bool {
-            if case .paused = self {
-                return true
-            }
+            if case .paused = self { return true }
             return false
-        }
-
-        // Replace the queue on the active state; no-op on .idle (idle has
-        // no queue by construction).
-        mutating func setQueue(_ newQueue: [SpeechRequest]) {
-            switch self {
-            case .idle:
-                return
-            case let .speaking(active, _):
-                self = .speaking(active, queue: newQueue)
-            case let .paused(active, _):
-                self = .paused(active, queue: newQueue)
-            }
-        }
-
-        // Remove and return the first queued request, if any.
-        mutating func popQueue() -> SpeechRequest? {
-            var current = queue
-            guard !current.isEmpty else { return nil }
-            let first = current.removeFirst()
-            setQueue(current)
-            return first
         }
     }
 
@@ -94,16 +56,36 @@ final class SpeechController {
     // property observable lets SwiftUI propagate voice-list refreshes
     // (populated async after the API key is entered) to Settings' picker.
     let elevenLabsDriver: ElevenLabsBackendDriver
+
+    // The rewriter that transforms source text into speech-ready text.
+    // Injected so AppModel can swap it (off / Claude CLI / Apple
+    // Intelligence) without the controller knowing which backend is
+    // doing the rewriting.
+    @ObservationIgnored private var speechTextProcessor: any SpeechTextProcessor
+
     private var playbackState: PlaybackState = .idle
+    // The ordered queue of items waiting to play. Items enter via
+    // insertManual / insertAuto / insertManualSequence; exit when
+    // promoted to activePlayback. UI observes this to render the
+    // "Rewriting…" label on any row whose item is .rewriting.
+    private(set) var queue: [PendingSpeechItem] = []
+
+    // The Task currently performing a SpeechTextProcessor.process call.
+    // Only one at a time — rewrites are serial. A queue mutation may
+    // cancel this task if the earliest-pending item has changed (new
+    // manual insert ahead of the one being rewritten).
+    @ObservationIgnored private var rewriterTask: Task<Void, Never>?
+    @ObservationIgnored private var rewriterTargetID: String?
 
     var backend: SpeechBackend = .avSpeech {
         didSet {
-            guard oldValue != backend else {
-                return
-            }
-
+            guard oldValue != backend else { return }
+            // Backend switch is a hard reset: current playback stops,
+            // queue clears, rewriter cancels. User's next action seeds
+            // a fresh queue against the new driver.
             driver(for: oldValue).stop()
             playbackState = .idle
+            clearQueueAndRewriter()
         }
     }
 
@@ -112,27 +94,43 @@ final class SpeechController {
         systemVoiceDriver: any SpeechBackendDriver = SystemVoiceBackendDriver(),
         elevenLabsDriver: ElevenLabsBackendDriver = ElevenLabsBackendDriver(
             client: ElevenLabsClient(apiKey: "")
-        )
+        ),
+        speechTextProcessor: any SpeechTextProcessor = PassthroughSpeechProcessor()
     ) {
         self.avSpeechDriver = avSpeechDriver
         self.systemVoiceDriver = systemVoiceDriver
         self.elevenLabsDriver = elevenLabsDriver
+        self.speechTextProcessor = speechTextProcessor
     }
 
     deinit {
         playbackErrorDismissTask?.cancel()
+        rewriterTask?.cancel()
     }
 
-    var isSpeaking: Bool {
-        playbackState.isSpeaking
+    // Called by AppModel when the user toggles the optimization mode in
+    // Settings. Swapping mid-queue is OK — items already rewritten keep
+    // their .ready text; items still .pending will be rewritten by the
+    // new processor when their turn comes up.
+    func setSpeechTextProcessor(_ processor: any SpeechTextProcessor) {
+        speechTextProcessor = processor
     }
 
-    var isPaused: Bool {
-        playbackState.isPaused
-    }
+    var isSpeaking: Bool { playbackState.isSpeaking }
+    var isPaused: Bool { playbackState.isPaused }
+    var currentMessageID: String? { playbackState.activePlayback?.messageID }
 
-    var currentMessageID: String? {
-        playbackState.currentMessageID
+    // Whether a given message row should show the "Rewriting…" label.
+    // Reads from the queue's rewrite state — any item still being
+    // rewritten, or still pending rewrite, visibly "in flight" to the
+    // user. .ready items don't need the label; they'll get it via
+    // currentMessageID once promoted.
+    func isRewriting(messageID: String) -> Bool {
+        guard let item = queue.first(where: { $0.id == messageID }) else { return false }
+        switch item.rewriteState {
+        case .pending, .rewriting: return true
+        case .ready: return false
+        }
     }
 
     // Voice list is backend-scoped — AVSpeech voices and ElevenLabs voices
@@ -157,97 +155,91 @@ final class SpeechController {
         driver(for: backend).resolveVoiceIdentifier(identifier)
     }
 
-    // "Play this message next." Semantics depend on current state:
+    // MARK: - Queue mutation (external API)
+
+    // User clicked Speak on a message. Manual insert rule: land right
+    // after the last manual item in the queue (or right after the
+    // playhead if there's no manual item yet), preserving FIFO order
+    // of manual clicks and keeping auto (Live Speak) items behind all
+    // manual items.
     //
-    //  - idle → speak immediately (nothing to wait behind)
-    //  - speaking → insert at the head of the queue, DON'T interrupt
-    //    the active utterance. The user's click means "play this next,"
-    //    not "stop everything." Stop/Pause exist for the full-stop
-    //    intent. This preserves both narrative continuity of what's
-    //    currently being read AND anything Live Speak had queued up
-    //    behind it (those items stay in the queue after the new one).
-    //  - paused → the current utterance is parked and the user isn't
-    //    actively listening. A fresh "play this" click is a clear
-    //    start-over intent, so drop the paused state and speak.
-    func playNext(text: String, messageID: String, voiceIdentifier: String?, rate: Float) {
-        let request = SpeechRequest(
-            playbackID: UUID(),
-            messageID: messageID,
-            text: text,
+    // Dedupe: if the messageID is already in the queue or currently
+    // playing, no-op. The user's click is interpreted as "I want this
+    // spoken" — which is either already in motion or already happening.
+    func insertManual(
+        messageID: String,
+        sourceText: String,
+        voiceIdentifier: String?,
+        rate: Float,
+        sessionID: String
+    ) {
+        guard !isQueuedOrActive(messageID: messageID) else { return }
+
+        let item = PendingSpeechItem(
+            id: messageID,
+            sourceText: sourceText,
+            rewriteState: .pending,
             voiceIdentifier: voiceIdentifier,
-            rate: rate
+            rate: rate,
+            source: .manual,
+            sessionID: sessionID
         )
-
-        if playbackState.isPaused {
-            (activeDriver ?? currentDriver).stop()
-            playbackState = .idle
-            speak(request)
-            return
-        }
-
-        if playbackState.isSpeaking {
-            playbackState.setQueue([request] + playbackState.queue)
-            return
-        }
-
-        speak(request)
+        let index = indexForManualInsert()
+        queue.insert(item, at: index)
+        onQueueChanged()
     }
 
-    func enqueue(text: String, messageID: String, voiceIdentifier: String?, rate: Float) {
-        let request = SpeechRequest(
-            playbackID: UUID(),
-            messageID: messageID,
-            text: text,
-            voiceIdentifier: voiceIdentifier,
-            rate: rate
-        )
-
-        if playbackState.activePlayback != nil {
-            playbackState.setQueue(playbackState.queue + [request])
-        } else {
-            speak(request)
+    // Speak-from-Here batches a sequence of messages into the manual
+    // slot contiguously. All are .manual so subsequent manual clicks
+    // land after this whole block, not in the middle of it.
+    func insertManualSequence(
+        _ messages: [(messageID: String, sourceText: String, voiceIdentifier: String?, rate: Float, sessionID: String)]
+    ) {
+        guard !messages.isEmpty else { return }
+        var insertIndex = indexForManualInsert()
+        for message in messages {
+            guard !isQueuedOrActive(messageID: message.messageID) else { continue }
+            let item = PendingSpeechItem(
+                id: message.messageID,
+                sourceText: message.sourceText,
+                rewriteState: .pending,
+                voiceIdentifier: message.voiceIdentifier,
+                rate: message.rate,
+                source: .manual,
+                sessionID: message.sessionID
+            )
+            queue.insert(item, at: insertIndex)
+            insertIndex += 1
         }
+        onQueueChanged()
     }
 
-    // Insert `request` immediately after `priorMessageID` in the play
-    // order. Used by playMessagesFromHere so a batch of messages
-    // ({B, C, D}) stays contiguous even when there's a pre-existing
-    // queue — without this, each call to enqueue would append at the
-    // back, letting earlier-queued items (Live Speak arrivals, etc.)
-    // slip between B and C.
-    //
-    // Placement cascade:
-    //  - priorMessageID is the currently-playing message → head of queue
-    //  - priorMessageID is in the queue → insert right after it
-    //  - priorMessageID not found (prior already finished and rolled off)
-    //    → head of queue, as the closest thing to "next in the sequence"
-    func insertAfter(priorMessageID: String, text: String, messageID: String, voiceIdentifier: String?, rate: Float) {
-        let request = SpeechRequest(
-            playbackID: UUID(),
-            messageID: messageID,
-            text: text,
+    // Live Speak arrival → tail of queue. No special handling, just
+    // append and let the serial pipeline do its thing. This is the
+    // entire Live Speak integration from the queue's perspective.
+    func insertAuto(
+        messageID: String,
+        sourceText: String,
+        voiceIdentifier: String?,
+        rate: Float,
+        sessionID: String
+    ) {
+        guard !isQueuedOrActive(messageID: messageID) else { return }
+
+        let item = PendingSpeechItem(
+            id: messageID,
+            sourceText: sourceText,
+            rewriteState: .pending,
             voiceIdentifier: voiceIdentifier,
-            rate: rate
+            rate: rate,
+            source: .auto,
+            sessionID: sessionID
         )
-
-        guard playbackState.activePlayback != nil else {
-            speak(request)
-            return
-        }
-
-        if playbackState.currentMessageID == priorMessageID {
-            playbackState.setQueue([request] + playbackState.queue)
-            return
-        }
-
-        var newQueue = playbackState.queue
-        if let index = newQueue.firstIndex(where: { $0.messageID == priorMessageID }) {
-            newQueue.insert(request, at: index + 1)
-        } else {
-            newQueue.insert(request, at: 0)
-        }
-        playbackState.setQueue(newQueue)
+        queue.append(item)
+        onQueueChanged()
     }
+
+    // MARK: - Playback controls
 
     func pause() {
         activeDriver?.pause()
@@ -257,17 +249,29 @@ final class SpeechController {
         activeDriver?.resume()
     }
 
+    // Full stop: kill current audio, drop the queue, cancel any
+    // in-flight rewrite. User's "stop everything" intent.
     func stop() {
         (activeDriver ?? currentDriver).stop()
         playbackState = .idle
+        clearQueueAndRewriter()
     }
 
-    // Drop anything queued but let the current utterance finish on its own.
-    // Used when the user disables Live Speak mid-playback — honors the help
-    // text promise that no new messages will be spoken without cutting off
-    // whatever's currently being read.
-    func drainQueue() {
-        playbackState.setQueue([])
+    // Drop queued AUTO items (Live Speak arrivals) but preserve any
+    // manually-clicked items and the current utterance. Used by
+    // "Stop Live Speak" — the user's manual intent should survive
+    // toggling the auto feature off.
+    func drainAutoQueue() {
+        let hadRewritingAuto = rewriterTargetID.flatMap { id in
+            queue.first(where: { $0.id == id })?.source == .auto
+        } ?? false
+        queue.removeAll(where: { $0.source == .auto })
+        if hadRewritingAuto {
+            // The item the rewriter was working on got drained.
+            cancelRewriterIfRunning()
+            // Start on the next manual .pending, if any.
+            startRewriterIfNeeded()
+        }
     }
 
     func dismissPlaybackError() {
@@ -276,31 +280,149 @@ final class SpeechController {
         playbackError = nil
     }
 
-    // `queue` is the set of requests to run after `request` finishes. Passed
-    // explicitly rather than read from playbackState so the caller controls
-    // whether to preserve existing queue (e.g. on didFinish, pop next +
-    // carry the tail) or drop it (playNow explicitly replaces).
-    private func speak(_ request: SpeechRequest, queue: [SpeechRequest] = []) {
+    // MARK: - Internal queue mechanics
+
+    private func isQueuedOrActive(messageID: String) -> Bool {
+        if playbackState.activePlayback?.messageID == messageID { return true }
+        return queue.contains(where: { $0.id == messageID })
+    }
+
+    // Manual insert position: index after the last manual item in the
+    // queue. If no manual items, index 0 (right after the playhead,
+    // which lives outside the queue).
+    private func indexForManualInsert() -> Int {
+        if let lastManual = queue.lastIndex(where: { $0.source == .manual }) {
+            return lastManual + 1
+        }
+        return 0
+    }
+
+    // Called after any queue mutation. Two jobs:
+    //  1. (Re-)target the rewriter at the earliest not-yet-ready item.
+    //     If that's changed from what the rewriter is currently doing,
+    //     cancel the current rewrite (reset its state to .pending) and
+    //     start on the new target. "Reactive rewriter" — a new manual
+    //     click jumps the rewrite pipeline.
+    //  2. If activePlayback is nil and head of queue is .ready, promote
+    //     it and start the driver.
+    private func onQueueChanged() {
+        retargetRewriter()
+        promoteHeadIfReady()
+    }
+
+    private func retargetRewriter() {
+        let newTargetID = queue.first(where: { item in
+            switch item.rewriteState {
+            case .pending, .rewriting: return true
+            case .ready: return false
+            }
+        })?.id
+
+        if newTargetID == rewriterTargetID {
+            return  // already rewriting the right thing (or both nil)
+        }
+
+        // Target changed: cancel the current rewrite, reset that item
+        // to .pending so a subsequent retarget can pick it back up,
+        // then kick off on the new target.
+        cancelRewriterIfRunning()
+        startRewriterIfNeeded()
+    }
+
+    private func cancelRewriterIfRunning() {
+        rewriterTask?.cancel()
+        rewriterTask = nil
+        // Reset any .rewriting item back to .pending — we cancelled
+        // mid-rewrite, its result is no longer coming.
+        if let oldID = rewriterTargetID,
+           let idx = queue.firstIndex(where: { $0.id == oldID }),
+           case .rewriting = queue[idx].rewriteState {
+            queue[idx].rewriteState = .pending
+        }
+        rewriterTargetID = nil
+    }
+
+    private func startRewriterIfNeeded() {
+        guard rewriterTask == nil else { return }
+        guard let targetIdx = queue.firstIndex(where: { $0.rewriteState == .pending }) else {
+            return
+        }
+        let targetID = queue[targetIdx].id
+        let sourceText = queue[targetIdx].sourceText
+        queue[targetIdx].rewriteState = .rewriting
+        rewriterTargetID = targetID
+
+        // Snapshot processor locally so the Task closes over the
+        // current instance even if setSpeechTextProcessor swaps it
+        // mid-rewrite (the in-flight call continues with the old one).
+        let processor = speechTextProcessor
+        rewriterTask = Task { [weak self] in
+            let rewritten = await processor.process(text: sourceText)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.handleRewriteResult(messageID: targetID, rewritten: rewritten)
+            }
+        }
+    }
+
+    private func handleRewriteResult(messageID: String, rewritten: String) {
+        // Only accept the result if this was still our target (didn't
+        // get cancelled + retargeted to a different item between the
+        // completion and this callback).
+        guard rewriterTargetID == messageID else { return }
+        rewriterTask = nil
+        rewriterTargetID = nil
+
+        if let idx = queue.firstIndex(where: { $0.id == messageID }) {
+            queue[idx].rewriteState = .ready(rewritten)
+        }
+
+        // Start on the next .pending item (if any), then try promoting.
+        startRewriterIfNeeded()
+        promoteHeadIfReady()
+    }
+
+    private func promoteHeadIfReady() {
+        guard playbackState.activePlayback == nil else { return }
+        guard let head = queue.first, case let .ready(text) = head.rewriteState else { return }
+
+        // Pop head out of the queue and start playback.
+        queue.removeFirst()
+        speak(text: text, item: head)
+    }
+
+    // Build a SpeechRequest from a PendingSpeechItem's ready state and
+    // start the driver.
+    private func speak(text: String, item: PendingSpeechItem) {
+        let request = SpeechRequest(
+            playbackID: UUID(),
+            messageID: item.id,
+            text: text,
+            voiceIdentifier: item.voiceIdentifier,
+            rate: item.rate
+        )
         let driver = currentDriver
-        let activePlayback = ActivePlayback(request: request, backend: backend)
+        let activePlayback = ActivePlayback(
+            request: request,
+            backend: backend,
+            messageID: item.id
+        )
 
         do {
             try driver.start(
                 request: request,
                 eventHandler: handleDriverEvent(_:)
             )
-            playbackState = .speaking(activePlayback, queue: queue)
+            playbackState = .speaking(activePlayback)
         } catch {
             logger.error(
-                "Playback failed to start for \(request.messageID, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                "Playback failed to start for \(item.id, privacy: .public): \(error.localizedDescription, privacy: .public)"
             )
             showPlaybackError(error.localizedDescription)
             playbackState = .idle
-            // Failure drops the current attempt; try draining the next queued
-            // request instead of leaving the rest of the queue stranded.
-            if let next = queue.first {
-                speak(next, queue: Array(queue.dropFirst()))
-            }
+            // Failure drops the current attempt; try promoting the
+            // next queued ready item instead of stranding the rest.
+            promoteHeadIfReady()
         }
     }
 
@@ -325,6 +447,11 @@ final class SpeechController {
         case .elevenLabs:
             return elevenLabsDriver
         }
+    }
+
+    private func clearQueueAndRewriter() {
+        queue.removeAll()
+        cancelRewriterIfRunning()
     }
 
     private func showPlaybackError(_ message: String) {
@@ -352,13 +479,8 @@ final class SpeechController {
             return
         }
 
-        // Capture the queue BEFORE clearing state; .idle has no queue
-        // by construction so reading playbackState.queue afterward gives [].
-        let remainingQueue = playbackState.queue
         playbackState = .idle
-        if let next = remainingQueue.first {
-            speak(next, queue: Array(remainingQueue.dropFirst()))
-        }
+        promoteHeadIfReady()
     }
 
     private func handleDriverEvent(_ event: SpeechDriverEvent) {
@@ -367,20 +489,19 @@ final class SpeechController {
             return
         }
 
-        let currentQueue = playbackState.queue
         switch event {
         case .didStart:
             dismissPlaybackError()
-            playbackState = .speaking(activePlayback, queue: currentQueue)
+            playbackState = .speaking(activePlayback)
         case .didResume:
-            playbackState = .speaking(activePlayback, queue: currentQueue)
+            playbackState = .speaking(activePlayback)
         case .didPause:
-            playbackState = .paused(activePlayback, queue: currentQueue)
+            playbackState = .paused(activePlayback)
         case .didFinish:
             finishCurrentPlayback(playbackID: activePlayback.request.playbackID)
         case let .didFail(_, description):
             logger.error(
-                "Playback failed for \(activePlayback.request.messageID, privacy: .public): \(description, privacy: .public)"
+                "Playback failed for \(activePlayback.messageID, privacy: .public): \(description, privacy: .public)"
             )
             showPlaybackError(description)
             finishCurrentPlayback(playbackID: activePlayback.request.playbackID)

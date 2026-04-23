@@ -25,15 +25,11 @@ final class AppModel {
     @ObservationIgnored private let userDefaults: UserDefaults
     @ObservationIgnored private let keychain: KeychainStorage
     @ObservationIgnored private var elevenLabsVoiceRefreshTask: Task<Void, Never>?
+    // The text-rewrite processor. Held here only to forward to
+    // SpeechController on init / setting change — AppModel itself
+    // doesn't call process() directly anymore; the rewriter lives
+    // inside SpeechController's queue pipeline.
     @ObservationIgnored private var speechTextProcessor: any SpeechTextProcessor
-    // Bag of in-flight preprocessing-then-playback Tasks. Multiple can
-    // run concurrently: clicking Speak on B while A is still rewriting
-    // no longer cancels A — both finish, both play (A first if A
-    // finishes rewriting first, else B first with A queuing behind via
-    // playNext's head-of-queue semantics). Cancellation is all-or-
-    // nothing: stopPlayback / session switch / disable Live Speak
-    // cancel everything in the bag.
-    @ObservationIgnored private var playbackPreparationTasks: [Task<Void, Never>] = []
 
     var sessionsState: SessionsState = .loading([])
     var selectedSessionID: ClaudeSessionSummary.ID? {
@@ -45,9 +41,9 @@ final class AppModel {
             PerfLog.mark("AppModel.selectedSessionID change id=\(selectedSessionID ?? "nil")")
             selectionRefreshTask?.cancel()
             selectedTranscriptRefreshTask?.cancel()
-            // Cancel any in-flight playback preprocessing too; the user
+            // Clear playback queue + active audio too; the user
             // switching sessions is a clear intent change.
-            cancelPreparation()
+            speechController.stop()
             updateSelectedTranscriptObservation()
 
             guard let id = selectedSessionID else {
@@ -72,28 +68,12 @@ final class AppModel {
     var errorMessage: String?
     var liveReadSessionID: ClaudeSessionSummary.ID?
 
-    // The set of messages currently being prepared for playback (text-
-    // rewrite step before the TTS engine starts). Surfaced per-message
-    // so the transcript row can show a "Rewriting…" label + highlight
-    // during the 5–10s the CLI rewrite takes — without it the user
-    // clicks Speak, nothing visibly happens, and the UI only updates
-    // once audio starts.
-    //
-    // Can hold multiple IDs simultaneously:
-    //  - playMessage(B) while A is still rewriting: A and B both in
-    //    the set, both rows show "Rewriting…"
-    //  - playMessagesFromHere walks its sequence serially; only one of
-    //    its own messages is in the set at a time, but other paths'
-    //    messages can coexist
-    //  - Live Speak arrivals get added while they're being rewritten
-    //    by refreshTranscript's own serial loop
-    private(set) var preparingMessageIDs: Set<TranscriptMessage.ID> = []
-
-    // True while any playback preparation Task is running. Kept as
-    // a convenience for existing callers (toolbar Stop gating) that
-    // don't care which messages specifically are being prepared.
+    // True while the speech controller has anything in its queue — a
+    // rewrite in progress, or ready items waiting for playback.
+    // Drives the toolbar Stop button's enabled state so users can
+    // cancel even before audio starts emitting.
     var isPreparingPlayback: Bool {
-        !preparingMessageIDs.isEmpty
+        !speechController.queue.isEmpty
     }
     var preferredSpeechBackend: SpeechBackend {
         didSet {
@@ -259,6 +239,10 @@ final class AppModel {
         // explicitly. Tests need their injected processor to survive init.
         if explicitProcessor == nil {
             applySpeechTextProcessor()
+        } else {
+            // Forward the injected processor into the controller too so
+            // its rewriter uses the test-supplied implementation.
+            speechController.setSpeechTextProcessor(self.speechTextProcessor)
         }
     }
 
@@ -279,6 +263,9 @@ final class AppModel {
             speechTextProcessor = processor
             processor.prewarm()
         }
+        // Forward the selection into SpeechController so its rewriter
+        // pipeline uses the right backend for subsequent inserts.
+        speechController.setSpeechTextProcessor(speechTextProcessor)
     }
 
     // Whether the on-device Apple Intelligence model is available.
@@ -373,9 +360,6 @@ final class AppModel {
         selectionRefreshTask?.cancel()
         selectedTranscriptRefreshTask?.cancel()
         elevenLabsVoiceRefreshTask?.cancel()
-        for task in playbackPreparationTasks {
-            task.cancel()
-        }
     }
 
     func start() async {
@@ -420,138 +404,58 @@ final class AppModel {
         } else if liveReadSessionID == selectedSessionID {
             liveReadSessionID = nil
             selectedTranscriptRefreshTask?.cancel()
-            // Also cancel any in-flight preprocessing so a pending
-            // processor call for a yet-to-be-enqueued assistant message
-            // can't sneak through after the user disabled Live Speak.
-            cancelPreparation()
-            // Drop queued messages so "Stop Live Speak" actually stops
-            // reading new messages; the current utterance is allowed
-            // to finish so the user isn't cut off mid-sentence.
-            speechController.drainQueue()
+            // Drop auto-queued Live Speak arrivals so "Stop Live Speak"
+            // actually stops reading new messages — but keep manual
+            // clicks in the queue, since disabling the auto feature
+            // shouldn't undo the user's explicit Speak actions. The
+            // current utterance also keeps playing so the user isn't
+            // cut off mid-sentence.
+            speechController.drainAutoQueue()
         }
     }
 
     func playMessage(_ message: TranscriptMessage) {
-        // Dedupe: a second click on a message that's already being
-        // rewritten is a no-op. The click is interpreted as "I want
-        // this spoken," which is already in motion.
-        guard !preparingMessageIDs.contains(message.id) else { return }
-
-        preparingMessageIDs.insert(message.id)
-        let task = Task { [weak self] in
-            // The Task is keyed by its own messageID for cleanup; no
-            // generation counter needed since each Task owns exactly
-            // one membership in the set.
-            defer { self?.removePreparingID(message.id) }
-            guard let self else { return }
-            let processed = await speechTextProcessor.process(text: message.text)
-            // User intent may have changed during the await (pressed
-            // Stop or switched session — both cancel this Task). A
-            // concurrent click on a DIFFERENT message does not cancel
-            // us; both will play in finish order via playNext.
-            guard !Task.isCancelled else { return }
-            speechController.playNext(
-                text: processed,
-                messageID: message.id,
-                voiceIdentifier: currentVoiceIdentifier,
-                rate: Float(preferredSpeechRate)
-            )
-        }
-        playbackPreparationTasks.append(task)
+        speechController.insertManual(
+            messageID: message.id,
+            sourceText: message.text,
+            voiceIdentifier: currentVoiceIdentifier,
+            rate: Float(preferredSpeechRate),
+            sessionID: message.sessionID
+        )
     }
 
-    // If `message` is a user prompt, start at the next assistant; otherwise
-    // start at `message`. Enqueues every following assistant message.
+    // If `message` is a user prompt, start at the next assistant;
+    // otherwise start at `message`. Enqueues every following assistant
+    // message as a contiguous manual block (stays together even if
+    // Live Speak had items queued behind it when this fires).
     func playMessagesFromHere(_ message: TranscriptMessage) {
         let messages = transcriptState.messages
         guard let startIndex = messages.firstIndex(where: { $0.id == message.id }) else { return }
         let fromHere = messages[startIndex...].filter(\.isAssistant)
-        guard let first = fromHere.first else { return }
+        guard !fromHere.isEmpty else { return }
 
         let voice = currentVoiceIdentifier
         let rate = Float(preferredSpeechRate)
 
-        preparingMessageIDs.insert(first.id)
-        let task = Task { [weak self] in
-            // Walks the sequence serially. At any moment only one of
-            // this sequence's messages is in preparingMessageIDs (the
-            // one actively being rewritten). Cleanup on exit removes
-            // whichever of ours is still there — handles both normal
-            // completion and cancellation mid-sequence.
-            defer {
-                if let self {
-                    for message in fromHere {
-                        self.removePreparingID(message.id)
-                    }
-                }
-            }
-            guard let self else { return }
-            let processedFirst = await speechTextProcessor.process(text: first.text)
-            guard !Task.isCancelled else { return }
-            speechController.playNext(
-                text: processedFirst,
-                messageID: first.id,
-                voiceIdentifier: voice,
-                rate: rate
-            )
-
-            // Process subsequent messages serially and thread them into
-            // the queue right after the previous message in the
-            // sequence, so the {first, second, third, …} block stays
-            // contiguous even if other items were already queued (Live
-            // Speak arrivals) when Speak from Here was invoked.
-            var priorInSequence = first.id
-            for next in fromHere.dropFirst() {
-                self.replacePreparingID(from: priorInSequence, to: next.id)
-                let processedNext = await speechTextProcessor.process(text: next.text)
-                guard !Task.isCancelled else { return }
-                speechController.insertAfter(
-                    priorMessageID: priorInSequence,
-                    text: processedNext,
-                    messageID: next.id,
+        speechController.insertManualSequence(
+            fromHere.map { m in
+                (
+                    messageID: m.id,
+                    sourceText: m.text,
                     voiceIdentifier: voice,
-                    rate: rate
+                    rate: rate,
+                    sessionID: m.sessionID
                 )
-                priorInSequence = next.id
             }
-        }
-        playbackPreparationTasks.append(task)
+        )
     }
 
-    // User-initiated "stop everything" — cancels any in-flight preprocessing
-    // AND the active playback. Views should call this instead of reaching
-    // into speechController.stop() directly, so no pending Task sneaks a
-    // playNext through after the user's Stop.
+    // User-initiated "stop everything" — active playback + queue +
+    // in-flight rewrite all go away. Views call this instead of
+    // reaching into speechController.stop() directly so cancellation
+    // semantics stay centralised here.
     func stopPlayback() {
-        cancelPreparation()
         speechController.stop()
-    }
-
-    // Cancel every in-flight preparation Task + clear the preparing
-    // set. Shared by stopPlayback(), session-switch, and Live Speak
-    // disable. Each cancelled Task's defer will try to remove its own
-    // messageID from the set, but clearing the set up front is safe
-    // (those removes become no-ops).
-    private func cancelPreparation() {
-        for task in playbackPreparationTasks {
-            task.cancel()
-        }
-        playbackPreparationTasks.removeAll()
-        preparingMessageIDs.removeAll()
-    }
-
-    // Called from each prep Task's defer (or inline from Live Speak's
-    // loop after each process() returns). Removes just this one entry
-    // from the set — independent of any other Task's state.
-    private func removePreparingID(_ id: TranscriptMessage.ID) {
-        preparingMessageIDs.remove(id)
-    }
-
-    // Used mid-Task in playMessagesFromHere to advance the "Rewriting…"
-    // label as the serial rewrite queue walks message-by-message.
-    private func replacePreparingID(from previous: TranscriptMessage.ID, to next: TranscriptMessage.ID) {
-        preparingMessageIDs.remove(previous)
-        preparingMessageIDs.insert(next)
     }
 
     func dismissErrorMessage() {
@@ -653,27 +557,16 @@ final class AppModel {
                     guard selectedSessionID == sessionID, liveReadSessionID == sessionID else {
                         break
                     }
-
-                    // Mark the row as "Rewriting…" for the duration of
-                    // this process() call. Independent per-message entry
-                    // in the set — a concurrent user click on a different
-                    // message (via playMessage) coexists without either
-                    // clobbering the other.
-                    preparingMessageIDs.insert(message.id)
-
-                    let processed = await speechTextProcessor.process(text: message.text)
-
-                    preparingMessageIDs.remove(message.id)
-
-                    guard selectedSessionID == sessionID, liveReadSessionID == sessionID else {
-                        break
-                    }
-
-                    speechController.enqueue(
-                        text: processed,
+                    // Live Speak integration in full: append to the
+                    // speech queue. The queue's own serial rewriter
+                    // handles transformation; playback picks up when
+                    // the rewrite is ready.
+                    speechController.insertAuto(
                         messageID: message.id,
+                        sourceText: message.text,
                         voiceIdentifier: currentVoiceIdentifier,
-                        rate: Float(preferredSpeechRate)
+                        rate: Float(preferredSpeechRate),
+                        sessionID: sessionID
                     )
                 }
             }
