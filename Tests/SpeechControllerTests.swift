@@ -33,7 +33,7 @@ struct SpeechControllerTests {
     func insertAutoOnIdleStartsPlaybackAfterRewriteCompletes() async throws {
         let (controller, avDriver) = makeController()
 
-        controller.insertAuto(messageID: "m1", sourceText: "Queued first", voiceIdentifier: "voice-1", rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "Queued first", sessionID: "s")
 
         // Passthrough rewrite lands via a Task hop — wait for it.
         try await waitUntil { controller.currentMessageID == "m1" }
@@ -46,8 +46,8 @@ struct SpeechControllerTests {
     func finishingCurrentPlaybackAdvancesToNext() async throws {
         let (controller, avDriver) = makeController()
 
-        controller.insertAuto(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
-        controller.insertAuto(messageID: "m2", sourceText: "Second", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
+        controller.insertAuto(messageID: "m2", sourceText: "Second", sessionID: "s")
 
         try await waitUntil { controller.currentMessageID == "m1" }
         try await waitUntil { controller.queue.first?.id == "m2" && controller.queue.first?.readyText != nil }
@@ -67,20 +67,20 @@ struct SpeechControllerTests {
         let (controller, avDriver) = makeController()
 
         // m1 starts playing (manual, idle → speak).
-        controller.insertManual(messageID: "m1", sourceText: "M1", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m1", sourceText: "M1", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
 
         // Live Speak queues x. The passthrough rewriter hops through
         // Task land; by the next synchronous insert x is the committed
         // head (being rewritten), and y hasn't started yet.
-        controller.insertAuto(messageID: "x", sourceText: "X", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
-        controller.insertAuto(messageID: "y", sourceText: "Y", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "x", sourceText: "X", sessionID: "s")
+        controller.insertAuto(messageID: "y", sourceText: "Y", sessionID: "s")
         // Manual click — lands AFTER the committed x (can't jump an
         // in-flight rewrite) but AHEAD of the uncommitted y (manual
         // beats auto among pending items).
-        controller.insertManual(messageID: "m2", sourceText: "M2", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m2", sourceText: "M2", sessionID: "s")
         // m3 — after m2 (FIFO among manual clicks), still ahead of y.
-        controller.insertManual(messageID: "m3", sourceText: "M3", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m3", sourceText: "M3", sessionID: "s")
 
         #expect(controller.queue.map(\.id) == ["x", "m2", "m3", "y"])
 
@@ -95,18 +95,18 @@ struct SpeechControllerTests {
     func manualSequenceStaysContiguousAfterCommittedAuto() async throws {
         let (controller, avDriver) = makeController()
 
-        controller.insertManual(messageID: "m1", sourceText: "M1", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m1", sourceText: "M1", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
         // Live Speak queues x — x becomes the committed head.
-        controller.insertAuto(messageID: "x", sourceText: "X", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "x", sourceText: "X", sessionID: "s")
 
         // Speak from Here on {b, c, d} — sequence goes after the
         // committed x, stays contiguous, before anything not yet
         // touched.
         controller.insertManualSequence([
-            (messageID: "b", sourceText: "B", voiceIdentifier: nil, rate: 0.4, sessionID: "s"),
-            (messageID: "c", sourceText: "C", voiceIdentifier: nil, rate: 0.4, sessionID: "s"),
-            (messageID: "d", sourceText: "D", voiceIdentifier: nil, rate: 0.4, sessionID: "s"),
+            (messageID: "b", sourceText: "B", sessionID: "s"),
+            (messageID: "c", sourceText: "C", sessionID: "s"),
+            (messageID: "d", sourceText: "D", sessionID: "s"),
         ])
 
         #expect(controller.queue.map(\.id) == ["x", "b", "c", "d"])
@@ -121,10 +121,10 @@ struct SpeechControllerTests {
     func autoInsertWhileManualQueuedGoesAtTail() async throws {
         let (controller, _) = makeController()
 
-        controller.insertManual(messageID: "m1", sourceText: "M1", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m1", sourceText: "M1", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
-        controller.insertManual(messageID: "m2", sourceText: "M2", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
-        controller.insertAuto(messageID: "x", sourceText: "X", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m2", sourceText: "M2", sessionID: "s")
+        controller.insertAuto(messageID: "x", sourceText: "X", sessionID: "s")
 
         #expect(controller.queue.map(\.id) == ["m2", "x"])
     }
@@ -136,14 +136,14 @@ struct SpeechControllerTests {
     func insertManualDedupesAgainstActiveAndQueuedMessages() async throws {
         let (controller, _) = makeController()
 
-        controller.insertManual(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m1", sourceText: "First", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
         // Second click on the already-playing message: no-op.
-        controller.insertManual(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m1", sourceText: "First", sessionID: "s")
 
-        controller.insertManual(messageID: "m2", sourceText: "Second", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m2", sourceText: "Second", sessionID: "s")
         // Second click on a queued message: also no-op.
-        controller.insertManual(messageID: "m2", sourceText: "Second", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m2", sourceText: "Second", sessionID: "s")
 
         #expect(controller.queue.map(\.id) == ["m2"])
         #expect(controller.currentMessageID == "m1")
@@ -157,7 +157,7 @@ struct SpeechControllerTests {
         let processor = ControllableSpeechTextProcessor()
         let (controller, _) = makeController(processor: processor)
 
-        controller.insertManual(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m1", sourceText: "First", sessionID: "s")
 
         // Wait for the rewrite to reach the processor fixture.
         try await waitUntil { processor.pendingCount == 1 }
@@ -185,12 +185,12 @@ struct SpeechControllerTests {
         let (controller, _) = makeController(processor: processor)
 
         // Live Speak arrival starts rewriting.
-        controller.insertAuto(messageID: "auto-1", sourceText: "Auto", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "auto-1", sourceText: "Auto", sessionID: "s")
         try await waitUntil { processor.pendingCount == 1 }
         #expect(controller.isRewriting(messageID: "auto-1"))
 
         // Manual click lands AFTER the committed auto-1.
-        controller.insertManual(messageID: "manual-1", sourceText: "Manual", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "manual-1", sourceText: "Manual", sessionID: "s")
         #expect(controller.queue.map(\.id) == ["auto-1", "manual-1"])
 
         // Rewriter is still working on auto-1 — no new process() call
@@ -209,15 +209,15 @@ struct SpeechControllerTests {
         let (controller, _) = makeController(processor: processor)
 
         // auto-1 starts rewriting (committed).
-        controller.insertAuto(messageID: "auto-1", sourceText: "A1", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "auto-1", sourceText: "A1", sessionID: "s")
         try await waitUntil { processor.pendingCount == 1 }
         // auto-2 arrives behind it, still .pending.
-        controller.insertAuto(messageID: "auto-2", sourceText: "A2", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "auto-2", sourceText: "A2", sessionID: "s")
         #expect(controller.queue.map(\.id) == ["auto-1", "auto-2"])
 
         // Manual click lands after the committed auto-1 but before
         // the uncommitted auto-2.
-        controller.insertManual(messageID: "manual-1", sourceText: "M1", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "manual-1", sourceText: "M1", sessionID: "s")
         #expect(controller.queue.map(\.id) == ["auto-1", "manual-1", "auto-2"])
     }
 
@@ -228,7 +228,7 @@ struct SpeechControllerTests {
     func pauseAndResumeEmitMatchingEvents() async throws {
         let (controller, avDriver) = makeController()
 
-        controller.insertAuto(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
         let playbackID = try #require(avDriver.startedRequests.first?.playbackID)
 
@@ -249,8 +249,8 @@ struct SpeechControllerTests {
     func stopClearsQueueAndActivePlayback() async throws {
         let (controller, avDriver) = makeController()
 
-        controller.insertAuto(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
-        controller.insertAuto(messageID: "m2", sourceText: "Second", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
+        controller.insertAuto(messageID: "m2", sourceText: "Second", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
 
         controller.stop()
@@ -265,10 +265,10 @@ struct SpeechControllerTests {
     func drainAutoQueueRemovesAutoButPreservesManualAndCurrent() async throws {
         let (controller, _) = makeController()
 
-        controller.insertAuto(messageID: "m1", sourceText: "M1", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "M1", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
-        controller.insertManual(messageID: "m2", sourceText: "M2", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
-        controller.insertAuto(messageID: "m3", sourceText: "M3", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertManual(messageID: "m2", sourceText: "M2", sessionID: "s")
+        controller.insertAuto(messageID: "m3", sourceText: "M3", sessionID: "s")
         // Give the passthrough rewriter time to mark m2/m3 ready.
         try await waitUntil { controller.queue.count == 2 }
 
@@ -280,30 +280,13 @@ struct SpeechControllerTests {
         #expect(controller.queue.map(\.id) == ["m2"])
     }
 
-    @Test
-    @MainActor
-    func switchingBackendsStopsActivePlaybackAndClearsQueue() async throws {
-        let avDriver = FakeSpeechBackendDriver(
-            availableVoices: [
-                SpeechVoiceOption(id: "voice-1", name: "Voice One", language: "en-US", quality: .default)
-            ]
-        )
-        let systemDriver = FakeSpeechBackendDriver(wordsPerMinute: 400)
-        let controller = SpeechController(
-            avSpeechDriver: avDriver,
-            systemVoiceDriver: systemDriver
-        )
-
-        controller.insertAuto(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
-        controller.insertAuto(messageID: "m2", sourceText: "Second", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
-        try await waitUntil { controller.currentMessageID == "m1" }
-        controller.backend = .systemVoice
-
-        #expect(avDriver.stopCallCount == 1)
-        #expect(systemDriver.stopCallCount == 0)
-        #expect(controller.currentMessageID == nil)
-        #expect(controller.queue.isEmpty)
-    }
+    // NOTE: the old test that asserted "switching backends stops the
+    // active driver + clears the queue" was removed. Under the current
+    // architecture the queue is backend-neutral — items don't store
+    // voice IDs, so a mid-playback backend switch lets the current
+    // utterance finish on its original driver and the next item in
+    // the queue starts on the newly-selected one. See
+    // backendSwitchDoesNotClearQueueOrInterruptCurrent below.
 
     // MARK: - Error surfacing
 
@@ -321,7 +304,7 @@ struct SpeechControllerTests {
             systemVoiceDriver: FakeSpeechBackendDriver(wordsPerMinute: 400)
         )
 
-        controller.insertAuto(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
 
         try await waitUntil { controller.playbackError?.message == "Voice not available" }
         #expect(controller.currentMessageID == nil)
@@ -332,8 +315,8 @@ struct SpeechControllerTests {
     func driverFailureSurfacesPlaybackErrorAndAdvancesQueue() async throws {
         let (controller, avDriver) = makeController()
 
-        controller.insertAuto(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
-        controller.insertAuto(messageID: "m2", sourceText: "Second", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
+        controller.insertAuto(messageID: "m2", sourceText: "Second", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
 
         let firstPlaybackID = try #require(avDriver.startedRequests.first?.playbackID)
@@ -348,14 +331,14 @@ struct SpeechControllerTests {
     func didStartClearsPreviousPlaybackError() async throws {
         let (controller, avDriver) = makeController()
 
-        controller.insertAuto(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
         let firstPlaybackID = try #require(avDriver.startedRequests.first?.playbackID)
         avDriver.emit(.didFail(firstPlaybackID, description: "Broken"))
         #expect(controller.playbackError != nil)
 
         // Next item starts cleanly — the banner should auto-dismiss.
-        controller.insertAuto(messageID: "m2", sourceText: "Second", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m2", sourceText: "Second", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m2" }
         let secondPlaybackID = try #require(avDriver.startedRequests.last?.playbackID)
         avDriver.emit(.didStart(secondPlaybackID))
@@ -376,7 +359,7 @@ struct SpeechControllerTests {
             systemVoiceDriver: FakeSpeechBackendDriver(wordsPerMinute: 400)
         )
 
-        controller.insertAuto(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
         try await waitUntil { controller.playbackError != nil }
         controller.dismissPlaybackError()
 
@@ -385,15 +368,70 @@ struct SpeechControllerTests {
 
     @Test
     @MainActor
-    func passesRateAndVoiceIdentifierToDriver() async throws {
+    func readsVoiceAndRateFromProvidersAtSpeakTime() async throws {
+        // Queue items don't carry voice/rate; the controller looks
+        // them up at speak() time via injected providers. Swapping
+        // the provider values between enqueue and playback means the
+        // driver receives the latest values.
         let (controller, avDriver) = makeController()
+        var currentVoice: String? = "voice-1"
+        var currentRate: Float = 0.4
+        controller.voiceIdentifierProvider = { currentVoice }
+        controller.rateProvider = { currentRate }
 
-        controller.insertAuto(messageID: "m1", sourceText: "First", voiceIdentifier: "voice-1", rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
 
         try await waitUntil { avDriver.startedRequests.count == 1 }
-        let started = avDriver.startedRequests.first
-        #expect(started?.rate == 0.4)
-        #expect(started?.voiceIdentifier == "voice-1")
+        let firstRequest = try #require(avDriver.startedRequests.first)
+        #expect(firstRequest.rate == 0.4)
+        #expect(firstRequest.voiceIdentifier == "voice-1")
+
+        // Change the providers BEFORE the next item starts. When m2
+        // promotes, it should read the new values.
+        currentVoice = "voice-2"
+        currentRate = 0.5
+        controller.insertAuto(messageID: "m2", sourceText: "Second", sessionID: "s")
+        // Simulate m1 finishing so m2 promotes.
+        avDriver.emit(.didFinish(firstRequest.playbackID))
+        try await waitUntil { avDriver.startedRequests.count == 2 }
+        let secondRequest = try #require(avDriver.startedRequests.last)
+        #expect(secondRequest.rate == 0.5)
+        #expect(secondRequest.voiceIdentifier == "voice-2")
+    }
+
+    @Test
+    @MainActor
+    func backendSwitchDoesNotClearQueueOrInterruptCurrent() async throws {
+        let avDriver = FakeSpeechBackendDriver(
+            availableVoices: [
+                SpeechVoiceOption(id: "voice-1", name: "Voice One", language: "en-US", quality: .default)
+            ]
+        )
+        let systemDriver = FakeSpeechBackendDriver(wordsPerMinute: 400)
+        let controller = SpeechController(
+            avSpeechDriver: avDriver,
+            systemVoiceDriver: systemDriver
+        )
+
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
+        controller.insertAuto(messageID: "m2", sourceText: "Second", sessionID: "s")
+        try await waitUntil { controller.currentMessageID == "m1" }
+
+        // Switch backend mid-playback.
+        controller.backend = .systemVoice
+
+        // Current utterance on AVSpeech is NOT stopped, queue is NOT cleared.
+        #expect(avDriver.stopCallCount == 0)
+        #expect(controller.currentMessageID == "m1")
+        #expect(!controller.queue.isEmpty)
+
+        // When m1 finishes on AVSpeech, the next item plays on the
+        // current backend (System Voice).
+        let m1PlaybackID = try #require(avDriver.startedRequests.first?.playbackID)
+        avDriver.emit(.didFinish(m1PlaybackID))
+        try await waitUntil { controller.currentMessageID == "m2" }
+        #expect(systemDriver.startedRequests.count == 1)
+        #expect(systemDriver.startedRequests.first?.messageID == "m2")
     }
 
     @Test
@@ -401,7 +439,7 @@ struct SpeechControllerTests {
     func driverEventsUpdatePauseAndResumeState() async throws {
         let (controller, avDriver) = makeController()
 
-        controller.insertAuto(messageID: "m1", sourceText: "First", voiceIdentifier: nil, rate: 0.4, sessionID: "s")
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
         try await waitUntil { controller.currentMessageID == "m1" }
         let playbackID = try #require(avDriver.startedRequests.first?.playbackID)
 

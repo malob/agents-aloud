@@ -30,10 +30,14 @@ struct PendingSpeechItem: Identifiable, Equatable {
     let id: String               // messageID — also the dedup key
     let sourceText: String       // raw text before rewriting
     var rewriteState: RewriteState
-    let voiceIdentifier: String?
-    let rate: Float
     let source: Source
-    let sessionID: String        // for future multi-session cues
+    let sessionID: String
+    // Voice and rate are deliberately NOT stored here. They're
+    // looked up fresh at speak() time from the current backend +
+    // user preferences. That decoupling is what lets the queue
+    // survive a backend switch: an item enqueued while AVSpeech was
+    // active uses ElevenLabs' voice if the user switches before it
+    // plays, instead of carrying a now-meaningless AVSpeech voice ID.
 
     var isRewriting: Bool {
         if case .rewriting = rewriteState { return true }

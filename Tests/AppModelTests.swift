@@ -341,7 +341,11 @@ struct AppModelTests {
 
     @Test
     @MainActor
-    func sessionSwitchClearsPreparingFlagImmediately() async throws {
+    func sessionSwitchDoesNotClearPlaybackQueue() async throws {
+        // The queue is cross-session. Navigating away from session A
+        // — even to nil (no selection) — leaves A's queued and in-
+        // flight items alone. User's "Stop" button is the only way
+        // to clear them.
         let processor = ControllableSpeechTextProcessor()
         let fixture = try makeTestAppModel(
             transcripts: ["session-1.jsonl": fourMessageTranscript],
@@ -362,7 +366,11 @@ struct AppModelTests {
         #expect(fixture.model.isPreparingPlayback)
 
         fixture.model.selectedSessionID = nil
-        #expect(!fixture.model.isPreparingPlayback)
+
+        // Queue + in-flight rewrite survive the navigation. Flag stays
+        // true because the item is still being prepared.
+        #expect(fixture.model.isPreparingPlayback)
+        #expect(fixture.model.speechController.queue.contains(where: { $0.id == "assistant-1" }))
 
         processor.releaseAll()
     }
@@ -697,7 +705,10 @@ struct AppModelTests {
 
     @Test
     @MainActor
-    func sessionSwitchDuringPreprocessingCancelsPendingPlayback() async throws {
+    func sessionSwitchDuringPreprocessingDoesNotCancelPendingPlayback() async throws {
+        // Session switch is cross-session-safe now — an in-flight
+        // rewrite continues even if the user navigates away, and
+        // when it completes the item plays normally.
         let processor = ControllableSpeechTextProcessor()
         let fixture = try makeTestAppModel(
             transcripts: ["session-1.jsonl": fourMessageTranscript],
@@ -716,12 +727,15 @@ struct AppModelTests {
         fixture.model.playMessage(firstAssistant)
         try await waitUntil { processor.invocationCount == 1 }
 
-        // User switches away to no selection mid-process.
+        // User switches away mid-process. Queue should persist.
         fixture.model.selectedSessionID = nil
 
         processor.releaseAll()
-        try await Task.sleep(for: .milliseconds(100))
-        #expect(fixture.avDriver.startedRequests.isEmpty)
+        // Item should land in the driver's started requests once the
+        // rewrite completes — queue didn't get cancelled.
+        try await waitUntil {
+            fixture.avDriver.startedRequests.contains(where: { $0.messageID == "assistant-1" })
+        }
     }
 
     // MARK: - Backend switch voice preference preservation (regression lock)

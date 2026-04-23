@@ -41,9 +41,11 @@ final class AppModel {
             PerfLog.mark("AppModel.selectedSessionID change id=\(selectedSessionID ?? "nil")")
             selectionRefreshTask?.cancel()
             selectedTranscriptRefreshTask?.cancel()
-            // Clear playback queue + active audio too; the user
-            // switching sessions is a clear intent change.
-            speechController.stop()
+            // Playback continues across session navigation. The queue
+            // is cross-session by design: items enqueued from session
+            // A's context stay in flight even when the user navigates
+            // to B to work on something else. Stop is now reserved
+            // for the explicit toolbar Stop button.
             updateSelectedTranscriptObservation()
 
             guard let id = selectedSessionID else {
@@ -244,6 +246,16 @@ final class AppModel {
             // its rewriter uses the test-supplied implementation.
             speechController.setSpeechTextProcessor(self.speechTextProcessor)
         }
+
+        // Wire the SpeechController's voice + rate providers to read
+        // our current preferences. Evaluated at speak() time, not at
+        // enqueue time — keeps the queue cross-backend-safe.
+        speechController.voiceIdentifierProvider = { [weak self] in
+            self?.currentVoiceIdentifier
+        }
+        speechController.rateProvider = { [weak self] in
+            Float(self?.preferredSpeechRate ?? Double(AVSpeechUtteranceDefaultSpeechRate))
+        }
     }
 
     // Swap the speech text processor based on the user's selected mode.
@@ -418,8 +430,6 @@ final class AppModel {
         speechController.insertManual(
             messageID: message.id,
             sourceText: message.text,
-            voiceIdentifier: currentVoiceIdentifier,
-            rate: Float(preferredSpeechRate),
             sessionID: message.sessionID
         )
     }
@@ -434,16 +444,11 @@ final class AppModel {
         let fromHere = messages[startIndex...].filter(\.isAssistant)
         guard !fromHere.isEmpty else { return }
 
-        let voice = currentVoiceIdentifier
-        let rate = Float(preferredSpeechRate)
-
         speechController.insertManualSequence(
             fromHere.map { m in
                 (
                     messageID: m.id,
                     sourceText: m.text,
-                    voiceIdentifier: voice,
-                    rate: rate,
                     sessionID: m.sessionID
                 )
             }
@@ -564,8 +569,6 @@ final class AppModel {
                     speechController.insertAuto(
                         messageID: message.id,
                         sourceText: message.text,
-                        voiceIdentifier: currentVoiceIdentifier,
-                        rate: Float(preferredSpeechRate),
                         sessionID: sessionID
                     )
                 }

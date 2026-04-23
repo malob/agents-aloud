@@ -72,6 +72,15 @@ final class SpeechController {
     // doing the rewriting.
     @ObservationIgnored private var speechTextProcessor: any SpeechTextProcessor
 
+    // Providers for the per-playback voice and rate. Looked up fresh
+    // at speak() time rather than baked into queue items, so the
+    // queue is robust to both backend switches (each driver has its
+    // own voice ID space) and rate changes between enqueue and play.
+    // AppModel wires these to point at its own currentVoiceIdentifier
+    // and preferredSpeechRate properties.
+    @ObservationIgnored var voiceIdentifierProvider: @MainActor () -> String? = { nil }
+    @ObservationIgnored var rateProvider: @MainActor () -> Float = { 0.4 }
+
     private var playbackState: PlaybackState = .idle
     // The ordered queue of items waiting to play. Items enter via
     // insertManual / insertAuto / insertManualSequence; exit when
@@ -91,12 +100,13 @@ final class SpeechController {
     var backend: SpeechBackend = .avSpeech {
         didSet {
             guard oldValue != backend else { return }
-            // Backend switch is a hard reset: current playback stops,
-            // queue clears, rewriter cancels. User's next action seeds
-            // a fresh queue against the new driver.
-            driver(for: oldValue).stop()
-            playbackState = .idle
-            clearQueueAndRewriter()
+            // Backend switch is NOT a reset. The currently-playing
+            // utterance continues on the old driver until it finishes
+            // naturally (activeDriver is captured from the stored
+            // playback's backend, not from this var). The queue
+            // persists — its items don't carry voice IDs, so each
+            // one will pick up the current backend via the providers
+            // when it's next to play.
         }
     }
 
@@ -180,8 +190,6 @@ final class SpeechController {
     func insertManual(
         messageID: String,
         sourceText: String,
-        voiceIdentifier: String?,
-        rate: Float,
         sessionID: String
     ) {
         guard !isQueuedOrActive(messageID: messageID) else { return }
@@ -190,8 +198,6 @@ final class SpeechController {
             id: messageID,
             sourceText: sourceText,
             rewriteState: .pending,
-            voiceIdentifier: voiceIdentifier,
-            rate: rate,
             source: .manual,
             sessionID: sessionID
         )
@@ -204,7 +210,7 @@ final class SpeechController {
     // slot contiguously. All are .manual so subsequent manual clicks
     // land after this whole block, not in the middle of it.
     func insertManualSequence(
-        _ messages: [(messageID: String, sourceText: String, voiceIdentifier: String?, rate: Float, sessionID: String)]
+        _ messages: [(messageID: String, sourceText: String, sessionID: String)]
     ) {
         guard !messages.isEmpty else { return }
         var insertIndex = indexForManualInsert()
@@ -214,8 +220,6 @@ final class SpeechController {
                 id: message.messageID,
                 sourceText: message.sourceText,
                 rewriteState: .pending,
-                voiceIdentifier: message.voiceIdentifier,
-                rate: message.rate,
                 source: .manual,
                 sessionID: message.sessionID
             )
@@ -231,8 +235,6 @@ final class SpeechController {
     func insertAuto(
         messageID: String,
         sourceText: String,
-        voiceIdentifier: String?,
-        rate: Float,
         sessionID: String
     ) {
         guard !isQueuedOrActive(messageID: messageID) else { return }
@@ -241,8 +243,6 @@ final class SpeechController {
             id: messageID,
             sourceText: sourceText,
             rewriteState: .pending,
-            voiceIdentifier: voiceIdentifier,
-            rate: rate,
             source: .auto,
             sessionID: sessionID
         )
@@ -391,14 +391,17 @@ final class SpeechController {
     }
 
     // Build a SpeechRequest from a PendingSpeechItem's ready state and
-    // start the driver.
+    // start the driver. Voice + rate are looked up via the providers
+    // at this moment — NOT captured at insert time — so mid-queue
+    // backend switches and rate changes take effect for the next
+    // item without needing to invalidate the queue.
     private func speak(text: String, item: PendingSpeechItem) {
         let request = SpeechRequest(
             playbackID: UUID(),
             messageID: item.id,
             text: text,
-            voiceIdentifier: item.voiceIdentifier,
-            rate: item.rate
+            voiceIdentifier: voiceIdentifierProvider(),
+            rate: rateProvider()
         )
         let driver = currentDriver
         let activePlayback = ActivePlayback(
