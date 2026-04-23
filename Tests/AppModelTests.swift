@@ -344,6 +344,54 @@ struct AppModelTests {
 
     @Test
     @MainActor
+    func rapidSpeakReclickDoesNotClearPreparingFlagEarly() async throws {
+        // Regression: isPreparingPlayback was a single Bool cleared from
+        // each prep task's defer unconditionally. In a rapid Speak-A then
+        // Speak-B sequence, A's late defer cleared the flag while B was
+        // still preparing, hiding the Stop affordance the user needs.
+        let processor = ControllableSpeechTextProcessor()
+        let fixture = try makeTestAppModel(
+            transcripts: ["session-1.jsonl": fourMessageTranscript],
+            speechTextProcessor: processor
+        )
+        defer { fixture.cleanup() }
+
+        await fixture.model.start()
+        let firstSession = try #require(fixture.model.sessions.first)
+        fixture.model.selectedSessionID = firstSession.id
+        try await waitUntil { fixture.model.transcriptState.messages(for: firstSession.id).count == 4 }
+
+        let messages = fixture.model.transcriptState.messages(for: firstSession.id)
+        let first = try #require(messages.first(where: { $0.id == "assistant-1" }))
+        let second = try #require(messages.first(where: { $0.id == "assistant-2" }))
+
+        fixture.model.playMessage(first)
+        try await waitUntil { processor.pendingCount == 1 }
+        #expect(fixture.model.isPreparingPlayback)
+
+        // Second click while first is still preparing.
+        fixture.model.playMessage(second)
+        try await waitUntil { processor.pendingCount == 2 }
+        #expect(fixture.model.isPreparingPlayback)
+
+        // Release the first pending process() call. Its Task will see
+        // it's been cancelled and hit the defer — but the defer must
+        // NOT clear isPreparingPlayback because the second prep is
+        // still the active one.
+        processor.releaseNext()
+        // Give the first task time to run through defer.
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(fixture.model.isPreparingPlayback)
+        #expect(processor.pendingCount == 1)
+
+        // Now release the second. THAT defer should clear the flag.
+        processor.releaseNext()
+        try await waitUntil { !fixture.model.isPreparingPlayback }
+    }
+
+    @Test
+    @MainActor
     func sessionSwitchDuringPreprocessingCancelsPendingPlayback() async throws {
         let processor = ControllableSpeechTextProcessor()
         let fixture = try makeTestAppModel(

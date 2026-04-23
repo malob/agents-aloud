@@ -32,6 +32,13 @@ final class AppModel {
     // audio pipeline. Without this, a 2s processor await after the user
     // pressed Stop would still end up calling playNow when it resumed.
     @ObservationIgnored private var playbackPreparationTask: Task<Void, Never>?
+    // Monotonic counter bumped on every start/cancel of preparation.
+    // Each prep Task captures the generation at spawn so its defer can
+    // tell whether it's still the active preparation before clearing
+    // shared `isPreparingPlayback`. Without this, rapid Speak-A then
+    // Speak-B clicks let A's late defer clear the state while B is
+    // still preparing.
+    @ObservationIgnored private var playbackPreparationGeneration: UInt64 = 0
 
     var sessionsState: SessionsState = .loading([])
     var selectedSessionID: ClaudeSessionSummary.ID? {
@@ -393,9 +400,11 @@ final class AppModel {
 
     func playMessage(_ message: TranscriptMessage) {
         playbackPreparationTask?.cancel()
+        playbackPreparationGeneration &+= 1
+        let generation = playbackPreparationGeneration
         isPreparingPlayback = true
         playbackPreparationTask = Task { [weak self] in
-            defer { self?.isPreparingPlayback = false }
+            defer { self?.clearPreparingFlagIfCurrent(generation: generation) }
             guard let self else { return }
             let processed = await speechTextProcessor.process(text: message.text)
             // User intent may have changed during the await (pressed Stop,
@@ -423,9 +432,11 @@ final class AppModel {
         let rate = Float(preferredSpeechRate)
 
         playbackPreparationTask?.cancel()
+        playbackPreparationGeneration &+= 1
+        let generation = playbackPreparationGeneration
         isPreparingPlayback = true
         playbackPreparationTask = Task { [weak self] in
-            defer { self?.isPreparingPlayback = false }
+            defer { self?.clearPreparingFlagIfCurrent(generation: generation) }
             guard let self else { return }
             let processedFirst = await speechTextProcessor.process(text: first.text)
             guard !Task.isCancelled else { return }
@@ -461,8 +472,22 @@ final class AppModel {
     func stopPlayback() {
         playbackPreparationTask?.cancel()
         playbackPreparationTask = nil
+        // Bump generation so any stale Task's defer sees its captured
+        // generation doesn't match current and skips clearing (which we
+        // just did explicitly here anyway — but the invariant is easier
+        // to reason about if no path ever clears the flag out-of-turn).
+        playbackPreparationGeneration &+= 1
         isPreparingPlayback = false
         speechController.stop()
+    }
+
+    // Called from each prep Task's defer. Only clears the shared flag
+    // when this task is still the current one — without this guard, a
+    // late defer from a cancelled earlier prep can reset isPreparingPlayback
+    // while the user's newer prep is still running.
+    private func clearPreparingFlagIfCurrent(generation: UInt64) {
+        guard generation == playbackPreparationGeneration else { return }
+        isPreparingPlayback = false
     }
 
     func dismissErrorMessage() {
