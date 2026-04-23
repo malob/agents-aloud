@@ -268,19 +268,24 @@ final class SpeechController {
         clearQueueAndRewriter()
     }
 
-    // Drop queued AUTO items (Live Speak arrivals) but preserve any
-    // manually-clicked items and the current utterance. Used by
-    // "Stop Live Speak" — the user's manual intent should survive
-    // toggling the auto feature off.
-    func drainAutoQueue() {
-        let hadRewritingAuto = rewriterTargetID.flatMap { id in
-            queue.first(where: { $0.id == id })?.source == .auto
-        } ?? false
-        queue.removeAll(where: { $0.source == .auto })
-        if hadRewritingAuto {
+    // Drop queued AUTO items belonging to a specific session but
+    // preserve everything else (manual items, auto items from other
+    // sessions, the current utterance). Used by "Stop Live Speak"
+    // for a single session under the one-Live-Speak-at-a-time rule.
+    // The user's manual intent survives toggling auto off, and so
+    // do any residual auto items from a session that previously had
+    // Live Speak before it was transferred away.
+    func drainAutoQueue(for sessionID: String) {
+        let hadRewritingAutoForSession = rewriterTargetID.flatMap { id in
+            queue.first(where: {
+                $0.id == id && $0.source == .auto && $0.sessionID == sessionID
+            })
+        } != nil
+        queue.removeAll(where: { $0.source == .auto && $0.sessionID == sessionID })
+        if hadRewritingAutoForSession {
             // The item the rewriter was working on got drained.
             cancelRewriterIfRunning()
-            // Start on the next manual .pending, if any.
+            // Start on the next .pending, if any.
             startRewriterIfNeeded()
         }
     }

@@ -272,7 +272,7 @@ struct SpeechControllerTests {
         // Give the passthrough rewriter time to mark m2/m3 ready.
         try await waitUntil { controller.queue.count == 2 }
 
-        controller.drainAutoQueue()
+        controller.drainAutoQueue(for: "s")
 
         // m1 still playing (active, not in queue). m2 manual preserved,
         // m3 auto dropped.

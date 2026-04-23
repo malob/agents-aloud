@@ -47,6 +47,12 @@ final class AppModel {
             // to B to work on something else. Stop is now reserved
             // for the explicit toolbar Stop button.
             updateSelectedTranscriptObservation()
+            // Live Speak is independent of selection. If the user
+            // navigates away from the Live-Speak-enabled session, the
+            // live-read watcher takes over monitoring its file; if
+            // they navigate to it, the selected watcher handles both
+            // roles and the live-read watcher idles.
+            reconcileLiveReadWatcher()
 
             guard let id = selectedSessionID else {
                 transcriptState = .none
@@ -68,7 +74,12 @@ final class AppModel {
     }
     var transcriptState: TranscriptState = .none
     var errorMessage: String?
-    var liveReadSessionID: ClaudeSessionSummary.ID?
+    var liveReadSessionID: ClaudeSessionSummary.ID? {
+        didSet {
+            guard oldValue != liveReadSessionID else { return }
+            reconcileLiveReadWatcher()
+        }
+    }
 
     // True while the speech controller has anything in its queue — a
     // rewrite in progress, or ready items waiting for playback.
@@ -168,7 +179,14 @@ final class AppModel {
     @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var selectionRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var selectedTranscriptRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var liveReadTranscriptRefreshTask: Task<Void, Never>?
     @ObservationIgnored private let selectedTranscriptWatcher: any TranscriptFileWatching
+    // Second watcher for the Live Speak session when it differs from
+    // the currently-selected session — Live Speak can stay on session
+    // A while the user navigates to B to work on something else, and
+    // this watcher keeps A's file monitored for new assistant
+    // messages to auto-enqueue.
+    @ObservationIgnored private let liveReadTranscriptWatcher: any TranscriptFileWatching
     @ObservationIgnored private var transcriptMessagesBySession: [ClaudeSessionSummary.ID: [TranscriptMessage]] = [:]
     @ObservationIgnored private var knownAssistantMessageIDsBySession: [ClaudeSessionSummary.ID: Set<TranscriptMessage.ID>] = [:]
 
@@ -177,6 +195,7 @@ final class AppModel {
         speechController: SpeechController = SpeechController(),
         userDefaults: UserDefaults = .standard,
         selectedTranscriptWatcher: any TranscriptFileWatching = TranscriptFileWatcher(),
+        liveReadTranscriptWatcher: any TranscriptFileWatching = TranscriptFileWatcher(),
         keychain: KeychainStorage = KeychainStorage(service: AppModel.defaultKeychainService),
         // Tests can inject an explicit processor to control latency /
         // behavior. nil = derive from the persisted setting at init
@@ -187,6 +206,7 @@ final class AppModel {
         self.speechController = speechController
         self.userDefaults = userDefaults
         self.selectedTranscriptWatcher = selectedTranscriptWatcher
+        self.liveReadTranscriptWatcher = liveReadTranscriptWatcher
         self.keychain = keychain
         let explicitProcessor = speechTextProcessor
         self.speechTextProcessor = explicitProcessor ?? PassthroughSpeechProcessor()
@@ -371,6 +391,7 @@ final class AppModel {
         sessionRefreshTask?.cancel()
         selectionRefreshTask?.cancel()
         selectedTranscriptRefreshTask?.cancel()
+        liveReadTranscriptRefreshTask?.cancel()
         elevenLabsVoiceRefreshTask?.cancel()
     }
 
@@ -400,29 +421,38 @@ final class AppModel {
         }
     }
 
+    // Toggle Live Speak. Under the one-Live-Speak-at-a-time rule the
+    // toggle always targets the currently-selected session:
+    //
+    //  - Enable (from off): turn on for selectedSessionID. If another
+    //    session had Live Speak, this TRANSFERS ownership — queued
+    //    auto items from the old session are kept (they finish
+    //    playing), but no new arrivals from it will auto-enqueue.
+    //  - Disable (only when liveReadSessionID == selectedSessionID):
+    //    explicit off. Drain this session's auto items from the
+    //    queue so "stop reading me new messages" actually stops.
+    //    Manual items and other sessions' items are unaffected.
     func setLiveReadEnabled(_ isEnabled: Bool) {
         guard let selectedSessionID else {
-            liveReadSessionID = nil
+            if !isEnabled { liveReadSessionID = nil }
             return
         }
 
         if isEnabled {
-            liveReadSessionID = selectedSessionID
+            guard liveReadSessionID != selectedSessionID else { return }
+            // Seed the known-assistant set for the new session so we
+            // don't re-read history — only messages that arrive AFTER
+            // this toggle should auto-enqueue.
             knownAssistantMessageIDsBySession[selectedSessionID] = Set(
                 transcriptMessages
                     .filter(\.isAssistant)
                     .map(\.id)
             )
+            liveReadSessionID = selectedSessionID
         } else if liveReadSessionID == selectedSessionID {
+            let disabledSessionID = selectedSessionID
             liveReadSessionID = nil
-            selectedTranscriptRefreshTask?.cancel()
-            // Drop auto-queued Live Speak arrivals so "Stop Live Speak"
-            // actually stops reading new messages — but keep manual
-            // clicks in the queue, since disabling the auto feature
-            // shouldn't undo the user's explicit Speak actions. The
-            // current utterance also keeps playing so the user isn't
-            // cut off mid-sentence.
-            speechController.drainAutoQueue()
+            speechController.drainAutoQueue(for: disabledSessionID)
         }
     }
 
@@ -481,8 +511,15 @@ final class AppModel {
             transcriptMessagesBySession = transcriptMessagesBySession.filter { currentSessionIDs.contains($0.key) }
             knownAssistantMessageIDsBySession = knownAssistantMessageIDsBySession.filter { currentSessionIDs.contains($0.key) }
 
+            // If the Live Speak session disappeared from the sidebar
+            // (deleted, aged out of the lookback window), clear it.
+            if let liveReadSessionID, !currentSessionIDs.contains(liveReadSessionID) {
+                self.liveReadSessionID = nil
+            }
+
             if let selectedSessionID, loadedSessions.contains(where: { $0.id == selectedSessionID }) {
                 updateSelectedTranscriptObservation()
+                reconcileLiveReadWatcher()
                 return
             }
 
@@ -559,13 +596,12 @@ final class AppModel {
             if allowLiveRead, let previousIDs {
                 let newAssistantMessages = assistantMessages.filter { !previousIDs.contains($0.id) }
                 for message in newAssistantMessages {
-                    guard selectedSessionID == sessionID, liveReadSessionID == sessionID else {
+                    // Live Speak fires regardless of which session the
+                    // user is currently viewing — it only requires
+                    // that this session is the Live-Speak-enabled one.
+                    guard liveReadSessionID == sessionID else {
                         break
                     }
-                    // Live Speak integration in full: append to the
-                    // speech queue. The queue's own serial rewriter
-                    // handles transformation; playback picks up when
-                    // the rewrite is ready.
                     speechController.insertAuto(
                         messageID: message.id,
                         sourceText: message.text,
@@ -617,6 +653,69 @@ final class AppModel {
                 self.errorMessage = message
             }
         )
+    }
+
+    // Keep the live-read watcher in sync with liveReadSessionID +
+    // selectedSessionID. The live-read watcher is only active when
+    // Live Speak is on for a session OTHER than the one currently
+    // being viewed — if they match, the selected watcher handles
+    // both roles, and doubling up would duplicate file-event work.
+    //
+    // Called from the didSet on both liveReadSessionID and
+    // selectedSessionID, plus from refreshSessions when the sessions
+    // list changes (the live-read session may have been renamed /
+    // deleted).
+    private func reconcileLiveReadWatcher() {
+        guard let liveReadSessionID, liveReadSessionID != selectedSessionID else {
+            liveReadTranscriptWatcher.stop()
+            liveReadTranscriptRefreshTask?.cancel()
+            liveReadTranscriptRefreshTask = nil
+            return
+        }
+
+        guard let session = sessions.first(where: { $0.id == liveReadSessionID }) else {
+            // Session not in our sidebar list (probably deleted or
+            // outside the lookback window). Drop the watcher and
+            // clear the ID so UI stays consistent.
+            liveReadTranscriptWatcher.stop()
+            liveReadTranscriptRefreshTask?.cancel()
+            liveReadTranscriptRefreshTask = nil
+            return
+        }
+
+        let watchedID = liveReadSessionID
+        let transcriptURL = session.transcriptURL
+        liveReadTranscriptWatcher.startWatching(
+            fileURL: transcriptURL,
+            onChange: { [weak self] in
+                guard let self, self.liveReadSessionID == watchedID else { return }
+                self.scheduleLiveReadTranscriptRefresh(for: watchedID)
+            },
+            onFailure: { [weak self] error in
+                guard let self else { return }
+                self.logger.error(
+                    "Live-read watcher error for \(transcriptURL.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        )
+        // Catch up any messages that arrived on this session's file
+        // during the brief window between the previous watcher (if
+        // any) stopping and this one starting. Idempotent because
+        // knownAssistantMessageIDsBySession filters out already-seen
+        // messages.
+        scheduleLiveReadTranscriptRefresh(for: watchedID)
+    }
+
+    private func scheduleLiveReadTranscriptRefresh(for sessionID: ClaudeSessionSummary.ID) {
+        liveReadTranscriptRefreshTask?.cancel()
+        liveReadTranscriptRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            // Same 150ms debounce as the selected-transcript path —
+            // coalesce bursty appends from streaming assistant output.
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            await refreshTranscript(for: sessionID, allowLiveRead: true)
+        }
     }
 
     private func scheduleSelectedTranscriptRefresh(for sessionID: ClaudeSessionSummary.ID) {

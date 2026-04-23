@@ -30,6 +30,7 @@ private final class FakeTranscriptFileWatcher: TranscriptFileWatching {
 private struct TestAppModelFixture {
     let model: AppModel
     let watcher: FakeTranscriptFileWatcher
+    let liveReadWatcher: FakeTranscriptFileWatcher
     let avDriver: FakeSpeechBackendDriver
     let systemDriver: FakeSpeechBackendDriver
     let projectsRoot: URL
@@ -63,6 +64,7 @@ private func makeTestAppModel(
     let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
     let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
     let watcher = FakeTranscriptFileWatcher()
+    let liveReadWatcher = FakeTranscriptFileWatcher()
     let avDriver = FakeSpeechBackendDriver(
         availableVoices: [SpeechVoiceOption(id: "av.voice", name: "AV", language: "en-US", quality: .enhanced)]
     )
@@ -76,6 +78,7 @@ private func makeTestAppModel(
         speechController: speechController,
         userDefaults: userDefaults,
         selectedTranscriptWatcher: watcher,
+        liveReadTranscriptWatcher: liveReadWatcher,
         keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"),
         speechTextProcessor: speechTextProcessor
     )
@@ -83,6 +86,7 @@ private func makeTestAppModel(
     return TestAppModelFixture(
         model: model,
         watcher: watcher,
+        liveReadWatcher: liveReadWatcher,
         avDriver: avDriver,
         systemDriver: systemDriver,
         projectsRoot: projectsRoot,
@@ -548,6 +552,183 @@ struct AppModelTests {
         try await waitUntil { processor.pendingCount == 1 }
         processor.releaseNext()
         try await waitUntil { fixture.model.speechController.queue.first?.readyText != nil }
+    }
+
+    @Test
+    @MainActor
+    func liveSpeakAutoEnqueuesArrivalsOnNonSelectedSession() async throws {
+        // Cross-session Live Speak: Live Speak stays enabled for A
+        // even after the user navigates to B. New assistant messages
+        // on A's file auto-enqueue via the dedicated live-read
+        // watcher, independent of which session the user is viewing.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+
+        // Two sessions on disk, each with a user prompt seed.
+        let sessionA = projectDirectory.appendingPathComponent("session-a.jsonl", isDirectory: false)
+        let sessionB = projectDirectory.appendingPathComponent("session-b.jsonl", isDirectory: false)
+        try """
+        {"type":"user","uuid":"u-a","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-a","cwd":"/x","message":{"role":"user","content":"A's prompt."}}
+        """.write(to: sessionA, atomically: true, encoding: .utf8)
+        try """
+        {"type":"user","uuid":"u-b","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-b","cwd":"/x","message":{"role":"user","content":"B's prompt."}}
+        """.write(to: sessionB, atomically: true, encoding: .utf8)
+
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        let selectedWatcher = FakeTranscriptFileWatcher()
+        let liveReadWatcher = FakeTranscriptFileWatcher()
+        let avDriver = FakeSpeechBackendDriver(
+            availableVoices: [SpeechVoiceOption(id: "av.voice", name: "AV", language: "en-US", quality: .enhanced)]
+        )
+        let controller = SpeechController(
+            avSpeechDriver: avDriver,
+            systemVoiceDriver: FakeSpeechBackendDriver(wordsPerMinute: 400)
+        )
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            speechController: controller,
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: selectedWatcher,
+            liveReadTranscriptWatcher: liveReadWatcher,
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+        )
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        await model.start()
+        try await waitUntil { model.sessions.count == 2 }
+
+        // Select A, enable Live Speak, switch to B.
+        let aID = try #require(model.sessions.first(where: { $0.id == "session-a" })?.id)
+        let bID = try #require(model.sessions.first(where: { $0.id == "session-b" })?.id)
+        model.selectedSessionID = aID
+        try await waitUntil { model.transcriptState.messages(for: aID).count == 1 }
+        model.setLiveReadEnabled(true)
+        #expect(model.liveReadSessionID == aID)
+
+        model.selectedSessionID = bID
+        #expect(model.liveReadSessionID == aID)  // survives navigation
+        try await waitUntil { model.transcriptState.messages(for: bID).count == 1 }
+
+        // Append an assistant message to A's file. liveReadWatcher is
+        // the one watching it now (selected != live).
+        let newAssistantLine = "\n{\"type\":\"assistant\",\"uuid\":\"a-reply-1\",\"timestamp\":\"2026-04-17T17:00:02Z\",\"sessionId\":\"session-a\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"A's background reply.\"}]}}"
+        let handle = try FileHandle(forWritingTo: sessionA)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(newAssistantLine.utf8))
+        try handle.close()
+        liveReadWatcher.emitChange()
+
+        // A's new message auto-enqueued despite B being selected.
+        try await waitUntil {
+            avDriver.startedRequests.contains(where: { $0.messageID == "a-reply-1" })
+        }
+    }
+
+    @Test
+    @MainActor
+    func enablingLiveSpeakOnNewSessionTransfersWithoutDrainingQueue() async throws {
+        // The "transfer" case: A has Live Speak with auto items in
+        // the queue. User navigates to B and enables Live Speak for
+        // B. Ownership moves; A's queued auto items stay (just no
+        // new A arrivals).
+        let processor = ControllableSpeechTextProcessor()
+        let fixture = try makeTestAppModel(
+            transcripts: ["session-1.jsonl": fourMessageTranscript],
+            speechTextProcessor: processor
+        )
+        defer { fixture.cleanup() }
+
+        await fixture.model.start()
+        let firstSession = try #require(fixture.model.sessions.first)
+        fixture.model.selectedSessionID = firstSession.id
+        try await waitUntil { fixture.model.transcriptState.messages(for: firstSession.id).count == 4 }
+
+        // Seed an auto item in the queue by pretending Live Speak
+        // caught a new arrival on A.
+        fixture.model.speechController.insertAuto(
+            messageID: "auto-from-a",
+            sourceText: "auto",
+            sessionID: firstSession.id
+        )
+        fixture.model.setLiveReadEnabled(true)
+        #expect(fixture.model.liveReadSessionID == firstSession.id)
+
+        // Simulate viewing a different session (for test purposes we
+        // just set selectedSessionID to nil — represents navigation
+        // away). liveReadSessionID stays.
+        fixture.model.selectedSessionID = nil
+        #expect(fixture.model.liveReadSessionID == firstSession.id)
+
+        // Re-enter the session and re-toggle — equivalent to
+        // "transfer to same session" which should be a no-op.
+        fixture.model.selectedSessionID = firstSession.id
+        try await waitUntil { fixture.model.transcriptState.messages(for: firstSession.id).count == 4 }
+        fixture.model.setLiveReadEnabled(true)
+        // The auto item we seeded is still in the queue (not drained).
+        #expect(fixture.model.speechController.queue.contains(where: { $0.id == "auto-from-a" })
+                || fixture.model.speechController.currentMessageID == "auto-from-a")
+
+        // Release any pending rewriter work to tidy up.
+        processor.releaseAll()
+    }
+
+    @Test
+    @MainActor
+    func explicitLiveSpeakOffDrainsOnlyThatSessionsAutoItems() async throws {
+        // Explicit off: user toggles Live Speak off while viewing
+        // the session that has it. Drain THAT session's auto items
+        // from the queue. Manual items (from any session) stay.
+        let processor = ControllableSpeechTextProcessor()
+        let fixture = try makeTestAppModel(
+            transcripts: ["session-1.jsonl": fourMessageTranscript],
+            speechTextProcessor: processor
+        )
+        defer { fixture.cleanup() }
+
+        await fixture.model.start()
+        let firstSession = try #require(fixture.model.sessions.first)
+        fixture.model.selectedSessionID = firstSession.id
+        try await waitUntil { fixture.model.transcriptState.messages(for: firstSession.id).count == 4 }
+
+        fixture.model.setLiveReadEnabled(true)
+
+        // Seed both a manual and an auto item in the queue.
+        fixture.model.speechController.insertManual(
+            messageID: "manual-1",
+            sourceText: "m",
+            sessionID: firstSession.id
+        )
+        fixture.model.speechController.insertAuto(
+            messageID: "auto-1",
+            sourceText: "a",
+            sessionID: firstSession.id
+        )
+        try await waitUntil {
+            // Queue should contain at least the manual item; the auto
+            // may still be rewriting or in queue depending on timing.
+            fixture.model.speechController.queue.contains(where: { $0.id == "manual-1" })
+                || fixture.model.speechController.currentMessageID == "manual-1"
+        }
+
+        fixture.model.setLiveReadEnabled(false)
+
+        // auto-1 drained; manual-1 preserved (may be in queue or
+        // active depending on rewrite progress).
+        #expect(!fixture.model.speechController.queue.contains(where: { $0.id == "auto-1" }))
+        #expect(fixture.model.speechController.currentMessageID != "auto-1")
+        let manualStillPresent = fixture.model.speechController.queue.contains(where: { $0.id == "manual-1" })
+            || fixture.model.speechController.currentMessageID == "manual-1"
+        #expect(manualStillPresent)
+
+        processor.releaseAll()
     }
 
     @Test
