@@ -303,6 +303,94 @@ struct AppModelTests {
         }
     }
 
+    // MARK: - isPreparingPlayback flag lifecycle
+
+    @Test
+    @MainActor
+    func stopPlaybackClearsPreparingFlagImmediately() async throws {
+        let processor = ControllableSpeechTextProcessor()
+        let fixture = try makeTestAppModel(
+            transcripts: ["session-1.jsonl": fourMessageTranscript],
+            speechTextProcessor: processor
+        )
+        defer { fixture.cleanup() }
+
+        await fixture.model.start()
+        let firstSession = try #require(fixture.model.sessions.first)
+        fixture.model.selectedSessionID = firstSession.id
+        try await waitUntil { fixture.model.transcriptState.messages(for: firstSession.id).count == 4 }
+
+        let messages = fixture.model.transcriptState.messages(for: firstSession.id)
+        let first = try #require(messages.first(where: { $0.id == "assistant-1" }))
+
+        fixture.model.playMessage(first)
+        try await waitUntil { processor.pendingCount == 1 }
+        #expect(fixture.model.isPreparingPlayback)
+
+        fixture.model.stopPlayback()
+
+        // Flag MUST clear synchronously — otherwise the Stop button
+        // appears briefly still-enabled after user pressed it.
+        #expect(!fixture.model.isPreparingPlayback)
+    }
+
+    @Test
+    @MainActor
+    func sessionSwitchClearsPreparingFlagImmediately() async throws {
+        let processor = ControllableSpeechTextProcessor()
+        let fixture = try makeTestAppModel(
+            transcripts: ["session-1.jsonl": fourMessageTranscript],
+            speechTextProcessor: processor
+        )
+        defer { fixture.cleanup() }
+
+        await fixture.model.start()
+        let firstSession = try #require(fixture.model.sessions.first)
+        fixture.model.selectedSessionID = firstSession.id
+        try await waitUntil { fixture.model.transcriptState.messages(for: firstSession.id).count == 4 }
+
+        let messages = fixture.model.transcriptState.messages(for: firstSession.id)
+        let first = try #require(messages.first(where: { $0.id == "assistant-1" }))
+
+        fixture.model.playMessage(first)
+        try await waitUntil { processor.pendingCount == 1 }
+        #expect(fixture.model.isPreparingPlayback)
+
+        fixture.model.selectedSessionID = nil
+        #expect(!fixture.model.isPreparingPlayback)
+    }
+
+    @Test
+    @MainActor
+    func disablingLiveSpeakClearsPreparingFlagImmediately() async throws {
+        // Live Speak disable mid-preprocessing (an assistant message
+        // arrived, was about to be enqueued, user turned Live Speak off
+        // during the refine). Flag clears immediately so Stop in the
+        // toolbar doesn't stick around enabled.
+        let processor = ControllableSpeechTextProcessor()
+        let fixture = try makeTestAppModel(
+            transcripts: ["session-1.jsonl": fourMessageTranscript],
+            speechTextProcessor: processor
+        )
+        defer { fixture.cleanup() }
+
+        await fixture.model.start()
+        let firstSession = try #require(fixture.model.sessions.first)
+        fixture.model.selectedSessionID = firstSession.id
+        try await waitUntil { fixture.model.transcriptState.messages(for: firstSession.id).count == 4 }
+
+        let messages = fixture.model.transcriptState.messages(for: firstSession.id)
+        let first = try #require(messages.first(where: { $0.id == "assistant-1" }))
+
+        fixture.model.setLiveReadEnabled(true)
+        fixture.model.playMessage(first)
+        try await waitUntil { processor.pendingCount == 1 }
+        #expect(fixture.model.isPreparingPlayback)
+
+        fixture.model.setLiveReadEnabled(false)
+        #expect(!fixture.model.isPreparingPlayback)
+    }
+
     // MARK: - Preprocessing cancellation
 
     @Test
