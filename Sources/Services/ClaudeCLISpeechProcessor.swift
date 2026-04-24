@@ -152,16 +152,26 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
 
     private let instructions: String
     private let model: String
+    // A fixed UUID reused across every CLI invocation by this
+    // processor instance. Combined with --no-session-persistence this
+    // makes Claude Code point at the same session file every time
+    // instead of minting a fresh one per call. Without it, the CLI
+    // writes a new one-line `ai-title` JSONL per invocation, which
+    // over time clutters `~/.claude/projects/-private-var-folders.../`
+    // (even though each file is only ~120 bytes).
+    private let sessionID: String
     // Computed on first use and cached. nil if claude isn't on PATH.
     private let binaryURLProvider: @Sendable () -> URL?
 
     init(
         instructions: String = ClaudeCLISpeechProcessor.defaultInstructions,
         model: String = "sonnet",
+        sessionID: String = UUID().uuidString,
         binaryLocator: @escaping @Sendable () -> URL? = { ClaudeCLISpeechProcessor.findClaudeBinary() }
     ) {
         self.instructions = instructions
         self.model = model
+        self.sessionID = sessionID
         self.binaryURLProvider = binaryLocator
     }
 
@@ -204,12 +214,13 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
 
         return await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
-                [model, instructions] in
+                [model, sessionID, instructions] in
                 await Self.runSubprocessBody(
                     processBox: processBox,
                     binaryURL: binaryURL,
                     input: input,
                     model: model,
+                    sessionID: sessionID,
                     instructions: instructions
                 )
             }.value
@@ -227,6 +238,7 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
         binaryURL: URL,
         input: String,
         model: String,
+        sessionID: String,
         instructions: String
     ) async -> String? {
         let process = processBox.process
@@ -234,6 +246,7 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
         process.arguments = [
             "--print",
             "--model", model,
+            "--session-id", sessionID,
             "--no-session-persistence",
             "--tools", "",
             "--disable-slash-commands",

@@ -149,6 +149,13 @@ struct MessageRowView: View, Equatable {
                         .stroke(pillPrimaryColor.opacity(0.35), lineWidth: 1)
                 }
             }
+            // Make the whole pill shape (capsule + its padding) a
+            // single hit-test region. Without this, SwiftUI's default
+            // content shape tracks the text glyphs + icon bounds but
+            // NOT the padding between them or around them, so hover
+            // didn't fire when the cursor was over the icon or in the
+            // negative space inside the pill.
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .help(pillHelp)

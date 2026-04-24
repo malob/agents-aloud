@@ -1,5 +1,4 @@
 import AVFoundation
-import FoundationModels
 import SwiftUI
 
 struct SettingsView: View {
@@ -61,6 +60,18 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
+
+            if model.speechTextOptimizationMode == .claudeCLI {
+                Picker("Model", selection: $model.claudeCLIModel) {
+                    ForEach(ClaudeCLIModel.allCases) { claudeModel in
+                        Text(claudeModel.displayName).tag(claudeModel)
+                    }
+                }
+
+                Text(model.claudeCLIModel.detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -71,19 +82,6 @@ struct SettingsView: View {
         case .claudeCLI:
             guard !model.isClaudeCLIAvailable else { return nil }
             return "`claude` CLI not found on PATH. Install from claude.ai/code or add its directory to PATH; until then, messages will be spoken unchanged."
-        case .foundationModel:
-            switch model.foundationModelAvailability {
-            case .available:
-                return nil
-            case .unavailable(.deviceNotEligible):
-                return "This Mac doesn't support Apple Intelligence. Messages will be spoken unchanged."
-            case .unavailable(.appleIntelligenceNotEnabled):
-                return "Apple Intelligence isn't enabled in System Settings. Messages will be spoken unchanged."
-            case .unavailable(.modelNotReady):
-                return "Apple Intelligence is still downloading. Messages will be spoken unchanged."
-            case .unavailable:
-                return "Apple Intelligence is currently unavailable. Messages will be spoken unchanged."
-            }
         }
     }
 

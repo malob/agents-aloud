@@ -1,6 +1,5 @@
 import AVFoundation
 import Foundation
-import FoundationModels
 import Observation
 import OSLog
 
@@ -13,6 +12,8 @@ final class AppModel {
     private static let preferredElevenLabsVoiceIDKey = "preferredElevenLabsVoiceID"
     private static let speechTextOptimizationEnabledKey = "speechTextOptimizationEnabled"
     private static let speechTextOptimizationModeKey = "speechTextOptimizationMode"
+    private static let claudeCLIModelKey = "claudeCLIModel"
+    private static let claudeCLISessionIDKey = "claudeCLISessionID"
     static let defaultKeychainService = "local.claudecodevoice"
     static let elevenLabsAPIKeyAccount = "elevenlabs_api_key"
     // How far back to show sessions in the sidebar. The session list is for
@@ -174,6 +175,28 @@ final class AppModel {
         }
     }
 
+    // Which Claude model the CLI rewriter calls. Only meaningful when
+    // speechTextOptimizationMode == .claudeCLI. Swapping it re-builds
+    // the processor so subsequent rewrites use the new model; items
+    // already mid-rewrite continue with their original model.
+    var claudeCLIModel: ClaudeCLIModel {
+        didSet {
+            guard oldValue != claudeCLIModel else { return }
+            userDefaults.set(claudeCLIModel.rawValue, forKey: Self.claudeCLIModelKey)
+            if speechTextOptimizationMode == .claudeCLI {
+                applySpeechTextProcessor()
+            }
+        }
+    }
+
+    // A stable UUID passed as `--session-id` to every `claude --print`
+    // invocation, generated once and persisted across launches. With
+    // --no-session-persistence this keeps Claude Code pointed at the
+    // same session file forever instead of minting a fresh empty one
+    // per call — so TTS rewrites don't proliferate tiny artifact
+    // JSONLs in the TMPDIR-scoped project directory.
+    @ObservationIgnored private let claudeCLISessionID: String
+
     let speechController: SpeechController
 
     @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
@@ -237,11 +260,11 @@ final class AppModel {
         elevenLabsAPIKey = storedKey
         preferredElevenLabsVoiceID = userDefaults.string(forKey: Self.preferredElevenLabsVoiceIDKey)
 
-        // Read the new enum setting; fall back to deriving from the old
-        // Bool key for users upgrading from the pre-enum build. If the
-        // old Bool was true we pick `.claudeCLI` as the recommended
-        // default; the FoundationModel option underperformed enough
-        // that auto-migrating users onto it would be a regression.
+        // Read the enum setting; fall back to the legacy Bool key for
+        // users upgrading from the pre-enum build. Users who had the
+        // retired `.foundationModel` value selected migrate to `.off`
+        // (that backend never produced useful output and has been
+        // removed).
         if let modeRaw = userDefaults.string(forKey: Self.speechTextOptimizationModeKey),
            let mode = SpeechTextOptimization(rawValue: modeRaw) {
             speechTextOptimizationMode = mode
@@ -249,6 +272,27 @@ final class AppModel {
             speechTextOptimizationMode = .claudeCLI
         } else {
             speechTextOptimizationMode = .off
+        }
+
+        // Claude CLI model preference: default Sonnet. Ignores unknown
+        // rawValues (e.g. after a version where we renamed cases).
+        if let modelRaw = userDefaults.string(forKey: Self.claudeCLIModelKey),
+           let model = ClaudeCLIModel(rawValue: modelRaw) {
+            claudeCLIModel = model
+        } else {
+            claudeCLIModel = .sonnet
+        }
+
+        // Fixed session UUID: generate once on first launch, persist
+        // forever. Stored as a raw string; we don't validate because a
+        // stored garbage value does no worse than a fresh UUID would.
+        if let storedSessionID = userDefaults.string(forKey: Self.claudeCLISessionIDKey),
+           !storedSessionID.isEmpty {
+            claudeCLISessionID = storedSessionID
+        } else {
+            let fresh = UUID().uuidString
+            userDefaults.set(fresh, forKey: Self.claudeCLISessionIDKey)
+            claudeCLISessionID = fresh
         }
 
         speechController.backend = preferredSpeechBackend
@@ -289,22 +333,14 @@ final class AppModel {
         case .off:
             speechTextProcessor = PassthroughSpeechProcessor()
         case .claudeCLI:
-            speechTextProcessor = ClaudeCLISpeechProcessor()
-        case .foundationModel:
-            let processor = FoundationModelSpeechProcessor()
-            speechTextProcessor = processor
-            processor.prewarm()
+            speechTextProcessor = ClaudeCLISpeechProcessor(
+                model: claudeCLIModel.cliArgument,
+                sessionID: claudeCLISessionID
+            )
         }
         // Forward the selection into SpeechController so its rewriter
         // pipeline uses the right backend for subsequent inserts.
         speechController.setSpeechTextProcessor(speechTextProcessor)
-    }
-
-    // Whether the on-device Apple Intelligence model is available.
-    // Surfaced in Settings so the FM option can be disabled with an
-    // explanatory message when unavailable.
-    var foundationModelAvailability: SystemLanguageModel.Availability {
-        SystemLanguageModel.default.availability
     }
 
     // Whether the claude CLI is currently findable on PATH. Surfaced
