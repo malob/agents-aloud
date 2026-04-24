@@ -42,6 +42,25 @@ struct PlaybackControlsView: View {
             // way to cancel.
             .disabled(!controller.isSpeaking && !controller.isPaused && !model.isPreparingPlayback)
             .help("Stop speech")
+
+            Button {
+                // Skip the currently-playing message. Same surface
+                // MPRemoteCommandCenter.nextTrackCommand uses — stops
+                // the active utterance and promotes the next ready
+                // item from the queue. If the queue is empty it
+                // collapses to a stop, matching Music / Podcasts
+                // "next track" behavior.
+                guard let currentID = controller.currentMessageID else { return }
+                controller.cancel(messageID: currentID)
+            } label: {
+                Label("Next", systemImage: "forward.end.fill")
+            }
+            // Enabled as long as there's a current message to skip
+            // past. Paused utterances are skippable too — the user's
+            // "move on from this" intent still maps to cancel-then-
+            // advance.
+            .disabled(controller.currentMessageID == nil)
+            .help("Skip to the next message")
         }
         .labelStyle(.iconOnly)
     }
