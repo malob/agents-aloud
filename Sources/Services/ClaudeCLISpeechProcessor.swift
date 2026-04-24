@@ -73,10 +73,32 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
     // (which terminates the subprocess when the outer Task is
     // cancelled). Process instance methods are thread-safe per Apple's
     // docs; @unchecked Sendable is correct here.
+    //
+    // Also holds a Mutex-backed cancelled flag. Without it there's a
+    // race window: if cancellation lands AFTER the worker task is
+    // created but BEFORE it calls process.run(), then terminate() is
+    // a no-op (process isn't running yet) and the launcher then
+    // happily starts `claude`. The flag closes this by letting the
+    // launcher bail out pre-launch if cancelled, and SIGTERMing
+    // post-launch if cancellation raced past the pre-check.
     private final class ProcessBox: @unchecked Sendable {
         let process = Process()
+        private let cancelledFlag = Mutex(false)
+
+        var isCancelled: Bool {
+            cancelledFlag.withLock { $0 }
+        }
+
         func terminate() {
-            if process.isRunning { process.terminate() }
+            cancelledFlag.withLock { $0 = true }
+            // The flag write above happens-before any read inside the
+            // worker task via the Mutex memory barrier. A concurrent
+            // launcher that has already entered process.run() gets
+            // SIGTERM'd here; one that hasn't yet started will see the
+            // flag on its pre-launch check and skip.
+            if process.isRunning {
+                process.terminate()
+            }
         }
     }
 
@@ -251,11 +273,30 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
             stderrPipe.fileHandleForReading.readabilityHandler = nil
         }
 
+        // Pre-launch cancellation check. If the outer Task was cancelled
+        // while the worker was being scheduled, bail before spawning
+        // the subprocess. Without this the cancellation handler's
+        // terminate() is a no-op (nothing running yet) and claude
+        // launches anyway.
+        if processBox.isCancelled {
+            detachReaders()
+            return nil
+        }
+
         do {
             try process.run()
         } catch {
             detachReaders()
             Self.logger.error("Failed to launch claude CLI: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+
+        // Post-launch re-check — the cancellation handler may have
+        // observed isRunning=false between the flag write and the
+        // process.run() above. Catch that race here by terminating.
+        if processBox.isCancelled {
+            process.terminate()
+            detachReaders()
             return nil
         }
 

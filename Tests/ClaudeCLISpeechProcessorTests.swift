@@ -42,34 +42,86 @@ struct ClaudeCLISpeechProcessorTests {
 
     @Test
     func cancelledTaskTerminatesSubprocessAndReturnsPassthrough() async throws {
-        // Use /bin/sleep as a stand-in for a long-running claude CLI.
-        // Without cancellation wiring, sleep would run for its full
-        // duration regardless of the outer Task's cancellation — the
-        // fix added withTaskCancellationHandler + processBox.terminate()
-        // so cancel propagates to the subprocess.
-        let processor = ClaudeCLISpeechProcessor(binaryLocator: {
-            URL(fileURLWithPath: "/bin/sleep")
-        })
+        // Stand-in for a long-running `claude` — a shell script that
+        // ignores all arguments and sleeps. Using /bin/sleep directly
+        // doesn't work because the processor passes claude-style
+        // flags (--print --model …) which sleep rejects with an
+        // invalid-argument error, exiting immediately, so the test
+        // would pass even if the cancellation plumbing didn't work.
+        let scriptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-cli-cancel-test-\(UUID().uuidString).sh")
+        try """
+        #!/bin/sh
+        # Ignore all args — we're a cancellation-test stand-in for
+        # `claude`. Sleep for long enough that only cancellation can
+        # end the process before the test's own timeout.
+        exec /bin/sleep 30
+        """.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: scriptURL.path
+        )
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
 
+        let processor = ClaudeCLISpeechProcessor(binaryLocator: { scriptURL })
         let input = "anything non-empty"
-        let start = ContinuousClock.now
 
-        // Spawn the call in a Task so we can cancel it externally.
         let task = Task {
             await processor.process(text: input)
         }
-        // Let the subprocess actually start.
-        try await Task.sleep(for: .milliseconds(100))
+        // Let the subprocess actually start. Without a real wait the
+        // cancellation could land in the pre-launch window, which the
+        // ProcessBox.cancelledFlag check also handles — but we want
+        // to exercise the in-flight termination path here.
+        try await Task.sleep(for: .milliseconds(150))
+
+        let start = ContinuousClock.now
         task.cancel()
         let result = await task.value
         let elapsed = ContinuousClock.now - start
 
-        // Cancellation should land well before sleep's natural "30" arg
-        // (which the processor would pass as a bogus flag; sleep would
-        // exit with a non-zero status anyway, but still promptly on
-        // cancel). Guard: under a second.
+        // If cancellation is wired correctly, SIGTERM reaches the
+        // shell's `exec sleep 30` and the process exits within a
+        // few hundred ms. If it's broken, the task would block for
+        // the full 30s sleep.
         #expect(elapsed < .seconds(2))
         // Subprocess exit → process() returns nil → passthrough.
         #expect(result == input)
+    }
+
+    @Test
+    func cancelledBeforeLaunchDoesNotHang() async throws {
+        // Near-immediate cancellation after the process() call — the
+        // detached worker typically hasn't reached process.run() yet.
+        // Without ProcessBox.cancelledFlag + the pre-launch check,
+        // the worker would launch the subprocess anyway and we'd
+        // block on waitUntilExit for the full 30s sleep. The fix
+        // closes both the pre-launch window (flag skips launch) and
+        // the post-launch race (flag re-check SIGTERMs if we just
+        // launched).
+        let scriptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("claude-cli-prelaunch-test-\(UUID().uuidString).sh")
+        try """
+        #!/bin/sh
+        exec /bin/sleep 30
+        """.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: scriptURL.path
+        )
+        defer { try? FileManager.default.removeItem(at: scriptURL) }
+
+        let processor = ClaudeCLISpeechProcessor(binaryLocator: { scriptURL })
+        let start = ContinuousClock.now
+        let task = Task {
+            await processor.process(text: "non-empty")
+        }
+        task.cancel()
+
+        let result = await task.value
+        let elapsed = ContinuousClock.now - start
+
+        #expect(elapsed < .seconds(2))
+        #expect(result == "non-empty")
     }
 }

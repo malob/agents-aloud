@@ -49,25 +49,29 @@ actor ClaudeStorageService {
     private func _loadSessions(since: Date, minimumCount: Int) throws -> [ClaudeSessionSummary] {
         let sortedCandidates = try enumerateCandidates()  // sorted mtime desc
 
-        // Target count: everything inside the `since` window, plus
-        // enough older candidates to hit the minimum floor (bounded
-        // by the total available).
-        let withinWindow = sortedCandidates.prefix(while: { $0.modifiedAt >= since }).count
-        let targetCount = max(withinWindow, min(minimumCount, sortedCandidates.count))
-
-        // Walk the candidate list in order, accumulating valid
-        // summaries until we hit the target. If a candidate is an
-        // artifact (summarize returns nil — e.g. the one-line
-        // ai-title-only JSONLs from `claude --print`), keep going
-        // instead of stopping at a prefix slice. Without this, a
-        // burst of CLI-rewriter artifacts at the top of the mtime
-        // list could leave the sidebar under-populated.
+        // Walk-until-enough policy:
+        //  - Always process everything within the `since` window
+        //    (whatever valid summaries those produce).
+        //  - If the valid count ends up below `minimumCount`, keep
+        //    walking past the window into older candidates until
+        //    the floor is met or we run out.
+        //
+        // We deliberately do NOT precompute a target from a count of
+        // raw within-window candidates — a burst of ai-title-only
+        // artifacts from the CLI rewriter could make `withinWindow`
+        // much larger than the number of real sessions there, then
+        // force the loop to walk far into old history making up the
+        // difference. Instead, the stop condition reads the accreted
+        // `sessions.count` directly against `minimumCount`.
         var sessions: [ClaudeSessionSummary] = []
         var walkedPaths: [String] = []
-        var index = 0
-        while sessions.count < targetCount && index < sortedCandidates.count {
-            let candidate = sortedCandidates[index]
-            index += 1
+        for candidate in sortedCandidates {
+            let withinWindow = candidate.modifiedAt >= since
+            // Stop once we're outside the window AND we've collected
+            // enough valid sessions for the floor.
+            if !withinWindow && sessions.count >= minimumCount {
+                break
+            }
             walkedPaths.append(candidate.url.path)
 
             let projectURL = candidate.url.deletingLastPathComponent()
