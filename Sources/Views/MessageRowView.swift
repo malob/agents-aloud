@@ -101,27 +101,15 @@ struct MessageRowView: View, Equatable {
     }
 
     // The right-corner affordance. Idle rows render a plain Speak
-    // button; any other status renders a pill showing the queue state.
-    // When Option is held while hovering the button, the action flips
-    // to "Speak from Here" — hover override trumps the current status.
+    // Every row state — idle, rewriting, speaking, queued, and the
+    // Option-hover "Speak from Here" override — renders through the
+    // same glass-capsule pill. Keeping a single surface prevents the
+    // 1–2px height shift that used to happen when a row transitioned
+    // between "plain Speak label" and "capsule pill," and matches the
+    // mental model: the pill IS the click target on every row.
     @ViewBuilder
     private var statusAffordance: some View {
-        if case .idle = status, !useFromHereAction {
-            Button(action: onPlay) {
-                Label("Speak", systemImage: "speaker.wave.2.fill")
-                    .font(.caption.weight(.medium))
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .foregroundStyle(Color.accentColor.opacity(0.8))
-            .help("Speak this assistant message aloud. Hold ⌥ for ‘from here’.")
-            .onHover { isHoveringSpeakButton = $0 }
-            .onModifierKeysChanged(mask: .option, initial: true) { _, new in
-                isOptionHeld = new.contains(.option)
-            }
-        } else {
-            statusPill
-        }
+        statusPill
     }
 
     // Possible pill display modes. The same row status can render as
@@ -298,8 +286,10 @@ struct MessageRowView: View, Equatable {
         }
     }
 
-    // Accent for "in motion" states and speak-from-here; red for
-    // destructive cancel/remove; muted for "waiting" states.
+    // Accent for "in motion" states, the speak-from-here override,
+    // and idle (the primary "click to start" affordance). Red for
+    // destructive cancel/remove. Muted secondary for queued "waiting
+    // in line" states so they don't visually compete with idle.
     private func pillPrimaryColor(mode: PillMode) -> Color {
         switch mode {
         case .speakFromHere: return Color.accentColor
@@ -312,7 +302,8 @@ struct MessageRowView: View, Equatable {
         case .normal:
             switch status {
             case .rewriting, .speaking: return Color.accentColor
-            case .queued, .idle: return .secondary
+            case .idle: return Color.accentColor.opacity(0.85)
+            case .queued: return .secondary
             }
         }
     }
@@ -323,7 +314,8 @@ struct MessageRowView: View, Equatable {
         case .normal:
             switch status {
             case .rewriting, .speaking: return .primary
-            case .queued, .idle: return .secondary
+            case .idle: return Color.accentColor.opacity(0.85)
+            case .queued: return .secondary
             }
         }
     }
