@@ -122,159 +122,198 @@ struct MessageRowView: View, Equatable {
         }
     }
 
-    // Glass-capsule pill used for all non-idle row states (rewriting,
-    // queued, up-next, speaking) and for the Option-hover "Speak from
-    // Here" override. On plain hover the pill flips to a cancel
-    // affordance — "Skip" for speaking, "Cancel" / "Remove" otherwise.
+    // Possible pill display modes. The same row status can render as
+    // any of these depending on mouse / modifier state, but the
+    // LAYOUT is always sized by .normal so the capsule doesn't change
+    // width when the user hovers — see statusPill.
+    private enum PillMode {
+        case normal       // displays the current queue/rewrite status
+        case cancel       // plain hover: "Skip" / "Cancel" / "Remove"
+        case speakFromHere // Option-hover
+    }
+
+    private var activePillMode: PillMode {
+        if useFromHereAction { return .speakFromHere }
+        if useCancelAction { return .cancel }
+        return .normal
+    }
+
+    // Glass-capsule pill used for all non-idle row states. The pill
+    // renders TWO label stacks: the normal-mode label is always
+    // laid out (sized phantom); the active-mode label renders on
+    // top. This stabilizes pill width against hover — without it
+    // the capsule shrank when the label flipped to the shorter
+    // cancel text, the cursor fell outside the new bounds, and
+    // hover oscillated.
     @ViewBuilder
     private var statusPill: some View {
         Button(action: handlePillTap) {
-            HStack(spacing: 6) {
-                Image(systemName: pillIcon)
-                    .symbolEffect(
-                        .variableColor.iterative.reversing,
-                        isActive: pillShouldAnimateIcon
-                    )
-                    .foregroundStyle(pillPrimaryColor)
-                Text(pillTitle)
-                    .foregroundStyle(pillTextColor)
+            ZStack {
+                // Phantom: always the normal-mode label, invisible,
+                // reserves the full capsule width.
+                pillContent(mode: .normal).opacity(0)
+                // Visible: whatever mode is active right now.
+                pillContent(mode: activePillMode)
             }
-            .font(.caption.weight(.medium))
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .glassEffect(.regular, in: Capsule())
             .overlay {
-                if pillShowsBorder {
+                if pillShowsBorder(mode: activePillMode) {
                     Capsule()
-                        .stroke(pillPrimaryColor.opacity(0.35), lineWidth: 1)
+                        .stroke(pillPrimaryColor(mode: activePillMode).opacity(0.35), lineWidth: 1)
                 }
             }
-            // Make the whole pill shape (capsule + its padding) a
-            // single hit-test region. Without this, SwiftUI's default
-            // content shape tracks the text glyphs + icon bounds but
-            // NOT the padding between them or around them, so hover
-            // didn't fire when the cursor was over the icon or in the
-            // negative space inside the pill.
+            // Explicit capsule hit-test region: without this, SwiftUI
+            // tracks only the non-transparent content bounds, and
+            // hover doesn't fire in the padding between icon + text
+            // or at the rounded edges of the capsule.
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .help(pillHelp)
+        .help(pillHelp(mode: activePillMode))
         .onHover { isHoveringSpeakButton = $0 }
         .onModifierKeysChanged(mask: .option, initial: true) { _, new in
             isOptionHeld = new.contains(.option)
         }
     }
 
-    private func handlePillTap() {
-        if useFromHereAction { onPlayFromHere(); return }
-        if useCancelAction { onCancel(); return }
-        onPlay()
+    @ViewBuilder
+    private func pillContent(mode: PillMode) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: pillIcon(mode: mode))
+                .symbolEffect(
+                    .variableColor.iterative.reversing,
+                    isActive: pillShouldAnimateIcon(mode: mode)
+                )
+                .foregroundStyle(pillPrimaryColor(mode: mode))
+            Text(pillTitle(mode: mode))
+                .foregroundStyle(pillTextColor(mode: mode))
+        }
+        .font(.caption.weight(.medium))
     }
 
-    // MARK: - Pill content derivation
+    private func handlePillTap() {
+        switch activePillMode {
+        case .speakFromHere: onPlayFromHere()
+        case .cancel: onCancel()
+        case .normal: onPlay()
+        }
+    }
 
-    // Precedence order:
-    //  1. Option-hover "Speak from Here" — most immediate intent
-    //  2. Plain hover-to-cancel — the user aimed at a non-idle pill
-    //  3. Current status — the default display
-    private var pillTitle: String {
-        if useFromHereAction { return "Speak from Here" }
-        if useCancelAction {
+    // MARK: - Pill content derivation (mode-aware)
+
+    private func pillTitle(mode: PillMode) -> String {
+        switch mode {
+        case .speakFromHere: return "Speak from Here"
+        case .cancel:
             switch status {
             case .speaking: return "Skip"
             case .rewriting: return "Cancel"
             case .queued: return "Remove"
-            case .idle: break
+            case .idle: return "Speak"  // shouldn't render via pill
             }
-        }
-        switch status {
-        case .idle: return "Speak"  // shouldn't render via pill, but safe default
-        case .rewriting: return "Rewriting…"
-        case .speaking: return "Speaking"
-        case .queued(let position):
-            return position == 0 ? "Up next" : Self.ordinal(position + 1) + " in queue"
+        case .normal:
+            switch status {
+            case .idle: return "Speak"
+            case .rewriting: return "Rewriting…"
+            case .speaking: return "Speaking"
+            case .queued(let position):
+                return position == 0 ? "Up next" : Self.ordinal(position + 1) + " in queue"
+            }
         }
     }
 
-    private var pillIcon: String {
-        if useFromHereAction { return "forward.fill" }
-        if useCancelAction {
+    private func pillIcon(mode: PillMode) -> String {
+        switch mode {
+        case .speakFromHere: return "forward.fill"
+        case .cancel:
             switch status {
             case .speaking: return "forward.end.fill"
             case .rewriting, .queued: return "xmark.circle.fill"
-            case .idle: break
+            case .idle: return "speaker.wave.2.fill"
             }
-        }
-        switch status {
-        case .idle: return "speaker.wave.2.fill"
-        case .rewriting: return "wand.and.sparkles"
-        case .speaking: return "speaker.wave.3.fill"
-        case .queued: return "text.line.first.and.arrowtriangle.forward"
+        case .normal:
+            switch status {
+            case .idle: return "speaker.wave.2.fill"
+            case .rewriting: return "wand.and.sparkles"
+            case .speaking: return "speaker.wave.3.fill"
+            case .queued: return "text.line.first.and.arrowtriangle.forward"
+            }
         }
     }
 
-    private var pillHelp: String {
-        if useFromHereAction { return "Speak this message and every message after." }
-        if useCancelAction {
+    private func pillHelp(mode: PillMode) -> String {
+        switch mode {
+        case .speakFromHere: return "Speak this message and every message after."
+        case .cancel:
             switch status {
             case .speaking: return "Skip this message and move to the next queued one."
             case .rewriting: return "Cancel the in-flight rewrite and drop this message."
             case .queued: return "Remove this message from the queue."
-            case .idle: break
+            case .idle: return ""
             }
-        }
-        switch status {
-        case .idle: return "Speak this assistant message aloud. Hold ⌥ for ‘from here’."
-        case .rewriting: return "Rewriting this message for speech before playback."
-        case .speaking: return "This message is being spoken aloud."
-        case .queued(let position):
-            if position == 0 { return "This message will play after the current one." }
-            return "This message is \(Self.ordinal(position + 1)) in the queue."
+        case .normal:
+            switch status {
+            case .idle: return "Speak this assistant message aloud. Hold ⌥ for ‘from here’."
+            case .rewriting: return "Rewriting this message for speech before playback."
+            case .speaking: return "This message is being spoken aloud."
+            case .queued(let position):
+                if position == 0 { return "This message will play after the current one." }
+                return "This message is \(Self.ordinal(position + 1)) in the queue."
+            }
         }
     }
 
-    // Primary color for the icon and text outline. Accent for "in
-    // motion" states and the option-hover; red for the destructive
-    // cancel/remove action; muted secondary for the "waiting in line"
-    // states.
-    private var pillPrimaryColor: Color {
-        if useFromHereAction { return Color.accentColor }
-        if useCancelAction {
+    // Accent for "in motion" states and speak-from-here; red for
+    // destructive cancel/remove; muted for "waiting" states.
+    private func pillPrimaryColor(mode: PillMode) -> Color {
+        switch mode {
+        case .speakFromHere: return Color.accentColor
+        case .cancel:
             switch status {
             case .speaking: return Color.accentColor  // skip = not destructive
             case .rewriting, .queued: return Color.red
-            case .idle: break
+            case .idle: return Color.accentColor
+            }
+        case .normal:
+            switch status {
+            case .rewriting, .speaking: return Color.accentColor
+            case .queued, .idle: return .secondary
             }
         }
-        switch status {
-        case .rewriting, .speaking: return Color.accentColor
-        case .queued, .idle: return .secondary
+    }
+
+    private func pillTextColor(mode: PillMode) -> Color {
+        switch mode {
+        case .speakFromHere, .cancel: return .primary
+        case .normal:
+            switch status {
+            case .rewriting, .speaking: return .primary
+            case .queued, .idle: return .secondary
+            }
         }
     }
 
-    private var pillTextColor: Color {
-        if useFromHereAction { return .primary }
-        if useCancelAction { return .primary }
-        switch status {
-        case .rewriting, .speaking: return .primary
-        case .queued, .idle: return .secondary
+    private func pillShowsBorder(mode: PillMode) -> Bool {
+        switch mode {
+        case .speakFromHere, .cancel: return true
+        case .normal:
+            switch status {
+            case .rewriting, .speaking: return true
+            case .queued, .idle: return false
+            }
         }
     }
 
-    private var pillShowsBorder: Bool {
-        if useFromHereAction { return true }
-        if useCancelAction { return true }
-        switch status {
-        case .rewriting, .speaking: return true
-        case .queued, .idle: return false
-        }
-    }
-
-    private var pillShouldAnimateIcon: Bool {
-        if useCancelAction { return false }
-        switch status {
-        case .rewriting, .speaking: return true
-        case .queued, .idle: return false
+    private func pillShouldAnimateIcon(mode: PillMode) -> Bool {
+        switch mode {
+        case .cancel, .speakFromHere: return false
+        case .normal:
+            switch status {
+            case .rewriting, .speaking: return true
+            case .queued, .idle: return false
+            }
         }
     }
 
