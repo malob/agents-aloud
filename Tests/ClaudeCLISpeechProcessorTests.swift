@@ -39,4 +39,37 @@ struct ClaudeCLISpeechProcessorTests {
 
         #expect(output == input)
     }
+
+    @Test
+    func cancelledTaskTerminatesSubprocessAndReturnsPassthrough() async throws {
+        // Use /bin/sleep as a stand-in for a long-running claude CLI.
+        // Without cancellation wiring, sleep would run for its full
+        // duration regardless of the outer Task's cancellation — the
+        // fix added withTaskCancellationHandler + processBox.terminate()
+        // so cancel propagates to the subprocess.
+        let processor = ClaudeCLISpeechProcessor(binaryLocator: {
+            URL(fileURLWithPath: "/bin/sleep")
+        })
+
+        let input = "anything non-empty"
+        let start = ContinuousClock.now
+
+        // Spawn the call in a Task so we can cancel it externally.
+        let task = Task {
+            await processor.process(text: input)
+        }
+        // Let the subprocess actually start.
+        try await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+        let result = await task.value
+        let elapsed = ContinuousClock.now - start
+
+        // Cancellation should land well before sleep's natural "30" arg
+        // (which the processor would pass as a bogus flag; sleep would
+        // exit with a non-zero status anyway, but still promptly on
+        // cancel). Guard: under a second.
+        #expect(elapsed < .seconds(2))
+        // Subprocess exit → process() returns nil → passthrough.
+        #expect(result == input)
+    }
 }

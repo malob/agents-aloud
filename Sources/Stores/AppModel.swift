@@ -68,7 +68,7 @@ final class AppModel {
                     return
                 }
 
-                await refreshTranscript(for: id, allowLiveRead: false, showLoadingState: true)
+                await refreshTranscript(for: id, showLoadingState: true)
             }
         }
     }
@@ -532,9 +532,14 @@ final class AppModel {
         }
     }
 
+    // Refresh a session's transcript state. Live Speak eligibility is
+    // determined from `liveReadSessionID` at commit time, not from a
+    // schedule-time hint — this avoids a race where a non-live refresh
+    // scheduled just before `setLiveReadEnabled` would advance the
+    // known-assistant set past messages that should have been
+    // auto-enqueued, silently swallowing the first Live Speak message.
     private func refreshTranscript(
         for sessionID: ClaudeSessionSummary.ID,
-        allowLiveRead: Bool,
         showLoadingState: Bool = false
     ) async {
         let start = CFAbsoluteTimeGetCurrent()
@@ -593,15 +598,16 @@ final class AppModel {
                 }
             }
 
-            if allowLiveRead, let previousIDs {
+            // Decide Live Speak eligibility from the CURRENT state at
+            // commit. If Live Speak was enabled between schedule and
+            // commit (race), we still want to enqueue the new messages
+            // we found — otherwise the unconditional known-set update
+            // below would mark them seen forever and the first auto-
+            // spoken message would be silently dropped.
+            if liveReadSessionID == sessionID, let previousIDs {
                 let newAssistantMessages = assistantMessages.filter { !previousIDs.contains($0.id) }
                 for message in newAssistantMessages {
-                    // Live Speak fires regardless of which session the
-                    // user is currently viewing — it only requires
-                    // that this session is the Live-Speak-enabled one.
-                    guard liveReadSessionID == sessionID else {
-                        break
-                    }
+                    guard liveReadSessionID == sessionID else { break }
                     speechController.insertAuto(
                         messageID: message.id,
                         sourceText: message.text,
@@ -714,7 +720,7 @@ final class AppModel {
             // coalesce bursty appends from streaming assistant output.
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
-            await refreshTranscript(for: sessionID, allowLiveRead: true)
+            await refreshTranscript(for: sessionID)
         }
     }
 
@@ -735,10 +741,7 @@ final class AppModel {
                 return
             }
 
-            await refreshTranscript(
-                for: sessionID,
-                allowLiveRead: liveReadSessionID == sessionID
-            )
+            await refreshTranscript(for: sessionID)
         }
     }
 

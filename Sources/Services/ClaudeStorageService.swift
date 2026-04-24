@@ -49,15 +49,27 @@ actor ClaudeStorageService {
     private func _loadSessions(since: Date, minimumCount: Int) throws -> [ClaudeSessionSummary] {
         let sortedCandidates = try enumerateCandidates()  // sorted mtime desc
 
-        // Prefix-slice covering `since` + the minimum floor. Because the array
-        // is sorted descending by mtime, the selected candidates are always
-        // contiguous at the front.
+        // Target count: everything inside the `since` window, plus
+        // enough older candidates to hit the minimum floor (bounded
+        // by the total available).
         let withinWindow = sortedCandidates.prefix(while: { $0.modifiedAt >= since }).count
-        let selectedCount = max(withinWindow, min(minimumCount, sortedCandidates.count))
-        let selected = Array(sortedCandidates.prefix(selectedCount))
+        let targetCount = max(withinWindow, min(minimumCount, sortedCandidates.count))
 
+        // Walk the candidate list in order, accumulating valid
+        // summaries until we hit the target. If a candidate is an
+        // artifact (summarize returns nil — e.g. the one-line
+        // ai-title-only JSONLs from `claude --print`), keep going
+        // instead of stopping at a prefix slice. Without this, a
+        // burst of CLI-rewriter artifacts at the top of the mtime
+        // list could leave the sidebar under-populated.
         var sessions: [ClaudeSessionSummary] = []
-        for candidate in selected {
+        var walkedPaths: [String] = []
+        var index = 0
+        while sessions.count < targetCount && index < sortedCandidates.count {
+            let candidate = sortedCandidates[index]
+            index += 1
+            walkedPaths.append(candidate.url.path)
+
             let projectURL = candidate.url.deletingLastPathComponent()
             let sessionCacheModifiedAt = fileModificationDate(
                 for: projectURL.appendingPathComponent(".session_cache.json", isDirectory: false)
@@ -76,7 +88,7 @@ actor ClaudeStorageService {
 
             let metadata = try loadProjectMetadataIndex(for: projectURL)
             guard let summary = try Self.summarize(candidate: candidate, metadata: metadata) else {
-                continue
+                continue  // artifact — walk past it
             }
             sessionSummaryCache[candidate.url.path] = CachedSessionSummary(
                 modifiedAt: candidate.modifiedAt,
@@ -87,8 +99,8 @@ actor ClaudeStorageService {
             sessions.append(summary)
         }
 
-        let validPaths = Set(selected.map { $0.url.path })
-        let validProjectPaths = Set(validPaths.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path })
+        let validPaths = Set(walkedPaths)
+        let validProjectPaths = Set(walkedPaths.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path })
         sessionSummaryCache = sessionSummaryCache.filter { validPaths.contains($0.key) }
         transcriptCache = transcriptCache.filter { validPaths.contains($0.key) }
         projectMetadataCache = projectMetadataCache.filter { validProjectPaths.contains($0.key) }

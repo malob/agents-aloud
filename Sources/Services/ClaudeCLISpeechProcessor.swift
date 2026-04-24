@@ -68,6 +68,18 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
         }
     }
 
+    // Holds a Process instance accessible from both the detached worker
+    // Task (which blocks on waitUntilExit) and the cancellation handler
+    // (which terminates the subprocess when the outer Task is
+    // cancelled). Process instance methods are thread-safe per Apple's
+    // docs; @unchecked Sendable is correct here.
+    private final class ProcessBox: @unchecked Sendable {
+        let process = Process()
+        func terminate() {
+            if process.isRunning { process.terminate() }
+        }
+    }
+
     // Keep rewrites bounded. Very long messages risk the CLI hanging on
     // a model response that exceeds reasonable latency; passthrough is
     // a better UX than making the user wait 60+ seconds on an outlier.
@@ -157,127 +169,181 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
 
     // Runs the CLI with the plugin-pattern environment + flags. Returns
     // nil on any failure (nonzero exit, empty stdout, timeout, IO
-    // error). Caller should treat nil as "passthrough."
+    // error, task cancellation). Caller should treat nil as
+    // "passthrough."
+    //
+    // Cancellation: wraps the work in withTaskCancellationHandler so
+    // that if the outer Task is cancelled (user hit Stop, switched
+    // session, etc.) the subprocess is terminated synchronously from
+    // the cancellation handler. Without this the `claude` subprocess
+    // runs to completion or the 60s timeout regardless of user intent.
     private func runSubprocess(binaryURL: URL, input: String) async -> String? {
-        await Task.detached(priority: .userInitiated) {
-            [model, instructions] in
+        let processBox = ProcessBox()
 
-            let process = Process()
-            process.executableURL = binaryURL
-            process.arguments = [
-                "--print",
-                "--model", model,
-                "--no-session-persistence",
-                "--tools", "",
-                "--disable-slash-commands",
-                "--strict-mcp-config",
-                "--system-prompt", instructions,
-            ]
-            process.currentDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory())
-
-            var env = ProcessInfo.processInfo.environment
-            env["TTS_SUBPROCESS"] = "1"
-            env["CLAUDECODE"] = ""  // explicit empty, not unset — CLI checks presence + value
-            process.environment = env
-
-            let stdinPipe = Pipe()
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardInput = stdinPipe
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            // Drain both pipes concurrently via readabilityHandler rather
-            // than readToEnd() after waitUntilExit(). macOS pipe buffers
-            // are only ~64KB; on a long run with unbounded stderr (auth
-            // warnings, deprecation notices) the buffer could fill and
-            // the child would block on write while we wait on exit. We
-            // haven't seen this in practice for `claude --print`, but
-            // /usr/bin/say in SystemVoiceBackendDriver uses the same
-            // pattern and it's cheap insurance.
-            let stdoutBuffer = StreamBuffer()
-            let stderrBuffer = StreamBuffer()
-            stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                stdoutBuffer.append(handle.availableData)
-            }
-            stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                stderrBuffer.append(handle.availableData)
-            }
-
-            func detachReaders() {
-                stdoutPipe.fileHandleForReading.readabilityHandler = nil
-                stderrPipe.fileHandleForReading.readabilityHandler = nil
-            }
-
-            do {
-                try process.run()
-            } catch {
-                detachReaders()
-                Self.logger.error("Failed to launch claude CLI: \(error.localizedDescription, privacy: .public)")
-                return nil
-            }
-
-            // Write the input to stdin and close so the CLI gets EOF.
-            do {
-                try stdinPipe.fileHandleForWriting.write(contentsOf: Data(input.utf8))
-                try stdinPipe.fileHandleForWriting.close()
-            } catch {
-                detachReaders()
-                Self.logger.error("Failed to write to claude stdin: \(error.localizedDescription, privacy: .public)")
-                process.terminate()
-                return nil
-            }
-
-            // Enforce timeout: kill the process if it hasn't exited.
-            let timeoutTask = Task {
-                try? await Task.sleep(for: Self.subprocessTimeout)
-                if process.isRunning {
-                    Self.logger.error("claude CLI exceeded \(Self.subprocessTimeout) timeout; terminating")
-                    process.terminate()
-                }
-            }
-            defer { timeoutTask.cancel() }
-
-            process.waitUntilExit()
-
-            // Stop the handlers and drain any bytes that arrived between
-            // the last callback and pipe EOF.
-            detachReaders()
-            if let residualOut = try? stdoutPipe.fileHandleForReading.readToEnd() {
-                stdoutBuffer.append(residualOut)
-            }
-            if let residualErr = try? stderrPipe.fileHandleForReading.readToEnd() {
-                stderrBuffer.append(residualErr)
-            }
-
-            guard process.terminationStatus == 0 else {
-                let stderrString = String(data: stderrBuffer.snapshot(), encoding: .utf8) ?? ""
-                Self.logger.error(
-                    "claude CLI exited \(process.terminationStatus, privacy: .public): \(stderrString, privacy: .public)"
+        return await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                [model, instructions] in
+                await Self.runSubprocessBody(
+                    processBox: processBox,
+                    binaryURL: binaryURL,
+                    input: input,
+                    model: model,
+                    instructions: instructions
                 )
-                return nil
-            }
+            }.value
+        } onCancel: {
+            processBox.terminate()
+        }
+    }
 
-            guard let output = String(data: stdoutBuffer.snapshot(), encoding: .utf8) else {
-                Self.logger.error("claude CLI stdout not valid UTF-8")
-                return nil
+    // Body of the subprocess run, factored out so the Task.detached
+    // closure can stay short and the cancellation wiring above stays
+    // readable. All state (pipes, buffers, timeout) is local to this
+    // call — only the process reference is shared via the box.
+    private static func runSubprocessBody(
+        processBox: ProcessBox,
+        binaryURL: URL,
+        input: String,
+        model: String,
+        instructions: String
+    ) async -> String? {
+        let process = processBox.process
+        process.executableURL = binaryURL
+        process.arguments = [
+            "--print",
+            "--model", model,
+            "--no-session-persistence",
+            "--tools", "",
+            "--disable-slash-commands",
+            "--strict-mcp-config",
+            "--system-prompt", instructions,
+        ]
+        process.currentDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory())
+
+        var env = ProcessInfo.processInfo.environment
+        env["TTS_SUBPROCESS"] = "1"
+        env["CLAUDECODE"] = ""  // explicit empty, not unset — CLI checks presence + value
+        process.environment = env
+
+        let stdinPipe = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        // Drain both pipes concurrently via readabilityHandler rather
+        // than readToEnd() after waitUntilExit(). macOS pipe buffers
+        // are only ~64KB; on a long run with unbounded stderr (auth
+        // warnings, deprecation notices) the buffer could fill and
+        // the child would block on write while we wait on exit.
+        let stdoutBuffer = StreamBuffer()
+        let stderrBuffer = StreamBuffer()
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            stdoutBuffer.append(handle.availableData)
+        }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            stderrBuffer.append(handle.availableData)
+        }
+
+        func detachReaders() {
+            stdoutPipe.fileHandleForReading.readabilityHandler = nil
+            stderrPipe.fileHandleForReading.readabilityHandler = nil
+        }
+
+        do {
+            try process.run()
+        } catch {
+            detachReaders()
+            Self.logger.error("Failed to launch claude CLI: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+
+        // Write the input to stdin and close so the CLI gets EOF.
+        do {
+            try stdinPipe.fileHandleForWriting.write(contentsOf: Data(input.utf8))
+            try stdinPipe.fileHandleForWriting.close()
+        } catch {
+            detachReaders()
+            Self.logger.error("Failed to write to claude stdin: \(error.localizedDescription, privacy: .public)")
+            process.terminate()
+            return nil
+        }
+
+        // Enforce timeout: kill the process if it hasn't exited.
+        let timeoutTask = Task {
+            try? await Task.sleep(for: Self.subprocessTimeout)
+            if process.isRunning {
+                Self.logger.error("claude CLI exceeded \(Self.subprocessTimeout) timeout; terminating")
+                process.terminate()
             }
-            let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? nil : trimmed
-        }.value
+        }
+        defer { timeoutTask.cancel() }
+
+        process.waitUntilExit()
+
+        // Stop the handlers and drain any bytes that arrived between
+        // the last callback and pipe EOF.
+        detachReaders()
+        if let residualOut = try? stdoutPipe.fileHandleForReading.readToEnd() {
+            stdoutBuffer.append(residualOut)
+        }
+        if let residualErr = try? stderrPipe.fileHandleForReading.readToEnd() {
+            stderrBuffer.append(residualErr)
+        }
+
+        guard process.terminationStatus == 0 else {
+            let stderrString = String(data: stderrBuffer.snapshot(), encoding: .utf8) ?? ""
+            Self.logger.error(
+                "claude CLI exited \(process.terminationStatus, privacy: .public): \(stderrString, privacy: .public)"
+            )
+            return nil
+        }
+
+        guard let output = String(data: stdoutBuffer.snapshot(), encoding: .utf8) else {
+            Self.logger.error("claude CLI stdout not valid UTF-8")
+            return nil
+        }
+        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     // MARK: - Binary discovery
 
-    // PATH-style lookup for the `claude` binary. Swift's Process needs
-    // an absolute executableURL — we can't just pass "claude" and have
-    // it resolved like a shell would. Caching is OK: if the user moves
-    // their claude installation we reload the app.
+    // Search PATH, but ALSO search a hard-coded list of common install
+    // locations (Homebrew on Apple silicon + Intel, user-local prefix,
+    // global npm). The inherited PATH in a Finder/LaunchServices-spawned
+    // app is typically `/usr/bin:/bin:/usr/sbin:/sbin` — none of which
+    // catch the way most users install claude. Without this fallback,
+    // the CLI option appears unavailable to GUI-launched builds even
+    // when the binary is present.
+    //
+    // Swift's Process needs an absolute executableURL — we can't pass
+    // bare "claude" and have Process resolve it like a shell would.
     static func findClaudeBinary() -> URL? {
         let env = ProcessInfo.processInfo.environment
-        let pathVar = env["PATH"] ?? "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"
         let fileManager = FileManager.default
-        for dir in pathVar.split(separator: ":").map(String.init) {
+        let home = fileManager.homeDirectoryForCurrentUser.path
+
+        var searchDirs: [String] = []
+        if let pathVar = env["PATH"] {
+            searchDirs.append(contentsOf: pathVar.split(separator: ":").map(String.init))
+        }
+        // Common install locations appended after PATH so an
+        // explicitly-configured PATH still wins.
+        searchDirs.append(contentsOf: [
+            "/opt/homebrew/bin",        // Homebrew on Apple silicon
+            "/usr/local/bin",           // Homebrew on Intel + MacPorts
+            "\(home)/.local/bin",       // pipx / user-local installs
+            "\(home)/.nix-profile/bin", // nix-darwin
+            "/etc/profiles/per-user/\(fileManager.displayName(atPath: home))/bin", // nix-darwin profile
+            "/run/current-system/sw/bin", // nix-darwin system
+            "/usr/bin", "/bin",
+        ])
+
+        // Dedupe preserving order.
+        var seen = Set<String>()
+        for dir in searchDirs where seen.insert(dir).inserted {
             let candidate = URL(fileURLWithPath: dir).appendingPathComponent("claude")
             if fileManager.isExecutableFile(atPath: candidate.path) {
                 return candidate
