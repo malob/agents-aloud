@@ -27,17 +27,19 @@ struct PlaybackControlsView: View {
             }
 
             Button {
-                // model.stopPlayback() cancels in-flight preprocessing
-                // too, so a pending FM refine can't sneak through after
-                // the user hit Stop. Don't route through controller.stop()
-                // directly.
+                // model.stopPlayback() funnels through the
+                // SpeechController so it clears the queue + cancels
+                // any in-flight rewrite + stops active audio in one
+                // step. Don't route through controller.stop() directly.
                 model.stopPlayback()
             } label: {
                 Label("Stop", systemImage: "stop.fill")
             }
-            // Enabled during FM preprocessing too — otherwise a user
-            // who changed their mind during the 1-3s refine window has
-            // no way to cancel.
+            // Enabled whenever there's anything to stop — active
+            // playback, paused utterance, or anything in the queue
+            // (rewriting or pending). Otherwise a user who changed
+            // their mind during the 5–10s CLI rewrite window has no
+            // way to cancel.
             .disabled(!controller.isSpeaking && !controller.isPaused && !model.isPreparingPlayback)
             .help("Stop speech")
         }

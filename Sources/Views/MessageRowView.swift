@@ -12,6 +12,7 @@ struct MessageRowView: View, Equatable {
     let status: SpeechController.MessageStatus
     let onPlay: () -> Void
     let onPlayFromHere: () -> Void
+    let onCancel: () -> Void
 
     @State private var isHoveringSpeakButton = false
     @State private var isOptionHeld = false
@@ -28,6 +29,17 @@ struct MessageRowView: View, Equatable {
     // offers the batch action instead of single-message playback.
     private var useFromHereAction: Bool {
         isHoveringSpeakButton && isOptionHeld
+    }
+
+    // Plain hover over a non-idle pill flips the affordance from
+    // "status display" to "click to skip / cancel / remove this item."
+    // Option-hover (Speak from Here) takes precedence if both apply.
+    private var useCancelAction: Bool {
+        guard isHoveringSpeakButton, !useFromHereAction else { return false }
+        switch status {
+        case .idle: return false
+        case .rewriting, .speaking, .queued: return true
+        }
     }
 
     var body: some View {
@@ -112,31 +124,29 @@ struct MessageRowView: View, Equatable {
 
     // Glass-capsule pill used for all non-idle row states (rewriting,
     // queued, up-next, speaking) and for the Option-hover "Speak from
-    // Here" override. Uses the same glassEffect + capsule pattern as
-    // the toolbar Live Speak indicator, scaled down for a row.
+    // Here" override. On plain hover the pill flips to a cancel
+    // affordance — "Skip" for speaking, "Cancel" / "Remove" otherwise.
     @ViewBuilder
     private var statusPill: some View {
-        Button {
-            if useFromHereAction { onPlayFromHere() } else { onPlay() }
-        } label: {
+        Button(action: handlePillTap) {
             HStack(spacing: 6) {
                 Image(systemName: pillIcon)
                     .symbolEffect(
                         .variableColor.iterative.reversing,
                         isActive: pillShouldAnimateIcon
                     )
-                    .foregroundStyle(pillAccent ? Color.accentColor : .secondary)
+                    .foregroundStyle(pillPrimaryColor)
                 Text(pillTitle)
-                    .foregroundStyle(pillAccent ? .primary : .secondary)
+                    .foregroundStyle(pillTextColor)
             }
             .font(.caption.weight(.medium))
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
             .glassEffect(.regular, in: Capsule())
             .overlay {
-                if pillAccent {
+                if pillShowsBorder {
                     Capsule()
-                        .stroke(Color.accentColor.opacity(0.35), lineWidth: 1)
+                        .stroke(pillPrimaryColor.opacity(0.35), lineWidth: 1)
                 }
             }
         }
@@ -148,12 +158,28 @@ struct MessageRowView: View, Equatable {
         }
     }
 
+    private func handlePillTap() {
+        if useFromHereAction { onPlayFromHere(); return }
+        if useCancelAction { onCancel(); return }
+        onPlay()
+    }
+
     // MARK: - Pill content derivation
 
-    // Option-hover "Speak from Here" override always wins over the
-    // current status — it's the most immediate user intent.
+    // Precedence order:
+    //  1. Option-hover "Speak from Here" — most immediate intent
+    //  2. Plain hover-to-cancel — the user aimed at a non-idle pill
+    //  3. Current status — the default display
     private var pillTitle: String {
         if useFromHereAction { return "Speak from Here" }
+        if useCancelAction {
+            switch status {
+            case .speaking: return "Skip"
+            case .rewriting: return "Cancel"
+            case .queued: return "Remove"
+            case .idle: break
+            }
+        }
         switch status {
         case .idle: return "Speak"  // shouldn't render via pill, but safe default
         case .rewriting: return "Rewriting…"
@@ -165,6 +191,13 @@ struct MessageRowView: View, Equatable {
 
     private var pillIcon: String {
         if useFromHereAction { return "forward.fill" }
+        if useCancelAction {
+            switch status {
+            case .speaking: return "forward.end.fill"
+            case .rewriting, .queued: return "xmark.circle.fill"
+            case .idle: break
+            }
+        }
         switch status {
         case .idle: return "speaker.wave.2.fill"
         case .rewriting: return "wand.and.sparkles"
@@ -175,6 +208,14 @@ struct MessageRowView: View, Equatable {
 
     private var pillHelp: String {
         if useFromHereAction { return "Speak this message and every message after." }
+        if useCancelAction {
+            switch status {
+            case .speaking: return "Skip this message and move to the next queued one."
+            case .rewriting: return "Cancel the in-flight rewrite and drop this message."
+            case .queued: return "Remove this message from the queue."
+            case .idle: break
+            }
+        }
         switch status {
         case .idle: return "Speak this assistant message aloud. Hold ⌥ for ‘from here’."
         case .rewriting: return "Rewriting this message for speech before playback."
@@ -185,11 +226,37 @@ struct MessageRowView: View, Equatable {
         }
     }
 
-    // Accent styling for "in motion" states (actively rewriting or
-    // speaking, plus the hover override); muted secondary for the
-    // "waiting in line" states.
-    private var pillAccent: Bool {
+    // Primary color for the icon and text outline. Accent for "in
+    // motion" states and the option-hover; red for the destructive
+    // cancel/remove action; muted secondary for the "waiting in line"
+    // states.
+    private var pillPrimaryColor: Color {
+        if useFromHereAction { return Color.accentColor }
+        if useCancelAction {
+            switch status {
+            case .speaking: return Color.accentColor  // skip = not destructive
+            case .rewriting, .queued: return Color.red
+            case .idle: break
+            }
+        }
+        switch status {
+        case .rewriting, .speaking: return Color.accentColor
+        case .queued, .idle: return .secondary
+        }
+    }
+
+    private var pillTextColor: Color {
+        if useFromHereAction { return .primary }
+        if useCancelAction { return .primary }
+        switch status {
+        case .rewriting, .speaking: return .primary
+        case .queued, .idle: return .secondary
+        }
+    }
+
+    private var pillShowsBorder: Bool {
         if useFromHereAction { return true }
+        if useCancelAction { return true }
         switch status {
         case .rewriting, .speaking: return true
         case .queued, .idle: return false
@@ -197,6 +264,7 @@ struct MessageRowView: View, Equatable {
     }
 
     private var pillShouldAnimateIcon: Bool {
+        if useCancelAction { return false }
         switch status {
         case .rewriting, .speaking: return true
         case .queued, .idle: return false
@@ -266,7 +334,8 @@ private struct RoleAppearance {
             ),
             status: .idle,
             onPlay: {},
-            onPlayFromHere: {}
+            onPlayFromHere: {},
+            onCancel: {}
         )
         MessageRowView(
             message: TranscriptMessage(
@@ -278,7 +347,8 @@ private struct RoleAppearance {
             ),
             status: .rewriting,
             onPlay: {},
-            onPlayFromHere: {}
+            onPlayFromHere: {},
+            onCancel: {}
         )
         MessageRowView(
             message: TranscriptMessage(
@@ -290,7 +360,8 @@ private struct RoleAppearance {
             ),
             status: .speaking,
             onPlay: {},
-            onPlayFromHere: {}
+            onPlayFromHere: {},
+            onCancel: {}
         )
         MessageRowView(
             message: TranscriptMessage(
@@ -302,7 +373,8 @@ private struct RoleAppearance {
             ),
             status: .queued(position: 0),
             onPlay: {},
-            onPlayFromHere: {}
+            onPlayFromHere: {},
+            onCancel: {}
         )
         MessageRowView(
             message: TranscriptMessage(
@@ -314,7 +386,8 @@ private struct RoleAppearance {
             ),
             status: .queued(position: 2),
             onPlay: {},
-            onPlayFromHere: {}
+            onPlayFromHere: {},
+            onCancel: {}
         )
     }
     .padding()

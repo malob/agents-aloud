@@ -283,6 +283,43 @@ final class SpeechController {
         clearQueueAndRewriter()
     }
 
+    // Per-item cancel. Removes a single message from the speech
+    // pipeline without affecting anything else:
+    //
+    //  - If `messageID` is currently playing: stop that utterance,
+    //    promote the next ready item in the queue (if any). Other
+    //    queued items are untouched — this is "skip," not "stop."
+    //  - If `messageID` is the current rewriter target: cancel the
+    //    in-flight rewrite, remove it from the queue, and start the
+    //    rewriter on the next pending item.
+    //  - If `messageID` is otherwise in the queue: just remove it.
+    //  - If `messageID` is nowhere in the pipeline: no-op.
+    //
+    // Used by the per-row pill's hover-to-cancel affordance.
+    func cancel(messageID: String) {
+        if currentMessageID == messageID {
+            (activeDriver ?? currentDriver).stop()
+            playbackState = .idle
+            promoteHeadIfReady()
+            return
+        }
+        guard let index = queue.firstIndex(where: { $0.id == messageID }) else {
+            return
+        }
+        let wasRewriterTarget = rewriterTargetID == messageID
+        if wasRewriterTarget {
+            cancelRewriterIfRunning()
+        }
+        queue.remove(at: index)
+        // cancelRewriterIfRunning above bumped the removed item back
+        // to .pending — but since we just removed it from the queue,
+        // that doesn't matter. Kick the rewriter onto whatever's next.
+        if wasRewriterTarget {
+            startRewriterIfNeeded()
+        }
+        promoteHeadIfReady()
+    }
+
     // Drop queued AUTO items belonging to a specific session but
     // preserve everything else (manual items, auto items from other
     // sessions, the current utterance). Used by "Stop Live Speak"

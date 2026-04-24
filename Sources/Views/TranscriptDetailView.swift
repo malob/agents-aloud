@@ -60,7 +60,8 @@ struct TranscriptDetailView: View {
                                 message: message,
                                 status: model.speechController.status(for: message.id),
                                 onPlay: { model.playMessage(message) },
-                                onPlayFromHere: { model.playMessagesFromHere(message) }
+                                onPlayFromHere: { model.playMessagesFromHere(message) },
+                                onCancel: { model.speechController.cancel(messageID: message.id) }
                             )
                             .equatable()
                             .id(message.id)

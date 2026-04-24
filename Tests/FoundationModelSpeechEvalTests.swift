@@ -260,9 +260,9 @@ struct FoundationModelSpeechEvalTests {
         var markdown = "# Speech Text Optimization — Claude CLI end-to-end\n\n"
         markdown.append("Run at: \(Date().formatted())\n\n")
         markdown.append("The same representative input used in emitEvalMarkdown, piped through ")
-        markdown.append("`ClaudeCLISpeechProcessor` which invokes `claude --print --model haiku` ")
+        markdown.append("`ClaudeCLISpeechProcessor` which invokes `claude --print --model sonnet` ")
         markdown.append("with the plugin-pattern environment (cd TMPDIR + CLAUDECODE='' + ")
-        markdown.append("TTS_SUBPROCESS=1 + `--session-id UUID --no-session-persistence --tools ''` ")
+        markdown.append("TTS_SUBPROCESS=1 + `--no-session-persistence --tools ''` ")
         markdown.append("+ `--disable-slash-commands --strict-mcp-config`).\n\n")
         markdown.append("---\n\n## Input\n\n```\n\(Self.representativeInput)\n```\n\n")
         markdown.append("Character count: \(Self.representativeInput.count)\n\n---\n\n")

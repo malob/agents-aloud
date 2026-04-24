@@ -769,14 +769,13 @@ struct AppModelTests {
 
     @Test
     @MainActor
-    func liveSpeakRewritingSurfacesAsPreparingMessageID() async throws {
-        // Live Speak has its own rewrite loop inside refreshTranscript
-        // (separate from playMessage's prep Task). Without explicit
-        // preparingMessageID wiring there, arriving assistant messages
-        // would flow straight from file-watcher event → silent rewrite
-        // wait → enqueued audio, with zero UI feedback during the
-        // 5–10s CLI wait. This test pins that the row gets marked
-        // "preparing" for the duration of the rewrite.
+    func liveSpeakArrivalsEnterTheQueueInRewritingState() async throws {
+        // Live Speak arrivals flow through the speech queue's rewriter
+        // pipeline (insertAuto). This test pins that when a new
+        // assistant message lands via the file watcher, the item shows
+        // up in the queue as `.rewriting` while the processor call is
+        // in flight — giving the UI a "Rewriting…" signal during the
+        // 5–10s CLI wait instead of feeling like the click was dropped.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
             .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
@@ -845,11 +844,13 @@ struct AppModelTests {
 
     @Test
     @MainActor
-    func preparingMessageIDAdvancesThroughSpeakFromHereQueue() async throws {
-        // In playMessagesFromHere the rewrite walks the queue serially
-        // while the first message plays. The UI needs to know which
-        // row is currently being rewritten so the "Rewriting…" label
-        // moves with the head of the queue.
+    func speakFromHereQueuesSequenceAndRewritesHeadFirst() async throws {
+        // playMessagesFromHere inserts the whole sequence into the
+        // queue as a contiguous manual block. The queue's serial
+        // rewriter works on head first, so the UI sees the first
+        // message as `.rewriting` while subsequent items sit in
+        // `.pending`; when head promotes to active, the rewriter
+        // moves to the next item.
         let processor = ControllableSpeechTextProcessor()
         let fixture = try makeTestAppModel(
             transcripts: ["session-1.jsonl": fourMessageTranscript],

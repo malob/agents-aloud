@@ -260,6 +260,80 @@ struct SpeechControllerTests {
         #expect(controller.queue.isEmpty)
     }
 
+    // MARK: - Per-item cancel
+
+    @Test
+    @MainActor
+    func cancelRemovesQueuedItemWithoutAffectingOthers() async throws {
+        let (controller, _) = makeController()
+
+        controller.insertManual(messageID: "m1", sourceText: "M1", sessionID: "s")
+        try await waitUntil { controller.currentMessageID == "m1" }
+        controller.insertManual(messageID: "m2", sourceText: "M2", sessionID: "s")
+        controller.insertManual(messageID: "m3", sourceText: "M3", sessionID: "s")
+        try await waitUntil { controller.queue.map(\.id) == ["m2", "m3"] }
+
+        controller.cancel(messageID: "m2")
+
+        #expect(controller.currentMessageID == "m1")  // untouched
+        #expect(controller.queue.map(\.id) == ["m3"])
+    }
+
+    @Test
+    @MainActor
+    func cancelSkipsCurrentPlaybackAndAdvancesToQueue() async throws {
+        let (controller, avDriver) = makeController()
+
+        controller.insertManual(messageID: "m1", sourceText: "M1", sessionID: "s")
+        try await waitUntil { controller.currentMessageID == "m1" }
+        controller.insertManual(messageID: "m2", sourceText: "M2", sessionID: "s")
+        try await waitUntil { controller.queue.first?.readyText != nil }
+
+        let stopCallsBefore = avDriver.stopCallCount
+        controller.cancel(messageID: "m1")
+
+        // m1's driver was stopped, next queued (m2) promotes.
+        #expect(avDriver.stopCallCount == stopCallsBefore + 1)
+        try await waitUntil { controller.currentMessageID == "m2" }
+        #expect(controller.queue.isEmpty)
+    }
+
+    @Test
+    @MainActor
+    func cancelOnInFlightRewriteTargetAdvancesToNextPending() async throws {
+        let processor = ControllableSpeechTextProcessor()
+        let (controller, _) = makeController(processor: processor)
+
+        // Insert two items; m1 starts rewriting (committed head), m2 waits.
+        controller.insertManual(messageID: "m1", sourceText: "M1", sessionID: "s")
+        try await waitUntil { processor.pendingCount == 1 }
+        controller.insertManual(messageID: "m2", sourceText: "M2", sessionID: "s")
+
+        #expect(controller.status(for: "m1") == .rewriting)
+
+        controller.cancel(messageID: "m1")
+
+        // m1's rewrite is cancelled, m1 leaves the queue, rewriter
+        // kicks off on m2.
+        #expect(!controller.queue.contains(where: { $0.id == "m1" }))
+        try await waitUntil { controller.status(for: "m2") == .rewriting }
+
+        processor.releaseAll()
+    }
+
+    @Test
+    @MainActor
+    func cancelOnUnknownMessageIsNoOp() async throws {
+        let (controller, _) = makeController()
+
+        controller.insertManual(messageID: "m1", sourceText: "M1", sessionID: "s")
+        try await waitUntil { controller.currentMessageID == "m1" }
+
+        controller.cancel(messageID: "does-not-exist")
+
+        #expect(controller.currentMessageID == "m1")
+    }
+
     @Test
     @MainActor
     func drainAutoQueueRemovesAutoButPreservesManualAndCurrent() async throws {
