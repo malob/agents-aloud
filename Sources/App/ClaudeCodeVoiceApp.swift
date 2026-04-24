@@ -27,7 +27,12 @@ struct ClaudeCodeVoiceApp: App {
         }
         .defaultSize(width: 1200, height: 800)
         .windowResizability(.contentSize)
-        .windowToolbarStyle(.unified(showsTitle: false))
+        // showsTitle: true so the session's navigationTitle +
+        // navigationSubtitle render in the window chrome. An earlier
+        // version hid the title because the in-body SessionHeaderView
+        // was showing the session name; with that header removed, the
+        // native toolbar title area is where identity lives now.
+        .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
             // File > New doesn't apply — this app doesn't create documents.
             CommandGroup(replacing: .newItem) {}

@@ -39,12 +39,18 @@ struct ContentView: View {
         // session-scoped title + subtitle via navigationTitle +
         // navigationSubtitle. When no session is selected SwiftUI
         // falls back to the window's default title.
-        .toolbarBackground(.hidden, for: .windowToolbar)
+        //
+        // The toolbar background is left visible (default) so the
+        // window chrome renders the title/subtitle region properly.
+        // An earlier version of this file hid it to let the in-body
+        // header visually flow into the chrome; now that the header
+        // is gone we want the standard macOS toolbar strip back.
         .toolbar {
             if model.selectedSession != nil {
-                ToolbarItemGroup(placement: .primaryAction) {
+                ToolbarItem(placement: .primaryAction) {
                     PlaybackControlsView(model: model)
-
+                }
+                ToolbarItem(placement: .primaryAction) {
                     Toggle(isOn: Binding(
                         get: { liveReadIsOnForSelectedSession },
                         set: { model.setLiveReadEnabled($0) }
