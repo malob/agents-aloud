@@ -167,10 +167,6 @@ private struct SessionHeaderView: View {
             : session.messageCount
     }
 
-    private var liveSpeakAppearance: LiveSpeakAppearance {
-        LiveSpeakAppearance(isEnabled: isLiveReadEnabled)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(alignment: .top, spacing: 16) {
@@ -186,30 +182,26 @@ private struct SessionHeaderView: View {
 
                 Spacer(minLength: 12)
 
-                Button {
-                    model.setLiveReadEnabled(!isLiveReadEnabled)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: liveSpeakAppearance.symbolName)
-                            .foregroundStyle(liveSpeakAppearance.iconColor)
-                        
-                        Text(liveSpeakAppearance.title)
-                            .foregroundStyle(.primary)
-                    }
-                    .font(.callout.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .glassEffect(liveSpeakAppearance.glass, in: Capsule())
-                    .overlay {
-                        if liveSpeakAppearance.borderColor != .clear {
-                            Capsule()
-                                .stroke(liveSpeakAppearance.borderColor, lineWidth: 1)
-                        }
-                    }
+                // Native Toggle with .button style. macOS 26 applies
+                // Liquid Glass automatically to this style, the hit
+                // area covers the whole button frame (no per-shape
+                // fussing), and VoiceOver reads it correctly as a
+                // toggle. Replaces a hand-rolled Button + glassEffect
+                // + border capsule that had the same hit-area bug as
+                // the old message-row pill.
+                Toggle(isOn: Binding(
+                    get: { isLiveReadEnabled },
+                    set: { model.setLiveReadEnabled($0) }
+                )) {
+                    Label("Live Speak", systemImage: "speaker.wave.2.fill")
                 }
-                .buttonStyle(.plain)
+                .toggleStyle(.button)
                 .controlSize(.large)
-                .help(liveSpeakAppearance.helpText)
+                .help(
+                    isLiveReadEnabled
+                        ? "Stop automatically speaking new assistant messages for this session."
+                        : "Automatically speak new assistant messages for this session."
+                )
             }
 
             GlassEffectContainer(spacing: 14) {
@@ -237,26 +229,6 @@ private struct SessionHeaderView: View {
 
     private func messageCountText(_ count: Int) -> String {
         count == 1 ? "1 message" : "\(count) messages"
-    }
-}
-
-private struct LiveSpeakAppearance {
-    let title: String
-    let symbolName: String
-    let helpText: String
-    let iconColor: Color
-    let glass: Glass
-    let borderColor: Color
-
-    init(isEnabled: Bool) {
-        title = isEnabled ? "Live Speak On" : "Start Live Speak"
-        symbolName = isEnabled ? "speaker.wave.3.fill" : "speaker.wave.2.fill"
-        helpText = isEnabled
-            ? "Stop automatically speaking new assistant messages for this session."
-            : "Automatically speak new assistant messages for this session."
-        iconColor = isEnabled ? .accentColor : .secondary
-        glass = isEnabled ? .regular.tint(.accentColor.opacity(0.18)).interactive() : .regular.interactive()
-        borderColor = isEnabled ? .accentColor.opacity(0.28) : .clear
     }
 }
 
