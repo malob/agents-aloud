@@ -3,6 +3,11 @@ import SwiftUI
 struct ContentView: View {
     let model: AppModel
 
+    private var liveReadIsOnForSelectedSession: Bool {
+        guard let selectedID = model.selectedSession?.id else { return false }
+        return model.liveReadSessionID == selectedID
+    }
+
     var body: some View {
         NavigationSplitView {
             SidebarView(model: model)
@@ -30,12 +35,28 @@ struct ContentView: View {
                 )
             }
         }
-        .navigationTitle("Claude Code Voice")
+        // No navigationTitle here — TranscriptDetailView sets a
+        // session-scoped title + subtitle via navigationTitle +
+        // navigationSubtitle. When no session is selected SwiftUI
+        // falls back to the window's default title.
         .toolbarBackground(.hidden, for: .windowToolbar)
         .toolbar {
             if model.selectedSession != nil {
-                ToolbarItemGroup(placement: .navigation) {
+                ToolbarItemGroup(placement: .primaryAction) {
                     PlaybackControlsView(model: model)
+
+                    Toggle(isOn: Binding(
+                        get: { liveReadIsOnForSelectedSession },
+                        set: { model.setLiveReadEnabled($0) }
+                    )) {
+                        Label("Live Speak", systemImage: "speaker.wave.2.fill")
+                    }
+                    .toggleStyle(.button)
+                    .help(
+                        liveReadIsOnForSelectedSession
+                            ? "Stop automatically speaking new assistant messages for this session."
+                            : "Automatically speak new assistant messages for this session."
+                    )
                 }
             }
         }

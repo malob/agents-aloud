@@ -142,107 +142,12 @@ struct TranscriptDetailView: View {
                 }
             }
         }
-        .safeAreaBar(edge: .top, spacing: 0) {
-            SessionHeaderView(model: model, session: session)
-        }
+        // Session identity lives in the window toolbar via
+        // navigationTitle + navigationSubtitle — Preview.app pattern,
+        // gives us the native two-line title treatment and frees up
+        // a whole row of vertical space in the transcript view.
+        .navigationTitle(session.summary)
+        .navigationSubtitle(session.projectPath)
     }
 }
 
-private struct SessionHeaderView: View {
-    let model: AppModel
-    let session: ClaudeSessionSummary
-    @Namespace private var glassNamespace
-
-    private var isLiveReadEnabled: Bool {
-        model.liveReadSessionID == session.id
-    }
-
-    private var selectedTranscriptMessages: [TranscriptMessage] {
-        model.transcriptState.messages(for: session.id)
-    }
-
-    private var displayedMessageCount: Int {
-        model.selectedSessionID == session.id && !selectedTranscriptMessages.isEmpty
-            ? selectedTranscriptMessages.count
-            : session.messageCount
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(session.summary)
-                        .font(.title2.weight(.semibold))
-
-                    Text(session.projectPath)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
-                Spacer(minLength: 12)
-
-                // Native Toggle with .button style. macOS 26 applies
-                // Liquid Glass automatically to this style, the hit
-                // area covers the whole button frame (no per-shape
-                // fussing), and VoiceOver reads it correctly as a
-                // toggle. Replaces a hand-rolled Button + glassEffect
-                // + border capsule that had the same hit-area bug as
-                // the old message-row pill.
-                Toggle(isOn: Binding(
-                    get: { isLiveReadEnabled },
-                    set: { model.setLiveReadEnabled($0) }
-                )) {
-                    Label("Live Speak", systemImage: "speaker.wave.2.fill")
-                }
-                .toggleStyle(.button)
-                .controlSize(.large)
-                .help(
-                    isLiveReadEnabled
-                        ? "Stop automatically speaking new assistant messages for this session."
-                        : "Automatically speak new assistant messages for this session."
-                )
-            }
-
-            GlassEffectContainer(spacing: 14) {
-                HStack(spacing: 8) {
-                    if let modifiedAt = session.modifiedAt {
-                        SessionStatusBadge(
-                            title: modifiedAt.formatted(date: .abbreviated, time: .shortened),
-                            systemImage: "clock"
-                        )
-                        .glassEffectID("updated-at", in: glassNamespace)
-                    }
-
-                    SessionStatusBadge(
-                        title: messageCountText(displayedMessageCount),
-                        systemImage: "text.bubble"
-                    )
-                    .glassEffectID("message-count", in: glassNamespace)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(.horizontal)
-        .padding(.vertical, 12)
-    }
-
-    private func messageCountText(_ count: Int) -> String {
-        count == 1 ? "1 message" : "\(count) messages"
-    }
-}
-
-private struct SessionStatusBadge: View {
-    let title: String
-    let systemImage: String
-
-    var body: some View {
-        Label(title, systemImage: systemImage)
-            .font(.callout.weight(.semibold))
-            .foregroundStyle(.primary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .glassEffect(.regular, in: Capsule())
-            .lineLimit(1)
-    }
-}
