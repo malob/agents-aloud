@@ -114,8 +114,77 @@ struct ClaudeStorageServiceTests {
         #expect(!names.contains("ancient.jsonl"))
     }
 
+    @Test
+    func loadSessionsFloorIsNotInflatedByAiTitleOnlyArtifacts() async throws {
+        // Regression: the old code precomputed `targetCount` as
+        // `max(withinWindowRawCount, floor)` where withinWindowRawCount
+        // included ai-title-only CLI rewriter artifacts. With a handful
+        // of real sessions and many artifacts clustered at the top of
+        // the mtime list, the loop walked much deeper into old history
+        // than the 24-hour-plus-floor policy intended. The walk-until-
+        // enough fix bases the stop condition on accreted valid-summary
+        // count, so artifacts don't inflate anything.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        let now = Date()
+        // Ten CLI-rewriter artifacts within the last hour — newest
+        // mtime, ai-title-only, no real turns.
+        for index in 0..<10 {
+            let url = projectDirectory.appendingPathComponent("artifact-\(index).jsonl")
+            try writeAiTitleOnlyArtifact(at: url, sessionID: "artifact-\(index)",
+                                         mtime: now.addingTimeInterval(-60 * Double(index)))
+        }
+        // Two real sessions inside the 24-hour window.
+        try writeTranscript(at: projectDirectory.appendingPathComponent("real-recent-1.jsonl"),
+                            mtime: now.addingTimeInterval(-2 * 60 * 60))
+        try writeTranscript(at: projectDirectory.appendingPathComponent("real-recent-2.jsonl"),
+                            mtime: now.addingTimeInterval(-3 * 60 * 60))
+        // Five older real sessions well outside the window. If the old
+        // inflation bug resurfaces, some of these would get pulled in.
+        for index in 0..<5 {
+            let url = projectDirectory.appendingPathComponent("old-\(index).jsonl")
+            try writeTranscript(at: url, mtime: now.addingTimeInterval(-Double(10 + index) * 24 * 60 * 60))
+        }
+
+        let service = ClaudeStorageService(projectsRoot: projectsRoot)
+        let twentyFourHoursAgo = now.addingTimeInterval(-24 * 60 * 60)
+
+        // Floor 2: within-window gives us the two real recent sessions,
+        // exactly hitting the floor. Should NOT backfill into old
+        // history. Artifacts should be filtered out entirely.
+        let result = try await service.loadSessions(since: twentyFourHoursAgo, minimumCount: 2)
+        let names = Set(result.map(\.transcriptURL.lastPathComponent))
+        #expect(result.count == 2)
+        #expect(names == ["real-recent-1.jsonl", "real-recent-2.jsonl"])
+
+        // Floor 5: within-window gives 2, floor requires 5 → backfill
+        // three of the older ones, still no artifacts.
+        let withFloor = try await service.loadSessions(since: twentyFourHoursAgo, minimumCount: 5)
+        let withFloorNames = withFloor.map(\.transcriptURL.lastPathComponent)
+        #expect(withFloor.count == 5)
+        #expect(withFloorNames.contains("real-recent-1.jsonl"))
+        #expect(withFloorNames.contains("real-recent-2.jsonl"))
+        #expect(withFloorNames.allSatisfy { !$0.hasPrefix("artifact-") })
+    }
+
     private func writeTranscript(at url: URL, mtime: Date) throws {
         try initialTranscript.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
+    }
+
+    private func writeAiTitleOnlyArtifact(at url: URL, sessionID: String, mtime: Date) throws {
+        // Matches what `claude --print --no-session-persistence` drops:
+        // a single-line JSONL with nothing but the post-session ai-title
+        // record. No user/assistant turns, no cwd.
+        let line = "{\"type\":\"ai-title\",\"sessionId\":\"\(sessionID)\",\"aiTitle\":\"Artifact\"}\n"
+        try line.write(to: url, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: url.path)
     }
 
