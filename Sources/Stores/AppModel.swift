@@ -202,6 +202,10 @@ final class AppModel {
     // messages to auto-enqueue.
     @ObservationIgnored private let liveReadTranscriptWatcher: any TranscriptFileWatching
     @ObservationIgnored private var transcriptMessagesBySession: [ClaudeSessionSummary.ID: [TranscriptMessage]] = [:]
+    // Owned strong so it lives for the app's lifetime. Holds a weak
+    // back-reference to AppModel and observes speech-controller
+    // state via Observation tracking.
+    @ObservationIgnored private var nowPlayingCoordinator: NowPlayingCoordinator?
     @ObservationIgnored private var knownAssistantMessageIDsBySession: [ClaudeSessionSummary.ID: Set<TranscriptMessage.ID>] = [:]
 
     init(
@@ -299,6 +303,12 @@ final class AppModel {
         speechController.rateProvider = { [weak self] in
             Float(self?.preferredSpeechRate ?? Double(AVSpeechUtteranceDefaultSpeechRate))
         }
+
+        // Bridge speech-controller state into the macOS Now Playing
+        // system (Control Center, menu-bar Now Playing widget, AirPods
+        // gestures, media keys). Held weak-in / strong-out: the
+        // coordinator keeps a weak ref to `self` and we retain it.
+        nowPlayingCoordinator = NowPlayingCoordinator(model: self)
     }
 
     // Swap the speech text processor based on the user's selected mode.
@@ -761,6 +771,21 @@ final class AppModel {
 
     private func cachedTranscriptMessages(for sessionID: ClaudeSessionSummary.ID) -> [TranscriptMessage] {
         transcriptMessagesBySession[sessionID] ?? []
+    }
+
+    // Lookup helper so subsystems like NowPlayingCoordinator can
+    // surface the text + session for whatever message the speech
+    // engine is currently playing. Cross-session because the queue
+    // can span sessions (manual clicks from any session land in the
+    // same queue alongside Live Speak arrivals).
+    func findMessage(id: TranscriptMessage.ID) -> (message: TranscriptMessage, session: ClaudeSessionSummary)? {
+        for session in sessions {
+            if let messages = transcriptMessagesBySession[session.id],
+               let message = messages.first(where: { $0.id == id }) {
+                return (message, session)
+            }
+        }
+        return nil
     }
 
     private func watcherErrorMessage(_ error: TranscriptFileWatcherError) -> String {
