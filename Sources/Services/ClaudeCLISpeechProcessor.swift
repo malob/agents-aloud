@@ -22,7 +22,6 @@ import Synchronization
 //     TTS_SUBPROCESS=1 CLAUDECODE='' \
 //     command claude --print \
 //       --model sonnet \
-//       --session-id <persisted-UUID> \
 //       --no-session-persistence \
 //       --tools "" \
 //       --disable-slash-commands \
@@ -34,18 +33,25 @@ import Synchronization
 // - `CLAUDECODE=''`: unsets "already inside Claude Code" guard
 // - `TTS_SUBPROCESS=1`: short-circuits user's own TTS stop-hook so it
 //   doesn't recurse if they have one installed
-// - `--session-id <UUID>` + `--no-session-persistence`: the UUID is
-//   persisted in UserDefaults (see AppModel.claudeCLISessionID) and
-//   reused across every invocation. Reusing the same UUID with
-//   --no-session-persistence keeps Claude Code pointed at the same
-//   session file instead of minting a fresh ai-title-only JSONL per
-//   call — so ~/.claude/projects/-private-var-folders.../ doesn't
-//   accumulate one artifact file per rewrite. The sidebar filter
-//   for ai-title-only JSONLs (ClaudeTranscriptParser) still catches
-//   whatever does get written as defense-in-depth.
+// - `--no-session-persistence`: suppresses full message-history JSONL
+//   writing. A small ai-title-only JSONL (~120 bytes) still gets
+//   written per call. The sidebar filter in ClaudeTranscriptParser
+//   drops those so they don't show up as phantom sessions; the
+//   files themselves accumulate harmlessly on disk.
 // - `--tools ""`: no built-in tools (saves init time)
 // - `--disable-slash-commands`: no skills scan
 // - `--strict-mcp-config` (without any `--mcp-config`): no MCP servers
+//
+// What we deliberately DON'T pass, and why:
+// - `--session-id <UUID>` with a fixed UUID: tested, fails. Claude
+//   rejects duplicate in-use session IDs ("Session ID … is already
+//   in use") on the second and subsequent calls, silently breaking
+//   rewrites. Reusing the same UUID to collapse to a single session
+//   file doesn't work empirically — Claude's session-management
+//   layer enforces uniqueness even under --no-session-persistence.
+//   The "solve the artifact proliferation" problem has to be done
+//   differently (a disk sweep on launch is the next option if it
+//   ever matters enough).
 //
 // Caveats:
 // - Requires the user to have `claude` CLI installed and authenticated
@@ -158,26 +164,16 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
 
     private let instructions: String
     private let model: String
-    // A fixed UUID reused across every CLI invocation by this
-    // processor instance. Combined with --no-session-persistence this
-    // makes Claude Code point at the same session file every time
-    // instead of minting a fresh one per call. Without it, the CLI
-    // writes a new one-line `ai-title` JSONL per invocation, which
-    // over time clutters `~/.claude/projects/-private-var-folders.../`
-    // (even though each file is only ~120 bytes).
-    private let sessionID: String
     // Computed on first use and cached. nil if claude isn't on PATH.
     private let binaryURLProvider: @Sendable () -> URL?
 
     init(
         instructions: String = ClaudeCLISpeechProcessor.defaultInstructions,
         model: String = "sonnet",
-        sessionID: String = UUID().uuidString,
         binaryLocator: @escaping @Sendable () -> URL? = { ClaudeCLISpeechProcessor.findClaudeBinary() }
     ) {
         self.instructions = instructions
         self.model = model
-        self.sessionID = sessionID
         self.binaryURLProvider = binaryLocator
     }
 
@@ -220,13 +216,12 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
 
         return await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
-                [model, sessionID, instructions] in
+                [model, instructions] in
                 await Self.runSubprocessBody(
                     processBox: processBox,
                     binaryURL: binaryURL,
                     input: input,
                     model: model,
-                    sessionID: sessionID,
                     instructions: instructions
                 )
             }.value
@@ -244,7 +239,6 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
         binaryURL: URL,
         input: String,
         model: String,
-        sessionID: String,
         instructions: String
     ) async -> String? {
         let process = processBox.process
@@ -252,7 +246,6 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
         process.arguments = [
             "--print",
             "--model", model,
-            "--session-id", sessionID,
             "--no-session-persistence",
             "--tools", "",
             "--disable-slash-commands",

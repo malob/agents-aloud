@@ -13,7 +13,6 @@ final class AppModel {
     private static let speechTextOptimizationEnabledKey = "speechTextOptimizationEnabled"
     private static let speechTextOptimizationModeKey = "speechTextOptimizationMode"
     private static let claudeCLIModelKey = "claudeCLIModel"
-    private static let claudeCLISessionIDKey = "claudeCLISessionID"
     static let defaultKeychainService = "local.claudecodevoice"
     static let elevenLabsAPIKeyAccount = "elevenlabs_api_key"
     // How far back to show sessions in the sidebar. The session list is for
@@ -189,14 +188,6 @@ final class AppModel {
         }
     }
 
-    // A stable UUID passed as `--session-id` to every `claude --print`
-    // invocation, generated once and persisted across launches. With
-    // --no-session-persistence this keeps Claude Code pointed at the
-    // same session file forever instead of minting a fresh empty one
-    // per call — so TTS rewrites don't proliferate tiny artifact
-    // JSONLs in the TMPDIR-scoped project directory.
-    @ObservationIgnored private let claudeCLISessionID: String
-
     let speechController: SpeechController
 
     @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
@@ -283,18 +274,6 @@ final class AppModel {
             claudeCLIModel = .sonnet
         }
 
-        // Fixed session UUID: generate once on first launch, persist
-        // forever. Stored as a raw string; we don't validate because a
-        // stored garbage value does no worse than a fresh UUID would.
-        if let storedSessionID = userDefaults.string(forKey: Self.claudeCLISessionIDKey),
-           !storedSessionID.isEmpty {
-            claudeCLISessionID = storedSessionID
-        } else {
-            let fresh = UUID().uuidString
-            userDefaults.set(fresh, forKey: Self.claudeCLISessionIDKey)
-            claudeCLISessionID = fresh
-        }
-
         speechController.backend = preferredSpeechBackend
         preferredVoiceIdentifier = speechController.resolveVoiceIdentifier(
             userDefaults.string(forKey: Self.preferredVoiceIdentifierKey)
@@ -334,8 +313,7 @@ final class AppModel {
             speechTextProcessor = PassthroughSpeechProcessor()
         case .claudeCLI:
             speechTextProcessor = ClaudeCLISpeechProcessor(
-                model: claudeCLIModel.cliArgument,
-                sessionID: claudeCLISessionID
+                model: claudeCLIModel.cliArgument
             )
         }
         // Forward the selection into SpeechController so its rewriter
