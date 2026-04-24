@@ -22,6 +22,7 @@ import Synchronization
 //     TTS_SUBPROCESS=1 CLAUDECODE='' \
 //     command claude --print \
 //       --model sonnet \
+//       --session-id <persisted-UUID> \
 //       --no-session-persistence \
 //       --tools "" \
 //       --disable-slash-commands \
@@ -33,10 +34,15 @@ import Synchronization
 // - `CLAUDECODE=''`: unsets "already inside Claude Code" guard
 // - `TTS_SUBPROCESS=1`: short-circuits user's own TTS stop-hook so it
 //   doesn't recurse if they have one installed
-// - `--no-session-persistence`: suppresses JSONL session-file creation
-//   entirely. Earlier we paired it with `--session-id UUID`, but that
-//   combination actually creates an empty (zero-message) session file,
-//   which is worse — the flag alone does the right thing.
+// - `--session-id <UUID>` + `--no-session-persistence`: the UUID is
+//   persisted in UserDefaults (see AppModel.claudeCLISessionID) and
+//   reused across every invocation. Reusing the same UUID with
+//   --no-session-persistence keeps Claude Code pointed at the same
+//   session file instead of minting a fresh ai-title-only JSONL per
+//   call — so ~/.claude/projects/-private-var-folders.../ doesn't
+//   accumulate one artifact file per rewrite. The sidebar filter
+//   for ai-title-only JSONLs (ClaudeTranscriptParser) still catches
+//   whatever does get written as defense-in-depth.
 // - `--tools ""`: no built-in tools (saves init time)
 // - `--disable-slash-commands`: no skills scan
 // - `--strict-mcp-config` (without any `--mcp-config`): no MCP servers

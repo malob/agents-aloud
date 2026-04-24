@@ -31,10 +31,12 @@ struct MessageRowView: View, Equatable {
         isHoveringSpeakButton && isOptionHeld
     }
 
-    // Plain hover over a non-idle pill flips the affordance from
-    // "status display" to "click to skip / cancel / remove this item."
-    // Option-hover (Speak from Here) takes precedence if both apply.
-    private var useCancelAction: Bool {
+    // Whether the pill's VISUAL should show the cancel variant.
+    // Driven by hover (plus a precedence check against option-hover).
+    // The click ACTION for a non-idle row is always cancel regardless
+    // of hover — see `handlePillTap` — so keyboard and VoiceOver
+    // activation do the right thing without needing mouse hover.
+    private var showCancelVariant: Bool {
         guard isHoveringSpeakButton, !useFromHereAction else { return false }
         switch status {
         case .idle: return false
@@ -132,9 +134,13 @@ struct MessageRowView: View, Equatable {
         case speakFromHere // Option-hover
     }
 
+    // Which label variant the pill should display right now. This is
+    // purely visual — the click action is decided separately in
+    // handlePillTap so keyboard/VoiceOver activation works without
+    // hover.
     private var activePillMode: PillMode {
         if useFromHereAction { return .speakFromHere }
-        if useCancelAction { return .cancel }
+        if showCancelVariant { return .cancel }
         return .normal
     }
 
@@ -172,6 +178,7 @@ struct MessageRowView: View, Equatable {
         }
         .buttonStyle(.plain)
         .help(pillHelp(mode: activePillMode))
+        .accessibilityLabel(pillAccessibilityLabel)
         .onHover { isHoveringSpeakButton = $0 }
         .onModifierKeysChanged(mask: .option, initial: true) { _, new in
             isOptionHeld = new.contains(.option)
@@ -193,11 +200,37 @@ struct MessageRowView: View, Equatable {
         .font(.caption.weight(.medium))
     }
 
+    // Click action decision is status-driven, NOT hover-driven: a
+    // keyboard / VoiceOver user activating the pill without hovering
+    // should get the same behavior as a mouse-hover-then-click. For
+    // non-idle rows, clicking the pill at all means "cancel / skip /
+    // remove this message," so that's what we do regardless of
+    // whether the visual label is currently flipped to the cancel
+    // variant. The Option-hover speak-from-here override remains
+    // mouse-only by design (it's a modifier-activated shortcut).
     private func handlePillTap() {
-        switch activePillMode {
-        case .speakFromHere: onPlayFromHere()
-        case .cancel: onCancel()
-        case .normal: onPlay()
+        if useFromHereAction {
+            onPlayFromHere()
+            return
+        }
+        switch status {
+        case .idle:
+            onPlay()
+        case .rewriting, .speaking, .queued:
+            onCancel()
+        }
+    }
+
+    // Accessibility label — always describes the click action in the
+    // same terms whether or not the user is hovering, so VoiceOver
+    // and keyboard-focus users get a truthful description of what
+    // pressing the button will do.
+    private var pillAccessibilityLabel: String {
+        switch status {
+        case .idle: return "Speak"
+        case .rewriting: return "Cancel rewrite"
+        case .speaking: return "Skip this message"
+        case .queued: return "Remove from queue"
         }
     }
 
