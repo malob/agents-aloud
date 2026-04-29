@@ -13,7 +13,12 @@ struct ClaudeSessionSummary: Identifiable, Hashable {
     let modifiedAt: Date?
     let projectPath: String
     let transcriptURL: URL
-    let messageCount: Int
+    // Optional because not all sources expose message counts cheaply.
+    // Codex's `state_5.sqlite` `threads` table doesn't track per-thread
+    // counts, and we'd rather hide the badge than read 100s of MB of
+    // JSONL on every sidebar refresh just to populate it. nil ⇒ skip
+    // the badge in the sidebar.
+    let messageCount: Int?
 
     init(
         source: TranscriptSource = .claude,
@@ -23,7 +28,7 @@ struct ClaudeSessionSummary: Identifiable, Hashable {
         modifiedAt: Date?,
         projectPath: String,
         transcriptURL: URL,
-        messageCount: Int
+        messageCount: Int?
     ) {
         self.source = source
         self.id = id
@@ -44,7 +49,11 @@ struct ClaudeSessionSummary: Identifiable, Hashable {
         return URL(fileURLWithPath: trimmedPath).lastPathComponent
     }
 
+    // Empty string ⇒ no badge. Sidebar checks isEmpty before
+    // rendering. This keeps the data model honest about "we don't
+    // know the count" without lying with a placeholder integer.
     var messageCountLabel: String {
-        messageCount == 1 ? "1 msg" : "\(messageCount) msgs"
+        guard let messageCount else { return "" }
+        return messageCount == 1 ? "1 msg" : "\(messageCount) msgs"
     }
 }

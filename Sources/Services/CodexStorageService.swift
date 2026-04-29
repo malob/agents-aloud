@@ -35,6 +35,7 @@ actor CodexStorageService {
     private let parser = CodexTranscriptParser()
     private let sessionsRoot: URL
     private let archivedSessionsRoot: URL
+    private let threadDatabase: CodexThreadDatabase
 
     init(
         sessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -42,10 +43,12 @@ actor CodexStorageService {
             .appendingPathComponent("sessions", isDirectory: true),
         archivedSessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".codex", isDirectory: true)
-            .appendingPathComponent("archived_sessions", isDirectory: true)
+            .appendingPathComponent("archived_sessions", isDirectory: true),
+        threadDatabase: CodexThreadDatabase = CodexThreadDatabase()
     ) {
         self.sessionsRoot = sessionsRoot
         self.archivedSessionsRoot = archivedSessionsRoot
+        self.threadDatabase = threadDatabase
     }
 
     // Same shape as ClaudeStorageService.loadSessions: only return
@@ -60,11 +63,63 @@ actor CodexStorageService {
         minimumCount: Int = 5
     ) throws -> [ClaudeSessionSummary] {
         try PerfLog.time("CodexStorage.loadSessions") {
-            try _loadSessions(since: since, minimumCount: minimumCount)
+            // Try the SQLite fast path first. Codex maintains
+            // ~/.codex/state_5.sqlite as the authoritative index of
+            // all threads — one query gets us everything we need
+            // for the sidebar, no JSONL parsing required.
+            do {
+                let rows = try threadDatabase.loadThreads(since: since)
+                return rows.map(Self.summary(from:))
+            } catch {
+                // DB missing, schema too old, or any other read
+                // failure ⇒ fall back to the original filesystem
+                // walk. Logs at info level (not error) because the
+                // most common cause is "user doesn't have Codex
+                // installed and the file doesn't exist."
+                logger.info(
+                    "Codex DB unavailable (\(String(describing: error), privacy: .public)); falling back to filesystem walk"
+                )
+                return try _loadSessionsFromFilesystem(since: since, minimumCount: minimumCount)
+            }
         }
     }
 
-    private func _loadSessions(since: Date, minimumCount: Int) throws -> [ClaudeSessionSummary] {
+    private nonisolated static func summary(from row: CodexThreadDatabase.Row) -> ClaudeSessionSummary {
+        ClaudeSessionSummary(
+            source: .codex,
+            id: row.id,
+            summary: deriveTitle(row: row),
+            firstPrompt: row.firstUserMessage.isEmpty ? nil : row.firstUserMessage,
+            modifiedAt: row.updatedAt,
+            projectPath: row.cwd,
+            transcriptURL: URL(fileURLWithPath: row.rolloutPath),
+            // The DB doesn't track per-thread message counts. Hide
+            // the badge for Codex rows; populating it would mean
+            // reading the JSONL on every refresh, defeating the
+            // perf win of querying the DB in the first place.
+            messageCount: nil
+        )
+    }
+
+    // Fallback when title is empty in the DB (very fresh sessions
+    // before Codex generates one). Use the first user message or
+    // the project basename, mirroring CodexTranscriptParser's
+    // own deriveTitle.
+    private nonisolated static func deriveTitle(row: CodexThreadDatabase.Row) -> String {
+        let trimmedTitle = row.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedTitle.isEmpty {
+            return trimmedTitle.count > 80 ? String(trimmedTitle.prefix(80)) + "…" : trimmedTitle
+        }
+        let trimmedPrompt = row.firstUserMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedPrompt.isEmpty {
+            let firstLine = trimmedPrompt.split(whereSeparator: \.isNewline).first.map(String.init) ?? trimmedPrompt
+            return firstLine.count > 80 ? String(firstLine.prefix(80)) + "…" : firstLine
+        }
+        let name = URL(fileURLWithPath: row.cwd).lastPathComponent
+        return name.isEmpty ? "Untitled session" : "Session in \(name)"
+    }
+
+    private func _loadSessionsFromFilesystem(since: Date, minimumCount: Int) throws -> [ClaudeSessionSummary] {
         var allCandidates: [URL] = []
         if fileManager.fileExists(atPath: sessionsRoot.path) {
             allCandidates.append(contentsOf: try enumerateRolloutFiles(under: sessionsRoot))
