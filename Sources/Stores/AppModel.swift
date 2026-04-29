@@ -1,4 +1,3 @@
-import AVFoundation
 import Foundation
 import Observation
 import OSLog
@@ -7,14 +6,21 @@ import OSLog
 @Observable
 final class AppModel {
     private static let preferredSpeechBackendKey = "preferredSpeechBackend"
-    private static let preferredVoiceIdentifierKey = "preferredVoiceIdentifier"
-    private static let preferredSpeechRateKey = "preferredSpeechRate"
+    private static let preferredWordsPerMinuteKey = "preferredWordsPerMinute"
     private static let preferredElevenLabsVoiceIDKey = "preferredElevenLabsVoiceID"
     private static let speechTextOptimizationEnabledKey = "speechTextOptimizationEnabled"
     private static let speechTextOptimizationModeKey = "speechTextOptimizationMode"
     private static let claudeCLIModelKey = "claudeCLIModel"
     static let defaultKeychainService = "local.claudecodevoice"
     static let elevenLabsAPIKeyAccount = "elevenlabs_api_key"
+    // Default rate when the user hasn't picked one. Matches what the
+    // app shipped with when SystemVoice was hardcoded — anyone who
+    // updates from that build keeps the same audible cadence.
+    static let defaultWordsPerMinute = 400
+    // Slider bounds. 100 is intelligible-but-deliberate; 500 is `say`'s
+    // upper "still understandable" range — past that it's a chipmunk.
+    static let minimumWordsPerMinute = 100
+    static let maximumWordsPerMinute = 500
     // How far back to show sessions in the sidebar. The session list is for
     // recent work — anything older you can still dig up, but we don't try to
     // keep weeks of history in the main view.
@@ -96,33 +102,17 @@ final class AppModel {
 
             userDefaults.set(preferredSpeechBackend.rawValue, forKey: Self.preferredSpeechBackendKey)
             speechController.backend = preferredSpeechBackend
-            // Don't normalize preferredVoiceIdentifier here — it's the
-            // AVSpeech-scoped pref. Resolving it against the new backend
-            // would overwrite it with a voice from a different backend's
-            // ID space, destroying the user's App Voices choice. Per-backend
-            // voice selection happens via `currentVoiceIdentifier`.
+            // Per-backend voice selection happens via `currentVoiceIdentifier`,
+            // which dispatches on the active backend. SystemVoice has no
+            // app-level voice ID; ElevenLabs has its own pref.
         }
     }
-    var preferredVoiceIdentifier: String? {
+    var preferredWordsPerMinute: Int {
         didSet {
-            guard oldValue != preferredVoiceIdentifier else {
+            guard oldValue != preferredWordsPerMinute else {
                 return
             }
-
-            if let preferredVoiceIdentifier {
-                userDefaults.set(preferredVoiceIdentifier, forKey: Self.preferredVoiceIdentifierKey)
-            } else {
-                userDefaults.removeObject(forKey: Self.preferredVoiceIdentifierKey)
-            }
-        }
-    }
-    var preferredSpeechRate: Double {
-        didSet {
-            guard oldValue != preferredSpeechRate else {
-                return
-            }
-
-            userDefaults.set(preferredSpeechRate, forKey: Self.preferredSpeechRateKey)
+            userDefaults.set(preferredWordsPerMinute, forKey: Self.preferredWordsPerMinuteKey)
         }
     }
 
@@ -188,6 +178,25 @@ final class AppModel {
         }
     }
 
+    // Per-message expansion state for the collapse/expand affordance on
+    // long transcript rows. Defaults to collapsed; the user toggles via
+    // the "Show more/less" button. Lives here — not as @State in the
+    // row — so LazyVStack recycling a row out and back as the user
+    // scrolls doesn't reset its expansion.
+    var expandedMessageIDs: Set<TranscriptMessage.ID> = []
+
+    func isMessageExpanded(_ id: TranscriptMessage.ID) -> Bool {
+        expandedMessageIDs.contains(id)
+    }
+
+    func toggleMessageExpanded(_ id: TranscriptMessage.ID) {
+        if expandedMessageIDs.contains(id) {
+            expandedMessageIDs.remove(id)
+        } else {
+            expandedMessageIDs.insert(id)
+        }
+    }
+
     let speechController: SpeechController
 
     @ObservationIgnored private var sessionRefreshTask: Task<Void, Never>?
@@ -233,11 +242,18 @@ final class AppModel {
            let backend = SpeechBackend(rawValue: storedValue) {
             preferredSpeechBackend = backend
         } else {
-            preferredSpeechBackend = .avSpeech
+            // System Voice is the new default. Users who previously had
+            // AVSpeech ("av_speech") in UserDefaults won't match the
+            // SpeechBackend(rawValue:) lookup above and will fall here
+            // — implicit one-way migration to System Voice, which is
+            // the closest behavioral analog now that AVSpeech is gone.
+            preferredSpeechBackend = .systemVoice
         }
 
-        let storedRate = userDefaults.double(forKey: Self.preferredSpeechRateKey)
-        preferredSpeechRate = storedRate == 0 ? Double(AVSpeechUtteranceDefaultSpeechRate) : storedRate
+        // wpm pref. Stored as an Int. UserDefaults returns 0 for missing
+        // keys, which we treat as "use the default."
+        let storedWPM = userDefaults.integer(forKey: Self.preferredWordsPerMinuteKey)
+        preferredWordsPerMinute = storedWPM > 0 ? storedWPM : Self.defaultWordsPerMinute
 
         // ElevenLabs prefs. Log-then-swallow keychain read failures so init
         // still succeeds (e.g. sandboxed test run, user denied ACL). Without
@@ -279,9 +295,6 @@ final class AppModel {
         }
 
         speechController.backend = preferredSpeechBackend
-        preferredVoiceIdentifier = speechController.resolveVoiceIdentifier(
-            userDefaults.string(forKey: Self.preferredVoiceIdentifierKey)
-        )
 
         applyElevenLabsAPIKey()
         // Only derive from the setting if the caller didn't inject one
@@ -300,8 +313,8 @@ final class AppModel {
         speechController.voiceIdentifierProvider = { [weak self] in
             self?.currentVoiceIdentifier
         }
-        speechController.rateProvider = { [weak self] in
-            Float(self?.preferredSpeechRate ?? Double(AVSpeechUtteranceDefaultSpeechRate))
+        speechController.wordsPerMinuteProvider = { [weak self] in
+            self?.preferredWordsPerMinute ?? Self.defaultWordsPerMinute
         }
 
         // Bridge speech-controller state into the macOS Now Playing
@@ -370,16 +383,16 @@ final class AppModel {
         }
     }
 
-    // Voice IDs are backend-scoped (AVSpeech identifiers and ElevenLabs
-    // voice IDs don't overlap). Routed through the driver's
-    // `resolveVoiceIdentifier` so a nil / unknown pref falls back to the
-    // first loaded voice — otherwise a first-time ElevenLabs user with a
-    // valid key but no voice picked would hit "No voice selected" on play.
-    // SystemVoice ignores identifiers entirely.
+    // SystemVoice ignores app-level voice identifiers entirely — it
+    // routes through the system-wide voice the user picked in System
+    // Settings → Accessibility → Spoken Content. ElevenLabs has its
+    // own per-account voice list with disjoint IDs; route through the
+    // driver's resolver so a nil / unknown pref falls back to the
+    // first loaded voice (otherwise a first-time ElevenLabs user with
+    // a valid key but no voice picked would hit "No voice selected"
+    // on play).
     var currentVoiceIdentifier: String? {
         switch preferredSpeechBackend {
-        case .avSpeech:
-            return speechController.resolveVoiceIdentifier(preferredVoiceIdentifier)
         case .systemVoice:
             return nil
         case .elevenLabs:

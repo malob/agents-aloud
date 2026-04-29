@@ -25,7 +25,8 @@ private final class EventRecorder {
 private func shellScriptDriver(_ script: String) -> SystemVoiceBackendDriver {
     SystemVoiceBackendDriver(
         executableURL: URL(fileURLWithPath: "/bin/sh"),
-        arguments: ["-c", script]
+        // Ignore the wpm — tests inspect lifecycle, not the wpm wiring.
+        argumentsForWordsPerMinute: { _ in ["-c", script] }
     )
 }
 
@@ -35,7 +36,7 @@ private func request(_ text: String = "hi") -> SpeechRequest {
         messageID: "m-\(UUID().uuidString)",
         text: text,
         voiceIdentifier: nil,
-        rate: 0.4
+        wordsPerMinute: 350
     )
 }
 

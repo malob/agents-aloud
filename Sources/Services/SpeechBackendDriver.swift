@@ -5,7 +5,12 @@ struct SpeechRequest: Equatable {
     let messageID: String
     let text: String
     let voiceIdentifier: String?
-    let rate: Float
+    // Rate is expressed in words per minute. SystemVoice passes it
+    // straight to `say -r`; ElevenLabs maps it onto its 0.7-1.2 speed
+    // multiplier. This is the natural unit for the surviving backends
+    // — AVSpeech's normalized 0.2-0.6 was the awkward outlier and went
+    // away with that backend.
+    let wordsPerMinute: Int
 }
 
 enum SpeechDriverEvent: Equatable {
@@ -30,7 +35,6 @@ enum SpeechDriverEvent: Equatable {
 @MainActor
 protocol SpeechBackendDriver: AnyObject {
     var availableVoices: [SpeechVoiceOption] { get }
-    var wordsPerMinute: Int? { get }
 
     func resolveVoiceIdentifier(_ identifier: String?) -> String?
     func start(

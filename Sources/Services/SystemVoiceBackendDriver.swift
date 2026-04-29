@@ -4,8 +4,6 @@ import Synchronization
 
 @MainActor
 final class SystemVoiceBackendDriver: SpeechBackendDriver {
-    private static let defaultWordsPerMinute = 400
-
     // Accumulates stderr chunks from /usr/bin/say. The readability
     // handler fires on a DispatchQueue (not an actor), and we read the
     // accumulated output from the main actor after the process exits —
@@ -106,29 +104,28 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
 
     // Injectable so tests can swap /usr/bin/say for a shell that
     // simulates lifecycle (exits normally, exits with error, runs
-    // until stopped) without actually playing audio.
+    // until stopped) without actually playing audio. The closure
+    // receives the per-request wpm so production paths still get
+    // `say -r <wpm>`; tests substitute a closure that builds the
+    // shell-runner args and ignores the wpm input.
     private let executableURL: URL
-    private let arguments: [String]
+    private let argumentsForWordsPerMinute: @MainActor (Int) -> [String]
 
     private var eventHandler: (@MainActor @Sendable (SpeechDriverEvent) -> Void)?
     private var currentJob: SystemVoiceJob?
 
     init(
         executableURL: URL = URL(fileURLWithPath: "/usr/bin/say"),
-        arguments: [String] = ["-r", String(SystemVoiceBackendDriver.defaultWordsPerMinute)]
+        argumentsForWordsPerMinute: @escaping @MainActor (Int) -> [String] = { wpm in
+            ["-r", String(wpm)]
+        }
     ) {
         self.executableURL = executableURL
-        self.arguments = arguments
+        self.argumentsForWordsPerMinute = argumentsForWordsPerMinute
     }
 
     var availableVoices: [SpeechVoiceOption] {
         []
-    }
-
-    // The `say` backend deliberately stays at 400 WPM so it matches the faster local-voice
-    // cadence this app is tuned around, even though `say` itself exposes a configurable rate.
-    var wordsPerMinute: Int? {
-        Self.defaultWordsPerMinute
     }
 
     func resolveVoiceIdentifier(_ identifier: String?) -> String? {
@@ -155,7 +152,10 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
         currentJob = job
 
         process.executableURL = executableURL
-        process.arguments = arguments
+        // Args derived per-request from wpm so the Settings slider
+        // takes effect on the next utterance — we no longer freeze
+        // the rate at construction time.
+        process.arguments = argumentsForWordsPerMinute(request.wordsPerMinute)
         process.standardInput = inputPipe
         process.standardError = errorPipe
         errorPipe.fileHandleForReading.readabilityHandler = { handle in

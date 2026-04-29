@@ -1,7 +1,6 @@
 import Foundation
 
 enum SpeechBackend: String, CaseIterable, Identifiable {
-    case avSpeech = "av_speech"
     case systemVoice = "system_voice"
     case elevenLabs = "eleven_labs"
 
@@ -11,10 +10,8 @@ enum SpeechBackend: String, CaseIterable, Identifiable {
 
     var displayName: String {
         switch self {
-        case .avSpeech:
-            return "App Voices"
         case .systemVoice:
-            return "System Voice (Experimental)"
+            return "System Voice"
         case .elevenLabs:
             return "ElevenLabs"
         }
@@ -22,10 +19,8 @@ enum SpeechBackend: String, CaseIterable, Identifiable {
 
     var detailText: String {
         switch self {
-        case .avSpeech:
-            return "Uses AVSpeechSynthesizer with the app's curated English voice list."
         case .systemVoice:
-            return "Routes through macOS system speech with no explicit voice override. If your Read & Speak system voice is a Siri voice, this may piggyback on it on recent macOS versions."
+            return "Routes through macOS system speech using the voice you set in System Settings → Accessibility → Spoken Content. Local, free, and instant-start."
         case .elevenLabs:
             return "Streams cloud TTS from ElevenLabs. Requires an API key (configured below)."
         }
@@ -33,10 +28,10 @@ enum SpeechBackend: String, CaseIterable, Identifiable {
 
     var supportsVoicePicker: Bool {
         switch self {
-        case .avSpeech, .elevenLabs:
-            return true
         case .systemVoice:
             return false
+        case .elevenLabs:
+            return true
         }
     }
 }

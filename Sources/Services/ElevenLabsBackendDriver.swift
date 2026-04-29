@@ -1,4 +1,3 @@
-import AVFoundation
 import Foundation
 import Observation
 import OSLog
@@ -13,11 +12,10 @@ import OSLog
 // errors), the driver emits the corresponding SpeechDriverEvent so the
 // shared SpeechController can advance its queue / update playback state.
 //
-// `.didStart` fires synchronously at `start()` time (same as
-// AVSpeechBackendDriver's pattern) rather than at first-audio. That
-// gives the UI an immediate "speaking" signal on button-click; the
-// ~200-500ms gap before first byte plays is the inherent cost of a
-// network TTS backend.
+// `.didStart` fires synchronously at `start()` time rather than at
+// first-audio — gives the UI an immediate "speaking" signal on
+// button-click; the ~200-500ms gap before first byte plays is the
+// inherent cost of a network TTS backend.
 // @Observable so `availableVoices` changes (populated async via
 // `refreshVoices()` after an API key is entered) trigger SwiftUI
 // re-renders wherever they're read through the `SpeechController`
@@ -34,7 +32,6 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
     @ObservationIgnored private let logger = Logger(subsystem: "local.claudecodevoice", category: "ElevenLabsDriver")
 
     private(set) var availableVoices: [SpeechVoiceOption] = []
-    var wordsPerMinute: Int? { nil }
 
     // Active playback — the pair of (request, event handler) must move
     // together: non-nil when a stream is playing, nil between calls. A
@@ -79,8 +76,7 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
                 SpeechVoiceOption(
                     id: voice.voiceID,
                     name: voice.name,
-                    language: "en-US",
-                    quality: .enhanced
+                    language: "en-US"
                 )
             }
             logger.info("Loaded \(self.availableVoices.count, privacy: .public) ElevenLabs voices")
@@ -119,7 +115,7 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
 
         active = Active(request: request, eventHandler: eventHandler)
 
-        let speed = Self.mapRateToSpeed(request.rate)
+        let speed = Self.mapRateToSpeed(wordsPerMinute: request.wordsPerMinute)
         let stream = client.streamSynthesize(
             voiceID: voiceID,
             text: request.text,
@@ -179,13 +175,19 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
         handler(.didFail(playbackID, description: error.localizedDescription))
     }
 
-    // Maps our 0.2-0.6 speech rate slider (AVSpeech-calibrated, middle ~=
-    // AVSpeechUtteranceDefaultSpeechRate) onto ElevenLabs' 0.7-1.2 speed
-    // scale. The API rejects anything outside that range with a 400.
-    // Linear: slider min -> 0.7 (slowest allowed), middle (0.4) -> 0.95
-    // (just under 1.0, a hair slower than default), max -> 1.2.
-    nonisolated static func mapRateToSpeed(_ rate: Float) -> Double {
-        let t = (Double(rate) - 0.2) / (0.6 - 0.2)
+    // Map words-per-minute (the unit SystemVoice uses, exposed by the
+    // Settings slider) onto ElevenLabs' 0.7-1.2 `speed` parameter. The
+    // API rejects anything outside [0.7, 1.2] with a 400. Linear:
+    // 100 wpm -> 0.7 (slowest allowed), 300 wpm -> 0.95 (just under
+    // ElevenLabs default 1.0), 500 wpm -> 1.2 (max).
+    //
+    // Note: ElevenLabs caps at 1.2x — meaningfully slower than what
+    // SystemVoice can do at the high end of our slider (e.g. 450 wpm
+    // on `say`). Users will dial each backend's slider position to
+    // taste; we keep the unit consistent so it's the same control,
+    // not so the audible cadence is identical across backends.
+    nonisolated static func mapRateToSpeed(wordsPerMinute: Int) -> Double {
+        let t = (Double(wordsPerMinute) - 100) / (500 - 100)
         return max(0.7, min(1.2, 0.7 + t * 0.5))
     }
 }

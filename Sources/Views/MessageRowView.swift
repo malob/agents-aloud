@@ -10,15 +10,45 @@ import SwiftUI
 struct MessageRowView: View, Equatable {
     let message: TranscriptMessage
     let status: SpeechController.MessageStatus
+    let isExpanded: Bool
     let onPlay: () -> Void
     let onPlayFromHere: () -> Void
     let onCancel: () -> Void
+    let onToggleExpanded: () -> Void
 
     @State private var isHoveringSpeakButton = false
     @State private var isOptionHeld = false
 
+    // Max visible lines when a collapsible row is collapsed. Picked to
+    // show enough of the message to identify it at a glance without
+    // dominating the transcript.
+    private static let collapsedLineLimit = 5
+
+    // Heuristic: a message benefits from collapse UI if it's likely to
+    // render past `collapsedLineLimit` lines. Newline count catches
+    // multi-paragraph messages; char count catches wrapped prose that
+    // has few hard breaks. If the heuristic fires for a borderline
+    // message, the worst case is the user sees a Show-more button that
+    // reveals nothing new — harmless.
+    private var isCollapsible: Bool {
+        let text = message.text
+        if text.count > 400 { return true }
+        var newlines = 0
+        for ch in text where ch == "\n" {
+            newlines += 1
+            if newlines > 5 { return true }
+        }
+        return false
+    }
+
+    private var shouldTruncate: Bool {
+        isCollapsible && !isExpanded
+    }
+
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.message == rhs.message && lhs.status == rhs.status
+        lhs.message == rhs.message
+            && lhs.status == rhs.status
+            && lhs.isExpanded == rhs.isExpanded
     }
 
     private var roleAppearance: RoleAppearance {
@@ -62,10 +92,55 @@ struct MessageRowView: View, Equatable {
                 }
             }
 
-            TranscriptMarkdownView(
-                content: message.content
-            )
+            VStack(alignment: .leading, spacing: 6) {
+                TranscriptMarkdownView(
+                    content: message.content,
+                    lineLimit: shouldTruncate ? Self.collapsedLineLimit : nil
+                )
                 .equatable()
+                // Soft alpha fade across the bottom ~third of the
+                // truncated text. Reads as "this continues past what
+                // you can see" much more clearly than the bare
+                // tail-truncation ellipsis. Implemented as a mask
+                // (rather than a same-colored gradient overlay) so we
+                // don't have to mirror the message-background tint
+                // here — fading text to transparent reveals the row's
+                // own RoundedRectangle background underneath.
+                // When not truncated (short message or expanded), the
+                // mask is solid black = no visual change.
+                .mask {
+                    if shouldTruncate {
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black, location: 0.0),
+                                .init(color: .black, location: 0.7),
+                                .init(color: .black.opacity(0.0), location: 1.0)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    } else {
+                        Color.black
+                    }
+                }
+
+                if isCollapsible {
+                    // Small inline disclosure below the message body.
+                    // `.buttonStyle(.plain)` keeps it visually subdued
+                    // so it doesn't compete with the role/time chrome
+                    // above or the Speak pill opposite.
+                    Button(action: onToggleExpanded) {
+                        Label(
+                            isExpanded ? "Show less" : "Show more",
+                            systemImage: isExpanded ? "chevron.up" : "chevron.down"
+                        )
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isExpanded ? "Collapse this message" : "Show the full message")
+                }
+            }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background {
@@ -95,6 +170,11 @@ struct MessageRowView: View, Equatable {
                     }
                     Button("Speak from Here", systemImage: "speaker.wave.2.fill") {
                         onPlayFromHere()
+                    }
+                    if isCollapsible {
+                        Button(isExpanded ? "Show Less" : "Show More") {
+                            onToggleExpanded()
+                        }
                     }
                 }
         }
@@ -404,9 +484,11 @@ private struct RoleAppearance {
                 sessionID: "preview-session"
             ),
             status: .idle,
+            isExpanded: false,
             onPlay: {},
             onPlayFromHere: {},
-            onCancel: {}
+            onCancel: {},
+            onToggleExpanded: {}
         )
         MessageRowView(
             message: TranscriptMessage(
@@ -417,9 +499,11 @@ private struct RoleAppearance {
                 sessionID: "preview-session"
             ),
             status: .rewriting,
+            isExpanded: false,
             onPlay: {},
             onPlayFromHere: {},
-            onCancel: {}
+            onCancel: {},
+            onToggleExpanded: {}
         )
         MessageRowView(
             message: TranscriptMessage(
@@ -430,9 +514,11 @@ private struct RoleAppearance {
                 sessionID: "preview-session"
             ),
             status: .speaking,
+            isExpanded: false,
             onPlay: {},
             onPlayFromHere: {},
-            onCancel: {}
+            onCancel: {},
+            onToggleExpanded: {}
         )
         MessageRowView(
             message: TranscriptMessage(
@@ -443,9 +529,11 @@ private struct RoleAppearance {
                 sessionID: "preview-session"
             ),
             status: .queued(position: 0),
+            isExpanded: false,
             onPlay: {},
             onPlayFromHere: {},
-            onCancel: {}
+            onCancel: {},
+            onToggleExpanded: {}
         )
         MessageRowView(
             message: TranscriptMessage(
@@ -456,9 +544,26 @@ private struct RoleAppearance {
                 sessionID: "preview-session"
             ),
             status: .queued(position: 2),
+            isExpanded: false,
             onPlay: {},
             onPlayFromHere: {},
-            onCancel: {}
+            onCancel: {},
+            onToggleExpanded: {}
+        )
+        MessageRowView(
+            message: TranscriptMessage(
+                id: "preview-long-collapsed",
+                role: .assistant,
+                text: String(repeating: "This is a long message that should trigger the collapse affordance. ", count: 20),
+                timestamp: .now,
+                sessionID: "preview-session"
+            ),
+            status: .idle,
+            isExpanded: false,
+            onPlay: {},
+            onPlayFromHere: {},
+            onCancel: {},
+            onToggleExpanded: {}
         )
     }
     .padding()

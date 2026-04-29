@@ -40,7 +40,6 @@ final class FakeSpeechBackendDriver: SpeechBackendDriver {
     }
 
     let availableVoices: [SpeechVoiceOption]
-    let wordsPerMinute: Int?
     private(set) var startedRequests: [SpeechRequest] = []
     private(set) var pauseCallCount = 0
     private(set) var resumeCallCount = 0
@@ -48,12 +47,8 @@ final class FakeSpeechBackendDriver: SpeechBackendDriver {
     var startError: Error?
     private var eventHandler: (@MainActor @Sendable (SpeechDriverEvent) -> Void)?
 
-    init(
-        availableVoices: [SpeechVoiceOption] = [],
-        wordsPerMinute: Int? = nil
-    ) {
+    init(availableVoices: [SpeechVoiceOption] = []) {
         self.availableVoices = availableVoices
-        self.wordsPerMinute = wordsPerMinute
     }
 
     func resolveVoiceIdentifier(_ identifier: String?) -> String? {

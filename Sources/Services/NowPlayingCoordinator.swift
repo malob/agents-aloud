@@ -7,7 +7,7 @@ import OSLog
 // keyboard media keys) so controlling playback from outside the app
 // Just Works. We only handle the control surface + display metadata
 // here; the audio itself continues to come out of whichever speech
-// backend is active (AVSpeech / /usr/bin/say / ElevenLabs streaming).
+// backend is active (/usr/bin/say or ElevenLabs streaming).
 //
 // Per Apple's HIG "Playing audio": only respond to controls the app
 // can actually honor. We register play / pause / togglePlayPause /

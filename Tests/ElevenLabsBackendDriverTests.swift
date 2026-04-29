@@ -102,7 +102,7 @@ struct ElevenLabsBackendDriverTests {
             messageID: "m",
             text: "hello",
             voiceIdentifier: nil,
-            rate: 0.4
+            wordsPerMinute: 300
         )
 
         #expect(throws: ElevenLabsBackendDriver.DriverError.self) {
@@ -123,7 +123,7 @@ struct ElevenLabsBackendDriverTests {
             messageID: "m",
             text: "hello",
             voiceIdentifier: "v1",
-            rate: 0.4  // middle of AVSpeech range -> ~0.95 ElevenLabs speed
+            wordsPerMinute: 300  // middle of slider -> 0.95 ElevenLabs speed per the linear mapping
         )
 
         try driver.start(request: request, eventHandler: recorder.handler)
@@ -151,7 +151,7 @@ struct ElevenLabsBackendDriverTests {
             messageID: "m",
             text: "hello",
             voiceIdentifier: "v1",
-            rate: 0.4
+            wordsPerMinute: 300
         )
 
         try driver.start(request: request, eventHandler: recorder.handler)
@@ -178,7 +178,7 @@ struct ElevenLabsBackendDriverTests {
             messageID: "m",
             text: "hi",
             voiceIdentifier: "v1",
-            rate: 0.4
+            wordsPerMinute: 300
         )
 
         try driver.start(request: request, eventHandler: recorder.handler)
@@ -212,7 +212,7 @@ struct ElevenLabsBackendDriverTests {
             messageID: "m",
             text: "hi",
             voiceIdentifier: "v1",
-            rate: 0.4
+            wordsPerMinute: 300
         )
 
         try driver.start(request: request, eventHandler: recorder.handler)
@@ -236,15 +236,15 @@ struct ElevenLabsBackendDriverTests {
     }
 
     @Test
-    func rateMappingIsLinearOverSliderRange() {
-        // At 0.2 (slider min) -> speed 0.7 (ElevenLabs' slowest allowed)
-        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(0.2) - 0.7) < 0.001)
-        // At 0.4 (middle) -> speed 0.95
-        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(0.4) - 0.95) < 0.001)
-        // At 0.6 (slider max) -> speed 1.2 (ElevenLabs' fastest allowed)
-        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(0.6) - 1.2) < 0.001)
+    func wordsPerMinuteMappingIsLinearAndClamped() {
+        // At 100 wpm (slider min) -> 0.7 (ElevenLabs slowest allowed)
+        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(wordsPerMinute: 100) - 0.7) < 0.001)
+        // 300 wpm (middle of slider) -> 0.95
+        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(wordsPerMinute: 300) - 0.95) < 0.001)
+        // 500 wpm (slider max) -> 1.2 (ElevenLabs fastest allowed)
+        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(wordsPerMinute: 500) - 1.2) < 0.001)
         // Out-of-range clamps
-        #expect(ElevenLabsBackendDriver.mapRateToSpeed(0.0) == 0.7)
-        #expect(ElevenLabsBackendDriver.mapRateToSpeed(1.0) == 1.2)
+        #expect(ElevenLabsBackendDriver.mapRateToSpeed(wordsPerMinute: 50) == 0.7)
+        #expect(ElevenLabsBackendDriver.mapRateToSpeed(wordsPerMinute: 1000) == 1.2)
     }
 }

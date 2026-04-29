@@ -31,8 +31,12 @@ private struct TestAppModelFixture {
     let model: AppModel
     let watcher: FakeTranscriptFileWatcher
     let liveReadWatcher: FakeTranscriptFileWatcher
-    let avDriver: FakeSpeechBackendDriver
-    let systemDriver: FakeSpeechBackendDriver
+    // Single fake driver wired as systemVoiceDriver — the new default
+    // backend after AVSpeech was removed. Tests that previously
+    // asserted against `avDriver` now read from this same driver
+    // (since `.systemVoice` is the default backend, all playback
+    // routes here unless a test explicitly switches to ElevenLabs).
+    let fakeDriver: FakeSpeechBackendDriver
     let projectsRoot: URL
     let temporaryRoot: URL
     let userDefaultsSuite: String
@@ -65,13 +69,11 @@ private func makeTestAppModel(
     let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
     let watcher = FakeTranscriptFileWatcher()
     let liveReadWatcher = FakeTranscriptFileWatcher()
-    let avDriver = FakeSpeechBackendDriver(
-        availableVoices: [SpeechVoiceOption(id: "av.voice", name: "AV", language: "en-US", quality: .enhanced)]
+    let fakeDriver = FakeSpeechBackendDriver(
+        availableVoices: [SpeechVoiceOption(id: "system.voice", name: "System", language: "en-US")]
     )
-    let systemDriver = FakeSpeechBackendDriver(wordsPerMinute: 400)
     let speechController = SpeechController(
-        avSpeechDriver: avDriver,
-        systemVoiceDriver: systemDriver
+        systemVoiceDriver: fakeDriver
     )
     let model = AppModel(
         storageService: ClaudeStorageService(projectsRoot: projectsRoot),
@@ -87,8 +89,7 @@ private func makeTestAppModel(
         model: model,
         watcher: watcher,
         liveReadWatcher: liveReadWatcher,
-        avDriver: avDriver,
-        systemDriver: systemDriver,
+        fakeDriver: fakeDriver,
         projectsRoot: projectsRoot,
         temporaryRoot: temporaryRoot,
         userDefaultsSuite: defaultsSuiteName,
@@ -183,14 +184,14 @@ struct AppModelTests {
         // second via enqueue (started once first finishes). The fake driver
         // doesn't auto-finish, so only the first reaches the driver.
         // Wait for the async processing + playNow to land.
-        try await waitUntil { fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-1"] }
+        try await waitUntil { fixture.fakeDriver.startedRequests.map(\.messageID) == ["assistant-1"] }
         // And the next message must have been enqueued before we emit didFinish.
         try await waitUntil { fixture.model.speechController.currentMessageID == "assistant-1" }
 
-        fixture.avDriver.emit(.didFinish(fixture.avDriver.startedRequests[0].playbackID))
+        fixture.fakeDriver.emit(.didFinish(fixture.fakeDriver.startedRequests[0].playbackID))
 
         try await waitUntil {
-            fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-1", "assistant-2"]
+            fixture.fakeDriver.startedRequests.map(\.messageID) == ["assistant-1", "assistant-2"]
         }
     }
 
@@ -212,7 +213,7 @@ struct AppModelTests {
 
         // user-2 should be skipped; assistant-2 is the first speakable
         // message at-or-after the anchor.
-        try await waitUntil { fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-2"] }
+        try await waitUntil { fixture.fakeDriver.startedRequests.map(\.messageID) == ["assistant-2"] }
     }
 
     @Test
@@ -232,11 +233,11 @@ struct AppModelTests {
         fixture.model.playMessagesFromHere(lastAssistant)
 
         // Last assistant plays; nothing queued after.
-        try await waitUntil { fixture.avDriver.startedRequests.map(\.messageID) == ["assistant-2"] }
+        try await waitUntil { fixture.fakeDriver.startedRequests.map(\.messageID) == ["assistant-2"] }
 
-        fixture.avDriver.emit(.didFinish(fixture.avDriver.startedRequests[0].playbackID))
+        fixture.fakeDriver.emit(.didFinish(fixture.fakeDriver.startedRequests[0].playbackID))
         // Still only one started — queue drained.
-        #expect(fixture.avDriver.startedRequests.count == 1)
+        #expect(fixture.fakeDriver.startedRequests.count == 1)
     }
 
     // MARK: - Live Speak on empty session
@@ -265,13 +266,10 @@ struct AppModelTests {
         let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         let watcher = FakeTranscriptFileWatcher()
-        let avDriver = FakeSpeechBackendDriver(
-            availableVoices: [SpeechVoiceOption(id: "av.voice", name: "AV", language: "en-US", quality: .enhanced)]
+        let fakeDriver = FakeSpeechBackendDriver(
+            availableVoices: [SpeechVoiceOption(id: "system.voice", name: "System", language: "en-US")]
         )
-        let controller = SpeechController(
-            avSpeechDriver: avDriver,
-            systemVoiceDriver: FakeSpeechBackendDriver(wordsPerMinute: 400)
-        )
+        let controller = SpeechController(systemVoiceDriver: fakeDriver)
         let model = AppModel(
             storageService: ClaudeStorageService(projectsRoot: projectsRoot),
             speechController: controller,
@@ -303,7 +301,7 @@ struct AppModelTests {
         watcher.emitChange()
 
         try await waitUntil {
-            avDriver.startedRequests.contains(where: { $0.messageID == "assistant-1" })
+            fakeDriver.startedRequests.contains(where: { $0.messageID == "assistant-1" })
         }
     }
 
@@ -452,7 +450,7 @@ struct AppModelTests {
         // Give any would-be stale Task time to land if the cancellation
         // didn't take.
         try await Task.sleep(for: .milliseconds(100))
-        #expect(fixture.avDriver.startedRequests.isEmpty)
+        #expect(fixture.fakeDriver.startedRequests.isEmpty)
     }
 
     @Test
@@ -504,8 +502,8 @@ struct AppModelTests {
         }
 
         // Finish assistant-1's playback → assistant-2 promotes.
-        let firstPlaybackID = try #require(fixture.avDriver.startedRequests.first?.playbackID)
-        fixture.avDriver.emit(.didFinish(firstPlaybackID))
+        let firstPlaybackID = try #require(fixture.fakeDriver.startedRequests.first?.playbackID)
+        fixture.fakeDriver.emit(.didFinish(firstPlaybackID))
         try await waitUntil { fixture.model.speechController.currentMessageID == "assistant-2" }
     }
 
@@ -582,13 +580,10 @@ struct AppModelTests {
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         let selectedWatcher = FakeTranscriptFileWatcher()
         let liveReadWatcher = FakeTranscriptFileWatcher()
-        let avDriver = FakeSpeechBackendDriver(
-            availableVoices: [SpeechVoiceOption(id: "av.voice", name: "AV", language: "en-US", quality: .enhanced)]
+        let fakeDriver = FakeSpeechBackendDriver(
+            availableVoices: [SpeechVoiceOption(id: "system.voice", name: "System", language: "en-US")]
         )
-        let controller = SpeechController(
-            avSpeechDriver: avDriver,
-            systemVoiceDriver: FakeSpeechBackendDriver(wordsPerMinute: 400)
-        )
+        let controller = SpeechController(systemVoiceDriver: fakeDriver)
         let model = AppModel(
             storageService: ClaudeStorageService(projectsRoot: projectsRoot),
             speechController: controller,
@@ -628,7 +623,7 @@ struct AppModelTests {
 
         // A's new message auto-enqueued despite B being selected.
         try await waitUntil {
-            avDriver.startedRequests.contains(where: { $0.messageID == "a-reply-1" })
+            fakeDriver.startedRequests.contains(where: { $0.messageID == "a-reply-1" })
         }
     }
 
@@ -792,13 +787,10 @@ struct AppModelTests {
         let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         let watcher = FakeTranscriptFileWatcher()
-        let avDriver = FakeSpeechBackendDriver(
-            availableVoices: [SpeechVoiceOption(id: "av.voice", name: "AV", language: "en-US", quality: .enhanced)]
+        let fakeDriver = FakeSpeechBackendDriver(
+            availableVoices: [SpeechVoiceOption(id: "system.voice", name: "System", language: "en-US")]
         )
-        let controller = SpeechController(
-            avSpeechDriver: avDriver,
-            systemVoiceDriver: FakeSpeechBackendDriver(wordsPerMinute: 400)
-        )
+        let controller = SpeechController(systemVoiceDriver: fakeDriver)
         let processor = ControllableSpeechTextProcessor()
         let model = AppModel(
             storageService: ClaudeStorageService(projectsRoot: projectsRoot),
@@ -839,7 +831,7 @@ struct AppModelTests {
         // active playback, so it leaves the "rewriting" set.
         processor.releaseAll()
         try await waitUntil { model.speechController.status(for: "assistant-1") != .rewriting }
-        try await waitUntil { avDriver.startedRequests.contains(where: { $0.messageID == "assistant-1" }) }
+        try await waitUntil { fakeDriver.startedRequests.contains(where: { $0.messageID == "assistant-1" }) }
     }
 
     @Test
@@ -916,31 +908,28 @@ struct AppModelTests {
         // Item should land in the driver's started requests once the
         // rewrite completes — queue didn't get cancelled.
         try await waitUntil {
-            fixture.avDriver.startedRequests.contains(where: { $0.messageID == "assistant-1" })
+            fixture.fakeDriver.startedRequests.contains(where: { $0.messageID == "assistant-1" })
         }
     }
 
-    // MARK: - Backend switch voice preference preservation (regression lock)
+    // MARK: - Backend switch preserves ElevenLabs voice preference
 
     @Test
     @MainActor
-    func switchingBackendDoesNotClobberPreferredVoiceIdentifier() async throws {
+    func switchingBackendDoesNotClobberPreferredElevenLabsVoiceID() async throws {
         let fixture = try makeTestAppModel()
         defer { fixture.cleanup() }
 
-        fixture.model.preferredVoiceIdentifier = "av.voice"
         fixture.model.preferredElevenLabsVoiceID = "11l.voice"
 
         fixture.model.preferredSpeechBackend = .systemVoice
-        #expect(fixture.model.preferredVoiceIdentifier == "av.voice")
         #expect(fixture.model.preferredElevenLabsVoiceID == "11l.voice")
 
         fixture.model.preferredSpeechBackend = .elevenLabs
-        #expect(fixture.model.preferredVoiceIdentifier == "av.voice")
         #expect(fixture.model.preferredElevenLabsVoiceID == "11l.voice")
 
-        fixture.model.preferredSpeechBackend = .avSpeech
-        #expect(fixture.model.preferredVoiceIdentifier == "av.voice")
+        fixture.model.preferredSpeechBackend = .systemVoice
+        #expect(fixture.model.preferredElevenLabsVoiceID == "11l.voice")
     }
 
     // MARK: - currentVoiceIdentifier backend routing
@@ -951,21 +940,18 @@ struct AppModelTests {
         let fixture = try makeTestAppModel()
         defer { fixture.cleanup() }
 
-        fixture.model.preferredVoiceIdentifier = "av.voice"
         fixture.model.preferredElevenLabsVoiceID = "explicit.eleven"
 
-        fixture.model.preferredSpeechBackend = .avSpeech
-        #expect(fixture.model.currentVoiceIdentifier == "av.voice")
-
         fixture.model.preferredSpeechBackend = .systemVoice
+        // SystemVoice ignores app-level voice IDs entirely.
         #expect(fixture.model.currentVoiceIdentifier == nil)
 
         fixture.model.preferredSpeechBackend = .elevenLabs
-        // ElevenLabs driver has no voices in tests; resolveVoiceIdentifier
-        // falls back to availableVoices.first which is nil, meaning
-        // currentVoiceIdentifier returns nil when voices haven't loaded.
-        // That's the contract: a first-time user without voices loaded
-        // gets nil (which would throw noVoiceSelected at the driver).
+        // ElevenLabs driver has no voices loaded in tests;
+        // resolveVoiceIdentifier falls back to availableVoices.first
+        // which is nil. That's the contract: a first-time user
+        // without voices loaded gets nil (and would throw
+        // noVoiceSelected at the driver).
         #expect(fixture.model.currentVoiceIdentifier == nil)
     }
 

@@ -58,7 +58,6 @@ final class SpeechController {
 
     @ObservationIgnored private let logger = Logger(subsystem: "local.claudecodevoice", category: "Speech")
     @ObservationIgnored private var playbackErrorDismissTask: Task<Void, Never>?
-    @ObservationIgnored private let avSpeechDriver: any SpeechBackendDriver
     @ObservationIgnored private let systemVoiceDriver: any SpeechBackendDriver
     // Not @ObservationIgnored: the ElevenLabs driver is @Observable, and
     // `availableVoices` reads through this stored property. Keeping the
@@ -79,7 +78,7 @@ final class SpeechController {
     // AppModel wires these to point at its own currentVoiceIdentifier
     // and preferredSpeechRate properties.
     @ObservationIgnored var voiceIdentifierProvider: @MainActor () -> String? = { nil }
-    @ObservationIgnored var rateProvider: @MainActor () -> Float = { 0.4 }
+    @ObservationIgnored var wordsPerMinuteProvider: @MainActor () -> Int = { 400 }
 
     private var playbackState: PlaybackState = .idle
     // The ordered queue of items waiting to play. Items enter via
@@ -97,7 +96,7 @@ final class SpeechController {
     @ObservationIgnored private var rewriterTask: Task<Void, Never>?
     @ObservationIgnored private var rewriterTargetID: String?
 
-    var backend: SpeechBackend = .avSpeech {
+    var backend: SpeechBackend = .systemVoice {
         didSet {
             guard oldValue != backend else { return }
             // Backend switch is NOT a reset. The currently-playing
@@ -111,14 +110,12 @@ final class SpeechController {
     }
 
     init(
-        avSpeechDriver: any SpeechBackendDriver = AVSpeechBackendDriver(),
         systemVoiceDriver: any SpeechBackendDriver = SystemVoiceBackendDriver(),
         elevenLabsDriver: ElevenLabsBackendDriver = ElevenLabsBackendDriver(
             client: ElevenLabsClient(apiKey: "")
         ),
         speechTextProcessor: any SpeechTextProcessor = PassthroughSpeechProcessor()
     ) {
-        self.avSpeechDriver = avSpeechDriver
         self.systemVoiceDriver = systemVoiceDriver
         self.elevenLabsDriver = elevenLabsDriver
         self.speechTextProcessor = speechTextProcessor
@@ -169,16 +166,13 @@ final class SpeechController {
         return .queued(position: index)
     }
 
-    // Voice list is backend-scoped — AVSpeech voices and ElevenLabs voices
-    // are disjoint ID spaces. Callers read this reactively (the Settings
-    // picker binds to it), so whenever `backend` changes this returns the
-    // right set automatically.
+    // Voice list is backend-scoped: SystemVoice exposes nothing (uses
+    // the system-wide voice); ElevenLabs exposes the user's account
+    // voices. Callers read this reactively (the Settings picker binds
+    // to it), so whenever `backend` changes this returns the right
+    // set automatically.
     var availableVoices: [SpeechVoiceOption] {
         driver(for: backend).availableVoices
-    }
-
-    var systemVoiceWordsPerMinute: Int {
-        systemVoiceDriver.wordsPerMinute ?? 400
     }
 
     var defaultVoiceIdentifier: String? {
@@ -458,7 +452,7 @@ final class SpeechController {
             messageID: item.id,
             text: text,
             voiceIdentifier: voiceIdentifierProvider(),
-            rate: rateProvider()
+            wordsPerMinute: wordsPerMinuteProvider()
         )
         let driver = currentDriver
         let activePlayback = ActivePlayback(
@@ -499,8 +493,6 @@ final class SpeechController {
 
     private func driver(for backend: SpeechBackend) -> any SpeechBackendDriver {
         switch backend {
-        case .avSpeech:
-            return avSpeechDriver
         case .systemVoice:
             return systemVoiceDriver
         case .elevenLabs:

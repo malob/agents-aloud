@@ -59,9 +59,11 @@ struct TranscriptDetailView: View {
                             MessageRowView(
                                 message: message,
                                 status: model.speechController.status(for: message.id),
+                                isExpanded: model.isMessageExpanded(message.id),
                                 onPlay: { model.playMessage(message) },
                                 onPlayFromHere: { model.playMessagesFromHere(message) },
-                                onCancel: { model.speechController.cancel(messageID: message.id) }
+                                onCancel: { model.speechController.cancel(messageID: message.id) },
+                                onToggleExpanded: { model.toggleMessageExpanded(message.id) }
                             )
                             .equatable()
                             .id(message.id)

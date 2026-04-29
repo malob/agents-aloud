@@ -1,4 +1,3 @@
-import AVFoundation
 import SwiftUI
 
 struct SettingsView: View {
@@ -25,8 +24,12 @@ struct SettingsView: View {
                 elevenLabsAPIKeySection
             }
 
-            Section("Voice") {
-                voicePickerForCurrentBackend
+            // Voice picker is only meaningful for ElevenLabs — SystemVoice
+            // routes through the voice the user picked in System Settings.
+            if model.preferredSpeechBackend == .elevenLabs {
+                Section("Voice") {
+                    voicePickerForCurrentBackend
+                }
             }
 
             speechRateSection
@@ -105,64 +108,72 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var voicePickerForCurrentBackend: some View {
-        switch model.preferredSpeechBackend {
-        case .avSpeech:
-            Picker("Preferred Voice", selection: $model.preferredVoiceIdentifier) {
-                ForEach(model.speechController.availableVoices) { voice in
-                    Text(voice.displayName)
+        // SystemVoice has no app-level voice picker; the parent gates
+        // this section so we only render the ElevenLabs branch here.
+        let voices = model.speechController.availableVoices
+        if voices.isEmpty {
+            Text(model.elevenLabsAPIKey?.isEmpty == false
+                 ? "Voices couldn’t be loaded — check your API key or your network connection."
+                 : "Enter an API key above to load your ElevenLabs voices.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        } else {
+            Picker("Voice", selection: $model.preferredElevenLabsVoiceID) {
+                ForEach(voices) { voice in
+                    Text(voice.name)
                         .tag(Optional(voice.id))
                 }
             }
 
-            Text("English voices only for now. Showing Apple’s modern system voices and hiding legacy Eloquence and novelty voices.")
+            Text("Voices come from your ElevenLabs account. Create or clone more at elevenlabs.io.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-
-        case .systemVoice:
-            Text("This engine ignores the app voice picker and uses the voice you set in macOS Accessibility > Read & Speak > System Voice.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-        case .elevenLabs:
-            let voices = model.speechController.availableVoices
-            if voices.isEmpty {
-                Text(model.elevenLabsAPIKey?.isEmpty == false
-                     ? "Voices couldn’t be loaded — check your API key or your network connection."
-                     : "Enter an API key above to load your ElevenLabs voices.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } else {
-                Picker("Voice", selection: $model.preferredElevenLabsVoiceID) {
-                    ForEach(voices) { voice in
-                        Text(voice.name)
-                            .tag(Optional(voice.id))
-                    }
-                }
-
-                Text("Voices come from your ElevenLabs account. Create or clone more at elevenlabs.io.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
     }
 
     @ViewBuilder
     private var speechRateSection: some View {
-        switch model.preferredSpeechBackend {
-        case .avSpeech, .elevenLabs:
-            Section("Speech Rate") {
-                Slider(
-                    value: $model.preferredSpeechRate,
-                    in: Double(AVSpeechUtteranceMinimumSpeechRate)...Double(AVSpeechUtteranceMaximumSpeechRate)
-                )
-
-                Text(String(format: "Current rate: %.2f", model.preferredSpeechRate))
+        Section("Speech Rate") {
+            // Bound to an Int slider — wpm is the unit the surviving
+            // backends share (SystemVoice passes it to `say -r`;
+            // ElevenLabs maps it onto its 0.7-1.2 speed). step:25
+            // makes the slider feel snappy on macOS where the trackpad
+            // gives a fairly fine value resolution otherwise.
+            Slider(
+                value: Binding(
+                    get: { Double(model.preferredWordsPerMinute) },
+                    set: { model.preferredWordsPerMinute = Int($0.rounded()) }
+                ),
+                in: Double(AppModel.minimumWordsPerMinute)...Double(AppModel.maximumWordsPerMinute),
+                step: 25
+            ) {
+                Text("Speech Rate")
+            } minimumValueLabel: {
+                Text("Slower")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } maximumValueLabel: {
+                Text("Faster")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-        case .systemVoice:
-            Section("Speech Rate") {
-                Text("System Voice currently uses `say -r \(model.speechController.systemVoiceWordsPerMinute)`.")
+
+            HStack {
+                Text("\(model.preferredWordsPerMinute) words / min")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if model.preferredWordsPerMinute != AppModel.defaultWordsPerMinute {
+                    Button("Reset to Default") {
+                        model.preferredWordsPerMinute = AppModel.defaultWordsPerMinute
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                }
+            }
+
+            if model.preferredSpeechBackend == .elevenLabs {
+                Text("ElevenLabs caps speed at 1.2× — settings above the upper third may sound similar.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
