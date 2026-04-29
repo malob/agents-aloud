@@ -190,15 +190,9 @@ actor ClaudeStorageService {
             headLines.append(line)
             if headLines.count >= summaryHeadLineLimit { break }
         }
-        let head = headLines.joined(separator: "\n")
-        let tail = readTailChunk(of: candidate.url, maxBytes: summaryTailMaxBytes)
+        let tailLines = try await readTailLines(of: candidate.url, fromBackBytes: summaryTailMaxBytes)
 
-        // If the tail chunk is empty (file smaller than maxBytes,
-        // or read failed), parse just the head. Otherwise concat.
-        // Newline separator is safe even if head/tail overlap —
-        // the parser splits on whitespace and dedupes via last-wins.
-        let combined = tail.isEmpty ? head : (head + "\n" + tail)
-
+        let combined = (headLines + tailLines).joined(separator: "\n")
         return ClaudeTranscriptParser.summarizeTranscript(
             combined,
             fileURL: candidate.url,
@@ -207,33 +201,32 @@ actor ClaudeStorageService {
         )
     }
 
-    // Read the final `maxBytes` of `url` as a UTF-8 string, trimmed
-    // to a clean line boundary. If we seeked into the middle of a
-    // line, the partial-line prefix gets dropped — \n (0x0A) is
-    // single-byte and self-synchronizing in UTF-8, so this also
-    // avoids boundary problems that would trip up String(data:).
-    private nonisolated static func readTailChunk(of url: URL, maxBytes: Int) -> String {
-        do {
-            let handle = try FileHandle(forReadingFrom: url)
-            defer { try? handle.close() }
-            let endOffset = try handle.seekToEnd()
-            guard endOffset > 0 else { return "" }
-            let chunkSize = min(UInt64(maxBytes), endOffset)
-            let startOffset = endOffset - chunkSize
-            try handle.seek(toOffset: startOffset)
-            guard let data = try handle.readToEnd(), !data.isEmpty else { return "" }
-            let cleanData: Data
-            if startOffset == 0 {
-                cleanData = data
-            } else if let nlIndex = data.firstIndex(of: 0x0A) {
-                cleanData = data.subdata(in: (nlIndex + 1)..<data.count)
-            } else {
-                return ""  // entire chunk was one partial line
+    // Read all complete lines from the final `fromBackBytes` of the
+    // file. There's no "tail-by-lines" API in Foundation directly,
+    // but FileHandle.bytes.lines is an AsyncLineSequence that
+    // respects the current file pointer — seek to a near-end offset
+    // first, then iterate. Foundation handles UTF-8 decoding and
+    // line-splitting; we only have to drop the partial first line
+    // when we've seeked into the middle of one.
+    private nonisolated static func readTailLines(of url: URL, fromBackBytes: Int) async throws -> [String] {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let endOffset = try handle.seekToEnd()
+        guard endOffset > 0 else { return [] }
+        let chunkSize = min(UInt64(fromBackBytes), endOffset)
+        let startOffset = endOffset - chunkSize
+        try handle.seek(toOffset: startOffset)
+
+        var lines: [String] = []
+        var droppedPartialPrefix = (startOffset == 0)  // only drop the leading partial line when we seeked into the middle of one
+        for try await line in handle.bytes.lines {
+            if !droppedPartialPrefix {
+                droppedPartialPrefix = true
+                continue
             }
-            return String(data: cleanData, encoding: .utf8) ?? ""
-        } catch {
-            return ""
+            lines.append(line)
         }
+        return lines
     }
 
     func loadTranscript(for session: ClaudeSessionSummary) throws -> [TranscriptMessage] {
