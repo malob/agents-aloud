@@ -77,15 +77,39 @@ final class CodexThreadDatabase: Sendable {
             throw DBError.databaseUnavailable(path)
         }
 
+        // Open the live DB with `?mode=ro&immutable=1` URI semantics.
+        //
+        // Plain SQLITE_OPEN_READONLY doesn't work for WAL-mode
+        // databases — SQLite still needs write access to the
+        // -shm/-wal files for lock coordination, and our read-only
+        // flag forbids that, producing SQLITE_CANTOPEN at prepare
+        // time. Reproduces from the CLI too: `sqlite3 -readonly`
+        // fails identically. The fix is `?immutable=1`, which tells
+        // SQLite to skip WAL machinery and read only the main file
+        // directly. Officially intended for read-only media but
+        // works fine for "I want to peek at a DB another process is
+        // writing." See https://www.sqlite.org/uri.html.
+        //
+        // Tradeoff: we see only checkpointed data. Recent rows still
+        // in the WAL (and not yet folded into the main file) won't
+        // appear. Codex checkpoints regularly, so the lag is
+        // typically seconds; new sessions show up on the next
+        // refresh cycle anyway.
+        let uri = "file:\(path.path)?mode=ro&immutable=1"
+
         var db: OpaquePointer?
-        let openFlags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX
-        let openResult = sqlite3_open_v2(path.path, &db, openFlags, nil)
+        let openFlags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_URI
+        let openResult = sqlite3_open_v2(uri, &db, openFlags, nil)
         guard openResult == SQLITE_OK, let db else {
-            // sqlite3_close is safe even on a failed open per the docs.
             sqlite3_close_v2(db)
             throw DBError.sqlError("sqlite3_open_v2 failed: \(openResult) (\(sqlite3StatusMessage(db: db)))")
         }
         defer { sqlite3_close_v2(db) }
+
+        // Extended result codes give diagnostic-friendly errors
+        // (SQLITE_CANTOPEN_NOTEMPDIR, etc.) if something does go
+        // wrong on prepare/step despite immutable=1.
+        sqlite3_extended_result_codes(db, 1)
 
         try validateSchemaVersion(db: db)
 
@@ -161,9 +185,8 @@ final class CodexThreadDatabase: Sendable {
         let prepareResult = sqlite3_prepare_v2(db, "SELECT MAX(version) FROM _sqlx_migrations;", -1, &stmt, nil)
         guard prepareResult == SQLITE_OK, let stmt else {
             sqlite3_finalize(stmt)
-            // No migrations table at all → not a Codex state DB shape we
-            // recognize. Bail with sqlError rather than guessing.
-            throw DBError.sqlError("Could not read _sqlx_migrations: \(prepareResult)")
+            let msg = sqlite3StatusMessage(db: db)
+            throw DBError.sqlError("Could not read _sqlx_migrations: code=\(prepareResult) msg=\(msg)")
         }
         defer { sqlite3_finalize(stmt) }
 

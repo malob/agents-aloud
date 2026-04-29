@@ -26,16 +26,24 @@ private final class FakeTranscriptFileWatcher: TranscriptFileWatching {
 // Factored helper: makeTestAppModel returns a fully-wired AppModel with
 // test-scoped temp dirs, fake watcher, fake speech drivers, and unique
 // UserDefaults + Keychain services so parallel tests don't collide.
-// A CodexStorageService pointing at a path that doesn't exist. The
-// service handles missing directories gracefully (returns []) — this
-// keeps AppModel.refreshSessions() from accidentally walking the dev
-// machine's real ~/.codex/sessions on every test that calls .start().
+// A CodexStorageService pointing at paths that don't exist. The
+// service handles missing directories + DBs gracefully (returns [])
+// — this keeps AppModel.refreshSessions() from accidentally walking
+// the dev machine's real ~/.codex/sessions or reading
+// ~/.codex/state_5.sqlite on every test that calls .start().
+//
+// Note both the sessions roots AND the thread database path must
+// be sandboxed; without overriding `threadDatabase`, CodexStorageService
+// would use the default DB at ~/.codex/state_5.sqlite and tests
+// would see real Codex sessions show up in the model.
 @MainActor
 private func sandboxedCodexStorageService() -> CodexStorageService {
     let nonexistent = URL(fileURLWithPath: "/var/empty/codex-tests-no-sessions-\(UUID().uuidString)", isDirectory: true)
+    let nonexistentDB = URL(fileURLWithPath: "/var/empty/codex-tests-no-db-\(UUID().uuidString).sqlite", isDirectory: false)
     return CodexStorageService(
         sessionsRoot: nonexistent,
-        archivedSessionsRoot: nonexistent
+        archivedSessionsRoot: nonexistent,
+        threadDatabase: CodexThreadDatabase(path: nonexistentDB)
     )
 }
 
@@ -88,20 +96,27 @@ private func makeTestAppModel(
     let speechController = SpeechController(
         systemVoiceDriver: fakeDriver
     )
-    // Sandboxed Codex storage pointing at empty temp dirs — without
-    // this, the default CodexStorageService() points at the real
-    // ~/.codex/sessions/ and walks (potentially huge) rollout files
-    // on the dev machine for every test.
+    // Sandboxed Codex storage pointing at empty temp dirs and a
+    // non-existent DB — without these, the default
+    // CodexStorageService() points at the real ~/.codex/sessions/
+    // and ~/.codex/state_5.sqlite on the dev machine and tests would
+    // see real Codex sessions / walk (potentially huge) rollout
+    // files for every model.start().
     let codexSessionsRoot = temporaryRoot.appendingPathComponent("codex-sessions", isDirectory: true)
     let codexArchivedRoot = temporaryRoot.appendingPathComponent("codex-archived", isDirectory: true)
+    let codexDBPath = temporaryRoot.appendingPathComponent("codex-state.sqlite", isDirectory: false)
     try fileManager.createDirectory(at: codexSessionsRoot, withIntermediateDirectories: true)
     try fileManager.createDirectory(at: codexArchivedRoot, withIntermediateDirectories: true)
+    // Intentionally do NOT create codexDBPath — the DB load path
+    // returns databaseUnavailable when the file is missing, exercising
+    // the filesystem-fallback code path in tests.
 
     let model = AppModel(
         storageService: ClaudeStorageService(projectsRoot: projectsRoot),
         codexStorageService: CodexStorageService(
             sessionsRoot: codexSessionsRoot,
-            archivedSessionsRoot: codexArchivedRoot
+            archivedSessionsRoot: codexArchivedRoot,
+            threadDatabase: CodexThreadDatabase(path: codexDBPath)
         ),
         speechController: speechController,
         userDefaults: userDefaults,
