@@ -52,7 +52,7 @@ enum ClaudeCLIEffort: String, CaseIterable, Identifiable {
         case .xhigh:
             return "Slower still. Diminishing returns."
         case .max:
-            return "Slowest. Equivalent to the CLI's no-flag default."
+            return "Slowest. Maximum reasoning effort."
         }
     }
 
