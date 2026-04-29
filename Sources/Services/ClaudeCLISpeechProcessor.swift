@@ -3,14 +3,25 @@ import OSLog
 import Synchronization
 
 // Speech text optimizer that shells out to `claude` CLI (Claude Code)
-// with Sonnet. Strictly better output than the on-device FoundationModel
-// — handles code blocks, markdown tables, URLs, file paths, bullet and
-// numbered lists, and headings correctly. Sonnet was chosen over Haiku
-// after benchmarking: on our representative 1.3KB structure-heavy
-// input Sonnet averaged ~9.6s with 0.2s run-to-run variance, versus
-// Haiku's ~18s with 12s variance (Haiku 4.5 has much noisier inference
-// provisioning than Sonnet). Cost per rewrite is ~$0.01 worst case,
-// absorbed by the user's OAuth'd Claude Code subscription.
+// with Sonnet at --effort low. Handles code blocks, markdown tables,
+// URLs, file paths, bullet and numbered lists, and headings correctly.
+//
+// Sonnet was chosen over Haiku after benchmarking: on our
+// representative 1.3KB structure-heavy input Sonnet averaged ~9.6s
+// with 0.2s run-to-run variance versus Haiku's ~18s with 12s variance
+// (Haiku 4.5 has much noisier inference provisioning than Sonnet).
+//
+// --effort low was chosen via a follow-up eval sweep across all five
+// levels (low, medium, high, xhigh, max) at fixed model=Sonnet. Low
+// landed ~6.5s, max ~31.8s, no-flag default ~31.4s (so the CLI's
+// default appears to be max). Output quality at low was
+// indistinguishable from medium/high/max for our task — all five
+// rewrote tables inline, dropped file extensions, replaced URLs with
+// natural-language phrases, and preserved identifiers. See
+// `eval-output/cli-eval-effort-*.md` for the data.
+//
+// Cost per rewrite is ~$0.01 worst case, absorbed by the user's
+// OAuth'd Claude Code subscription.
 //
 // The invocation recipe is copied from the user's TTS plugin
 // (~/.config/nix-config/configs/claude/plugins/tts/skills/say/scripts/speak.sh),
@@ -119,10 +130,10 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
     // a better UX than making the user wait 60+ seconds on an outlier.
     private static let maxInputChars = 4000
 
-    // Hard timeout on the subprocess. Sonnet averages ~10s on a ~1.3KB
-    // structure-heavy input with very tight run-to-run variance, but
-    // network hiccups and auth-refresh paths can stretch it. 60s caps
-    // the worst case without stranding the user forever on a real hang.
+    // Hard timeout on the subprocess. Sonnet at --effort low averages
+    // ~6-7s on a ~1.3KB structure-heavy input. Network hiccups and
+    // auth-refresh paths can stretch that — 60s caps the worst case
+    // without stranding the user on a real hang.
     private static let subprocessTimeout: Duration = .seconds(60)
 
     // System prompt steering the model toward "rewrite for speech,
@@ -164,16 +175,24 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
 
     private let instructions: String
     private let model: String
+    // Effort level passed to `claude --effort <level>`. nil omits
+    // the flag (which the CLI treats as `max` per our eval — slow).
+    // Levels: low, medium, high, xhigh, max. Default is `low` based
+    // on `cli-eval-effort` data: ~5x faster than no-flag with no
+    // measurable quality loss for our markdown→speech task.
+    private let effort: String?
     // Computed on first use and cached. nil if claude isn't on PATH.
     private let binaryURLProvider: @Sendable () -> URL?
 
     init(
         instructions: String = ClaudeCLISpeechProcessor.defaultInstructions,
         model: String = "sonnet",
+        effort: String? = "low",
         binaryLocator: @escaping @Sendable () -> URL? = { ClaudeCLISpeechProcessor.findClaudeBinary() }
     ) {
         self.instructions = instructions
         self.model = model
+        self.effort = effort
         self.binaryURLProvider = binaryLocator
     }
 
@@ -194,7 +213,7 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
         let result = await runSubprocess(binaryURL: binaryURL, input: text)
         let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
         Self.logger.info(
-            "claude CLI rewrite: \(text.count, privacy: .public) chars in \(elapsedMs, format: .fixed(precision: 0), privacy: .public)ms (\(result == nil ? "passthrough" : "rewritten", privacy: .public))"
+            "claude CLI rewrite: \(text.count, privacy: .public) chars in \(elapsedMs, format: .fixed(precision: 0), privacy: .public)ms effort=\(self.effort ?? "default", privacy: .public) (\(result == nil ? "passthrough" : "rewritten", privacy: .public))"
         )
         return result ?? text
     }
@@ -216,13 +235,14 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
 
         return await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
-                [model, instructions] in
+                [model, instructions, effort] in
                 await Self.runSubprocessBody(
                     processBox: processBox,
                     binaryURL: binaryURL,
                     input: input,
                     model: model,
-                    instructions: instructions
+                    instructions: instructions,
+                    effort: effort
                 )
             }.value
         } onCancel: {
@@ -239,11 +259,12 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
         binaryURL: URL,
         input: String,
         model: String,
-        instructions: String
+        instructions: String,
+        effort: String?
     ) async -> String? {
         let process = processBox.process
         process.executableURL = binaryURL
-        process.arguments = [
+        var arguments: [String] = [
             "--print",
             "--model", model,
             "--no-session-persistence",
@@ -252,6 +273,10 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
             "--strict-mcp-config",
             "--system-prompt", instructions,
         ]
+        if let effort {
+            arguments.append(contentsOf: ["--effort", effort])
+        }
+        process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: NSTemporaryDirectory())
 
         var env = ProcessInfo.processInfo.environment

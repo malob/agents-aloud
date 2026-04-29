@@ -26,6 +26,68 @@ struct ClaudeCLISpeechEvalTests {
         ProcessInfo.processInfo.environment["ENABLE_SPEECH_EVAL"] == "1"
     }
 
+    // Effort levels supported by `claude --effort`. Run from cheapest
+    // to most expensive so the markdown reads top-down by cost. The
+    // "default" entry omits the flag entirely to capture the
+    // shipped-as-of-this-commit behavior.
+    private static let effortSweep: [(label: String, value: String?)] = [
+        ("default (no flag)", nil),
+        ("low", "low"),
+        ("medium", "medium"),
+        ("high", "high"),
+        ("xhigh", "xhigh"),
+        ("max", "max"),
+    ]
+
+    @Test(.enabled(if: isEvalEnabled))
+    func emitEffortComparisonEval() async throws {
+        // Sweep --effort on Sonnet (the default model) against our
+        // representative input. Goal: find the lowest effort level
+        // whose rewrite quality is indistinguishable from higher
+        // levels — that's the new shipping default.
+        guard ClaudeCLISpeechProcessor.isAvailable else {
+            Issue.record("claude CLI not found on PATH")
+            return
+        }
+
+        let outputURL = try resolveOutputURL(name: "cli-eval-effort")
+        var markdown = "# Claude CLI Speech Rewriter — Effort Sweep (Sonnet)\n\n"
+        markdown.append("Run at: \(Date().formatted())\n\n")
+        markdown.append("Same representative input rewritten by Sonnet at each `--effort` ")
+        markdown.append("level. Goal: find the lowest level whose output quality is ")
+        markdown.append("indistinguishable from higher levels — that becomes the new ")
+        markdown.append("shipping default.\n\n")
+        markdown.append("Latency includes the full subprocess round-trip. Run sequentially ")
+        markdown.append("to keep latency numbers honest (no API queueing across runs).\n\n")
+        markdown.append("---\n\n## Input\n\n```\n\(Self.representativeInput)\n```\n\n")
+        markdown.append("Character count: \(Self.representativeInput.count)\n\n---\n\n")
+
+        for (label, value) in Self.effortSweep {
+            markdown.append("## Effort: \(label)\n\n")
+
+            let processor = ClaudeCLISpeechProcessor(
+                model: "sonnet",
+                effort: value
+            )
+            let start = ContinuousClock.now
+            let output = await processor.process(text: Self.representativeInput)
+            let elapsed = ContinuousClock.now - start
+
+            let identicalToInput = output == Self.representativeInput
+            markdown.append("**Latency:** \(formatDuration(elapsed))\n\n")
+            if identicalToInput {
+                markdown.append("**Identical to input:** yes — PASSTHROUGH (CLI returned non-zero or empty; check OSLog)\n\n")
+            } else {
+                markdown.append("**Output length:** \(output.count) chars (input was \(Self.representativeInput.count))\n\n")
+            }
+            markdown.append("**Output:**\n\n```\n\(output)\n```\n\n")
+            markdown.append("---\n\n")
+        }
+
+        try markdown.write(to: outputURL, atomically: true, encoding: .utf8)
+        print("Eval output: \(outputURL.path)")
+    }
+
     @Test(.enabled(if: isEvalEnabled))
     func emitModelComparisonEval() async throws {
         guard ClaudeCLISpeechProcessor.isAvailable else {
@@ -123,7 +185,7 @@ struct ClaudeCLISpeechEvalTests {
 
     // MARK: - IO helpers
 
-    private func resolveOutputURL() throws -> URL {
+    private func resolveOutputURL(name: String = "cli-eval") throws -> URL {
         let fileManager = FileManager.default
         let repoRoot = URL(fileURLWithPath: fileManager.currentDirectoryPath)
         let outputDir = repoRoot.appendingPathComponent("eval-output", isDirectory: true)
@@ -131,7 +193,7 @@ struct ClaudeCLISpeechEvalTests {
 
         let timestamp = ISO8601DateFormatter().string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
-        return outputDir.appendingPathComponent("cli-eval-\(timestamp).md", isDirectory: false)
+        return outputDir.appendingPathComponent("\(name)-\(timestamp).md", isDirectory: false)
     }
 
     private func formatDuration(_ duration: Duration) -> String {
