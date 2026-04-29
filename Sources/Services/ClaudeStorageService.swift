@@ -155,40 +155,85 @@ actor ClaudeStorageService {
         return transcriptCandidates.sorted { $0.modifiedAt > $1.modifiedAt }
     }
 
-    // Per-file summarize work. Reads only the first N lines of the
-    // JSONL via Foundation's URL.lines AsyncLineSequence — far cheaper
-    // than slurping the whole file (some active sessions are tens of
-    // MB), and everything the sidebar actually needs lives near the
-    // top: Claude writes the first user message at L2-3, the optional
-    // ai-title around L6-7, and cwd appears in any record. 20 lines
-    // gives us a healthy safety buffer over the typical layout.
+    // Per-file summarize work. Reads only a head chunk + a tail
+    // chunk of the JSONL — far cheaper than slurping the whole file
+    // (some active sessions are tens of MB), and gets us everything
+    // the sidebar needs:
     //
-    // For sessions that legitimately have their title metadata past
-    // L20, we fall back to deriving the title from the first user
-    // prompt — same fallback the parser already uses when no
-    // ai/custom-title record is present.
+    //   - Head (first N lines via URL.lines): first user message
+    //     (L2-3), optional ai-title (L6-7), cwd (any record).
+    //   - Tail (final ~32KB via FileHandle): the most recent
+    //     `custom-title` record, which Claude writes whenever the
+    //     user renames a session AND re-affirms periodically as the
+    //     session continues. The first rename can be thousands of
+    //     lines deep, but the *most recent* custom-title is always
+    //     near the end of the file (frequency observed: roughly one
+    //     per assistant turn). Reading the tail catches it without
+    //     forcing us to parse everything in between.
+    //
+    // The parser's customTitle/aiTitle accumulators are last-wins,
+    // so feeding it head + tail (including the rare overlap on small
+    // files) just works; the most recent custom-title beats the
+    // ai-title which beats the first-prompt fallback.
     //
     // `nonisolated` because no actor state is read; `async throws`
-    // because URL.lines is an AsyncLineSequence and only iterates
-    // asynchronously.
+    // because URL.lines is an AsyncLineSequence.
     private static let summaryHeadLineLimit = 20
+    private static let summaryTailMaxBytes = 32 * 1024
 
     private nonisolated static func summarize(
         candidate: TranscriptCandidate,
         metadata: ProjectMetadataIndex
     ) async throws -> ClaudeSessionSummary? {
-        var lines: [String] = []
+        var headLines: [String] = []
         for try await line in candidate.url.lines {
-            lines.append(line)
-            if lines.count >= summaryHeadLineLimit { break }
+            headLines.append(line)
+            if headLines.count >= summaryHeadLineLimit { break }
         }
-        let head = lines.joined(separator: "\n")
+        let head = headLines.joined(separator: "\n")
+        let tail = readTailChunk(of: candidate.url, maxBytes: summaryTailMaxBytes)
+
+        // If the tail chunk is empty (file smaller than maxBytes,
+        // or read failed), parse just the head. Otherwise concat.
+        // Newline separator is safe even if head/tail overlap —
+        // the parser splits on whitespace and dedupes via last-wins.
+        let combined = tail.isEmpty ? head : (head + "\n" + tail)
+
         return ClaudeTranscriptParser.summarizeTranscript(
-            head,
+            combined,
             fileURL: candidate.url,
             modifiedAt: candidate.modifiedAt,
             projectMetadataIndex: metadata
         )
+    }
+
+    // Read the final `maxBytes` of `url` as a UTF-8 string, trimmed
+    // to a clean line boundary. If we seeked into the middle of a
+    // line, the partial-line prefix gets dropped — \n (0x0A) is
+    // single-byte and self-synchronizing in UTF-8, so this also
+    // avoids boundary problems that would trip up String(data:).
+    private nonisolated static func readTailChunk(of url: URL, maxBytes: Int) -> String {
+        do {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
+            let endOffset = try handle.seekToEnd()
+            guard endOffset > 0 else { return "" }
+            let chunkSize = min(UInt64(maxBytes), endOffset)
+            let startOffset = endOffset - chunkSize
+            try handle.seek(toOffset: startOffset)
+            guard let data = try handle.readToEnd(), !data.isEmpty else { return "" }
+            let cleanData: Data
+            if startOffset == 0 {
+                cleanData = data
+            } else if let nlIndex = data.firstIndex(of: 0x0A) {
+                cleanData = data.subdata(in: (nlIndex + 1)..<data.count)
+            } else {
+                return ""  // entire chunk was one partial line
+            }
+            return String(data: cleanData, encoding: .utf8) ?? ""
+        } catch {
+            return ""
+        }
     }
 
     func loadTranscript(for session: ClaudeSessionSummary) throws -> [TranscriptMessage] {
