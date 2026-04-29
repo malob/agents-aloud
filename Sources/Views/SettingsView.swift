@@ -74,6 +74,16 @@ struct SettingsView: View {
                 Text(model.claudeCLIModel.detailText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                Picker("Effort", selection: $model.claudeCLIEffort) {
+                    ForEach(ClaudeCLIEffort.allCases) { effort in
+                        Text(effort.displayName).tag(effort)
+                    }
+                }
+
+                Text(model.claudeCLIEffort.detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
     }

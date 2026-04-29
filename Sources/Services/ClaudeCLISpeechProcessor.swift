@@ -3,22 +3,24 @@ import OSLog
 import Synchronization
 
 // Speech text optimizer that shells out to `claude` CLI (Claude Code)
-// with Sonnet at --effort low. Handles code blocks, markdown tables,
-// URLs, file paths, bullet and numbered lists, and headings correctly.
+// with Sonnet at --effort medium. Handles code blocks, markdown
+// tables, URLs, file paths, bullet and numbered lists, and headings
+// correctly.
 //
 // Sonnet was chosen over Haiku after benchmarking: on our
 // representative 1.3KB structure-heavy input Sonnet averaged ~9.6s
 // with 0.2s run-to-run variance versus Haiku's ~18s with 12s variance
 // (Haiku 4.5 has much noisier inference provisioning than Sonnet).
 //
-// --effort low was chosen via a follow-up eval sweep across all five
-// levels (low, medium, high, xhigh, max) at fixed model=Sonnet. Low
-// landed ~6.5s, max ~31.8s, no-flag default ~31.4s (so the CLI's
-// default appears to be max). Output quality at low was
-// indistinguishable from medium/high/max for our task — all five
-// rewrote tables inline, dropped file extensions, replaced URLs with
-// natural-language phrases, and preserved identifiers. See
-// `eval-output/cli-eval-effort-*.md` for the data.
+// --effort medium was chosen via a follow-up eval sweep across all
+// five levels at fixed model=Sonnet. Low and medium were both ~6.5-
+// 6.8s with output quality indistinguishable from higher levels;
+// max landed at ~31.8s and matched the no-flag default (so the CLI
+// ships at max effectively). We picked medium over low for the
+// extra headroom on longer / more structured messages our eval
+// didn't probe. The user can override the level in Settings — see
+// `ClaudeCLIEffort` for the rationale + per-level commentary, and
+// `eval-output/cli-eval-effort-*.md` for the raw numbers.
 //
 // Cost per rewrite is ~$0.01 worst case, absorbed by the user's
 // OAuth'd Claude Code subscription.
@@ -125,10 +127,15 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
         }
     }
 
-    // Keep rewrites bounded. Very long messages risk the CLI hanging on
-    // a model response that exceeds reasonable latency; passthrough is
-    // a better UX than making the user wait 60+ seconds on an outlier.
-    private static let maxInputChars = 4000
+    // Keep rewrites bounded. Very long messages risk the CLI hanging
+    // on a model response that exceeds reasonable latency; passthrough
+    // is a better UX than making the user wait past the timeout on an
+    // outlier. Cap was 4000 when the CLI was effectively running at
+    // --effort max (~31s on our 1.3KB benchmark, so 4000 chars
+    // extrapolated to a realistic worst case in the 60s timeout
+    // window). At medium effort that benchmark is ~6.8s — we have
+    // enough headroom to lift the cap to 8000.
+    private static let maxInputChars = 8000
 
     // Hard timeout on the subprocess. Sonnet at --effort low averages
     // ~6-7s on a ~1.3KB structure-heavy input. Network hiccups and
@@ -177,9 +184,9 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
     private let model: String
     // Effort level passed to `claude --effort <level>`. nil omits
     // the flag (which the CLI treats as `max` per our eval — slow).
-    // Levels: low, medium, high, xhigh, max. Default is `low` based
-    // on `cli-eval-effort` data: ~5x faster than no-flag with no
-    // measurable quality loss for our markdown→speech task.
+    // Default is `medium` per the eval sweep: ~5x faster than the
+    // no-flag CLI default with no measurable quality loss for our
+    // markdown→speech task.
     private let effort: String?
     // Computed on first use and cached. nil if claude isn't on PATH.
     private let binaryURLProvider: @Sendable () -> URL?
@@ -187,7 +194,7 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
     init(
         instructions: String = ClaudeCLISpeechProcessor.defaultInstructions,
         model: String = "sonnet",
-        effort: String? = "low",
+        effort: String? = "medium",
         binaryLocator: @escaping @Sendable () -> URL? = { ClaudeCLISpeechProcessor.findClaudeBinary() }
     ) {
         self.instructions = instructions

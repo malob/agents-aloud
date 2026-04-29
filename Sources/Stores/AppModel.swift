@@ -11,6 +11,7 @@ final class AppModel {
     private static let speechTextOptimizationEnabledKey = "speechTextOptimizationEnabled"
     private static let speechTextOptimizationModeKey = "speechTextOptimizationMode"
     private static let claudeCLIModelKey = "claudeCLIModel"
+    private static let claudeCLIEffortKey = "claudeCLIEffort"
     static let defaultKeychainService = "local.claudecodevoice"
     static let elevenLabsAPIKeyAccount = "elevenlabs_api_key"
     // Default rate when the user hasn't picked one. Matches what the
@@ -178,6 +179,20 @@ final class AppModel {
         }
     }
 
+    // --effort level passed to the Claude CLI. Lower = faster; the
+    // sweep eval at fixed model=Sonnet showed quality is
+    // indistinguishable across low/medium/high for our task. Same
+    // re-build-on-change semantics as claudeCLIModel.
+    var claudeCLIEffort: ClaudeCLIEffort {
+        didSet {
+            guard oldValue != claudeCLIEffort else { return }
+            userDefaults.set(claudeCLIEffort.rawValue, forKey: Self.claudeCLIEffortKey)
+            if speechTextOptimizationMode == .claudeCLI {
+                applySpeechTextProcessor()
+            }
+        }
+    }
+
     // Per-message expansion state for the collapse/expand affordance on
     // long transcript rows. Defaults to collapsed; the user toggles via
     // the "Show more/less" button. Lives here — not as @State in the
@@ -294,6 +309,15 @@ final class AppModel {
             claudeCLIModel = .sonnet
         }
 
+        // Claude CLI effort preference: default medium. Same fall-
+        // through behavior as the model pref above.
+        if let effortRaw = userDefaults.string(forKey: Self.claudeCLIEffortKey),
+           let effort = ClaudeCLIEffort(rawValue: effortRaw) {
+            claudeCLIEffort = effort
+        } else {
+            claudeCLIEffort = .medium
+        }
+
         speechController.backend = preferredSpeechBackend
 
         applyElevenLabsAPIKey()
@@ -336,7 +360,8 @@ final class AppModel {
             speechTextProcessor = PassthroughSpeechProcessor()
         case .claudeCLI:
             speechTextProcessor = ClaudeCLISpeechProcessor(
-                model: claudeCLIModel.cliArgument
+                model: claudeCLIModel.cliArgument,
+                effort: claudeCLIEffort.cliArgument
             )
         }
         // Forward the selection into SpeechController so its rewriter
