@@ -44,15 +44,15 @@ enum ClaudeCLIEffort: String, CaseIterable, Identifiable {
     var detailText: String {
         switch self {
         case .low:
-            return "Fastest. ~6.5s per message — indistinguishable from medium in our eval."
+            return "Fastest. Quality indistinguishable from medium in our eval."
         case .medium:
-            return "Recommended default. ~6.8s per message; a hair slower than low with more headroom for outliers."
+            return "Recommended default. A hair slower than low, with headroom for outliers."
         case .high:
-            return "~17s per message. No measurable quality gain over medium for read-aloud."
+            return "Noticeably slower with no measurable quality gain over medium for read-aloud."
         case .xhigh:
-            return "~21s per message. Diminishing returns."
+            return "Slower still. Diminishing returns."
         case .max:
-            return "~32s per message. Slowest; equivalent to the CLI's no-flag default."
+            return "Slowest. Equivalent to the CLI's no-flag default."
         }
     }
 

@@ -34,9 +34,9 @@ enum ClaudeCLIModel: String, CaseIterable, Identifiable {
     var detailText: String {
         switch self {
         case .haiku:
-            return "Fastest and cheapest, but noisier latency — single messages can run 5–25s depending on current provisioning."
+            return "Fastest and cheapest, but noisier latency — single messages can vary widely depending on current provisioning."
         case .sonnet:
-            return "Best balance. ~10s per message with tight run-to-run variance. Recommended default."
+            return "Best balance of speed, quality, and consistency. Recommended default."
         case .opus:
             return "Highest quality for long or unusually structured messages. Slower and more expensive than Sonnet."
         }
