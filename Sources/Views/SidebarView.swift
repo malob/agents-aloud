@@ -78,27 +78,47 @@ private struct SessionRowView: View {
     let isSelected: Bool
     let isLiveSpeakSession: Bool
 
+    // Width of the source-icon column on the title row. We pin this
+    // explicitly so the project text on row 2 can use the same value
+    // for its leading padding and the two rows align perfectly. Pure
+    // SF-Symbol intrinsic widths vary per glyph (sparkles is narrower
+    // than bubble.left.and.bubble.right.fill), so without this the
+    // project line would shift left or right by a couple of points
+    // per source.
+    private static let iconColumnWidth: CGFloat = 16
+    private static let iconTitleSpacing: CGFloat = 6
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                // Source icon on the left — same SF Symbol as the
-                // filter picker uses, so the visual mapping is
-                // consistent across sidebar surfaces.
+        VStack(alignment: .leading, spacing: 2) {
+            // Row 1: source icon, title, time (right-aligned),
+            // optional live-speak indicator. Time anchors to the
+            // row's right edge regardless of title length, so all
+            // times line up vertically when scanning the sidebar
+            // — Mail-style. firstTextBaseline keeps the time
+            // glued to the title's first line even when the title
+            // wraps to two lines.
+            HStack(alignment: .firstTextBaseline, spacing: Self.iconTitleSpacing) {
                 Image(systemName: session.source.symbolName)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .frame(width: Self.iconColumnWidth, alignment: .leading)
                     .help("\(session.source.displayName) session")
 
                 Text(session.summary)
                     .font(.body.weight(.medium))
                     .lineLimit(2)
 
-                Spacer(minLength: 4)
+                Spacer(minLength: 8)
 
-                // Live Speak indicator now on the right edge —
-                // makes room for the source icon on the left and
-                // gives the live-speak signal its own dedicated
-                // visual zone.
+                if let modifiedAt = session.modifiedAt {
+                    Text(Self.compactRelative(from: modifiedAt))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .layoutPriority(1)
+                        .help(modifiedAt.formatted(date: .abbreviated, time: .shortened))
+                }
+
                 if isLiveSpeakSession {
                     Image(systemName: "speaker.wave.2.fill")
                         .font(.caption.weight(.semibold))
@@ -107,21 +127,32 @@ private struct SessionRowView: View {
                 }
             }
 
+            // Row 2: project name only, indented to align with the
+            // title (skip past the source-icon column).
             Text(session.projectName)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-
-            HStack(spacing: 6) {
-                if let modifiedAt = session.modifiedAt {
-                    SidebarMetadataBadge(
-                        text: modifiedAt.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated)),
-                        systemImage: "clock"
-                    )
-                }
-            }
+                .truncationMode(.middle)
+                .padding(.leading, Self.iconColumnWidth + Self.iconTitleSpacing)
         }
         .padding(.vertical, 4)
+    }
+
+    // Compact relative-time formatter. "5s" / "3m" / "4h" / "5d".
+    // Lowercase, no space, no "ago" — the sidebar context makes
+    // "ago" implicit. Preferred over Foundation's .abbreviated
+    // RelativeDateTimeFormatter because that produces "5 sec. ago"
+    // / "4 hr. ago" with periods + spaces + ago, which fights
+    // visual density.
+    private static func compactRelative(from date: Date, now: Date = .init()) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
+        if seconds < 60 { return "\(seconds)s" }
+        let minutes = seconds / 60
+        if minutes < 60 { return "\(minutes)m" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours)h" }
+        return "\(hours / 24)d"
     }
 
     private var liveIndicatorColor: some ShapeStyle {
@@ -130,21 +161,5 @@ private struct SessionRowView: View {
         }
 
         return Color.accentColor
-    }
-}
-
-private struct SidebarMetadataBadge: View {
-    let text: String
-    let systemImage: String
-
-    var body: some View {
-        Label(text, systemImage: systemImage)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(.quinary, in: Capsule())
-            .labelStyle(.titleAndIcon)
-            .lineLimit(1)
     }
 }
