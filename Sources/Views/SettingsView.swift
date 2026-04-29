@@ -85,6 +85,38 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            if model.speechTextOptimizationMode == .codexCLI {
+                Picker("Model", selection: $model.codexCLIModel) {
+                    ForEach(CodexCLIModel.allCases) { codexModel in
+                        Text(codexModel.displayName).tag(codexModel)
+                    }
+                }
+
+                Text(model.codexCLIModel.detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("Effort", selection: $model.codexCLIEffort) {
+                    ForEach(CodexCLIEffort.allCases) { effort in
+                        Text(effort.displayName).tag(effort)
+                    }
+                }
+
+                Text(model.codexCLIEffort.detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Picker("Verbosity", selection: $model.codexCLIVerbosity) {
+                    ForEach(CodexCLIVerbosity.allCases) { verbosity in
+                        Text(verbosity.displayName).tag(verbosity)
+                    }
+                }
+
+                Text(model.codexCLIVerbosity.detailText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -95,6 +127,9 @@ struct SettingsView: View {
         case .claudeCLI:
             guard !model.isClaudeCLIAvailable else { return nil }
             return "`claude` CLI not found on PATH. Install from claude.ai/code or add its directory to PATH; until then, messages will be spoken unchanged."
+        case .codexCLI:
+            guard !model.isCodexCLIAvailable else { return nil }
+            return "`codex` CLI not found on PATH. Install from developers.openai.com/codex or add its directory to PATH; until then, messages will be spoken unchanged."
         }
     }
 

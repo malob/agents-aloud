@@ -12,6 +12,9 @@ final class AppModel {
     private static let speechTextOptimizationModeKey = "speechTextOptimizationMode"
     private static let claudeCLIModelKey = "claudeCLIModel"
     private static let claudeCLIEffortKey = "claudeCLIEffort"
+    private static let codexCLIModelKey = "codexCLIModel"
+    private static let codexCLIEffortKey = "codexCLIEffort"
+    private static let codexCLIVerbosityKey = "codexCLIVerbosity"
     static let defaultKeychainService = "local.claudecodevoice"
     static let elevenLabsAPIKeyAccount = "elevenlabs_api_key"
     // Default rate when the user hasn't picked one. Matches what the
@@ -193,6 +196,40 @@ final class AppModel {
         }
     }
 
+    // Codex CLI prefs. Same re-build-on-change semantics as the
+    // Claude prefs above — only re-apply when the active rewriter is
+    // actually the Codex one, so toggling Codex prefs while Claude
+    // is selected doesn't churn the in-flight processor.
+    var codexCLIModel: CodexCLIModel {
+        didSet {
+            guard oldValue != codexCLIModel else { return }
+            userDefaults.set(codexCLIModel.rawValue, forKey: Self.codexCLIModelKey)
+            if speechTextOptimizationMode == .codexCLI {
+                applySpeechTextProcessor()
+            }
+        }
+    }
+
+    var codexCLIEffort: CodexCLIEffort {
+        didSet {
+            guard oldValue != codexCLIEffort else { return }
+            userDefaults.set(codexCLIEffort.rawValue, forKey: Self.codexCLIEffortKey)
+            if speechTextOptimizationMode == .codexCLI {
+                applySpeechTextProcessor()
+            }
+        }
+    }
+
+    var codexCLIVerbosity: CodexCLIVerbosity {
+        didSet {
+            guard oldValue != codexCLIVerbosity else { return }
+            userDefaults.set(codexCLIVerbosity.rawValue, forKey: Self.codexCLIVerbosityKey)
+            if speechTextOptimizationMode == .codexCLI {
+                applySpeechTextProcessor()
+            }
+        }
+    }
+
     // Per-message expansion state for the collapse/expand affordance on
     // long transcript rows. Defaults to collapsed; the user toggles via
     // the "Show more/less" button. Lives here — not as @State in the
@@ -318,6 +355,33 @@ final class AppModel {
             claudeCLIEffort = .medium
         }
 
+        // Codex CLI prefs. Same fall-through behavior as the Claude
+        // counterparts. Defaults match the eval-derived "what we'd
+        // ship if this were the only backend" choices: gpt-5.5 for
+        // reliability, low effort (matches Claude finding), medium
+        // verbosity (a little connective tissue makes the rewrite
+        // flow better as listened audio).
+        if let modelRaw = userDefaults.string(forKey: Self.codexCLIModelKey),
+           let model = CodexCLIModel(rawValue: modelRaw) {
+            codexCLIModel = model
+        } else {
+            codexCLIModel = .gpt55
+        }
+
+        if let effortRaw = userDefaults.string(forKey: Self.codexCLIEffortKey),
+           let effort = CodexCLIEffort(rawValue: effortRaw) {
+            codexCLIEffort = effort
+        } else {
+            codexCLIEffort = .low
+        }
+
+        if let verbosityRaw = userDefaults.string(forKey: Self.codexCLIVerbosityKey),
+           let verbosity = CodexCLIVerbosity(rawValue: verbosityRaw) {
+            codexCLIVerbosity = verbosity
+        } else {
+            codexCLIVerbosity = .medium
+        }
+
         speechController.backend = preferredSpeechBackend
 
         applyElevenLabsAPIKey()
@@ -363,6 +427,12 @@ final class AppModel {
                 model: claudeCLIModel.cliArgument,
                 effort: claudeCLIEffort.cliArgument
             )
+        case .codexCLI:
+            speechTextProcessor = CodexCLISpeechProcessor(
+                model: codexCLIModel.cliArgument,
+                effort: codexCLIEffort.cliArgument,
+                verbosity: codexCLIVerbosity.cliArgument
+            )
         }
         // Forward the selection into SpeechController so its rewriter
         // pipeline uses the right backend for subsequent inserts.
@@ -374,6 +444,10 @@ final class AppModel {
     // hint when not found.
     var isClaudeCLIAvailable: Bool {
         ClaudeCLISpeechProcessor.isAvailable
+    }
+
+    var isCodexCLIAvailable: Bool {
+        CodexCLISpeechProcessor.isAvailable
     }
 
     // Swap the ElevenLabs driver's client to one configured with the
