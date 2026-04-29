@@ -69,6 +69,7 @@ actor CodexStorageService {
             // for the sidebar, no JSONL parsing required.
             do {
                 let rows = try threadDatabase.loadThreads(since: since)
+                logger.info("Codex DB returned \(rows.count, privacy: .public) thread rows")
                 return rows.map(Self.summary(from:))
             } catch {
                 // DB missing, schema too old, or any other read

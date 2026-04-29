@@ -89,6 +89,12 @@ final class CodexThreadDatabase: Sendable {
 
         try validateSchemaVersion(db: db)
 
+        // `has_user_event` looked like a useful "real conversation"
+        // filter from the schema but turned out to be 0 on every
+        // thread in practice — Codex never sets it to 1 in the
+        // versions we've seen. Filtering on it killed the sidebar.
+        // Live with the chance that a few empty-content sessions
+        // appear; the user can click past them.
         let sql = """
         SELECT id,
                rollout_path,
@@ -100,7 +106,6 @@ final class CodexThreadDatabase: Sendable {
         WHERE archived = 0
           AND agent_nickname IS NULL
           AND agent_role IS NULL
-          AND has_user_event = 1
           AND COALESCE(updated_at_ms, updated_at * 1000) >= ?
         ORDER BY updated_ms DESC
         LIMIT 50;
