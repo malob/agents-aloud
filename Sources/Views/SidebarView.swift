@@ -113,12 +113,6 @@ private struct SessionRowView: View {
                 .lineLimit(1)
 
             HStack(spacing: 6) {
-                // Skip the message-count badge when the source
-                // doesn't expose a cheap count (e.g. Codex DB rows).
-                if !session.messageCountLabel.isEmpty {
-                    SidebarMetadataBadge(text: session.messageCountLabel, systemImage: "text.bubble")
-                }
-
                 if let modifiedAt = session.modifiedAt {
                     SidebarMetadataBadge(
                         text: modifiedAt.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated)),

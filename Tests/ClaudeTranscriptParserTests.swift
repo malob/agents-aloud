@@ -134,7 +134,6 @@ struct ClaudeTranscriptParserTests {
         #expect(summary?.summary == "Custom Title")
         #expect(summary?.firstPrompt == "Please review this branch.")
         #expect(summary?.projectPath == "/Users/malo/Code/project")
-        #expect(summary?.messageCount == 1)
     }
 
     @Test
@@ -176,7 +175,6 @@ struct ClaudeTranscriptParserTests {
 
         #expect(summary?.firstPrompt == "Real first prompt")
         #expect(summary?.summary == "Real first prompt")
-        #expect(summary?.messageCount == 1)
     }
 
     @Test
@@ -233,6 +231,5 @@ struct ClaudeTranscriptParserTests {
         )
 
         #expect(summary != nil)
-        #expect(summary?.messageCount == 1)
     }
 }

@@ -42,9 +42,13 @@ final class CodexTranscriptParser {
         let sessionID: String
         let cwd: String
         let firstUserPrompt: String?
-        let messageCount: Int
         let derivedTitle: String
         let isSubagent: Bool
+        // True when at least one user/assistant message was decoded
+        // — used by storage callers to drop "rollouts that died
+        // before any real turn." Cheaper than carrying a raw count
+        // for callers that don't need it.
+        let hasContent: Bool
     }
 
     // MARK: - Public API
@@ -78,7 +82,7 @@ final class CodexTranscriptParser {
         var cwd: String?
         var isSubagent = false
         var firstUserPrompt: String?
-        var messageCount = 0
+        var hasContent = false
 
         forEachLine(in: data) { line in
             guard let dict = decodeJSON(line) else { return }
@@ -102,15 +106,15 @@ final class CodexTranscriptParser {
                     }
                 }
             case "response_item":
-                if let extracted = extractMessage(from: dict, sessionID: sessionID, index: messageCount) {
-                    messageCount += 1
+                if let extracted = extractMessage(from: dict, sessionID: sessionID, index: 0) {
+                    hasContent = true
                     if firstUserPrompt == nil, extracted.role == .user {
                         firstUserPrompt = extracted.text
                     }
                 }
             case "compacted":
                 if let p = payload, let message = p["message"] as? String, !message.isEmpty {
-                    messageCount += 1
+                    hasContent = true
                 }
             default:
                 break
@@ -122,9 +126,9 @@ final class CodexTranscriptParser {
             sessionID: sessionID,
             cwd: cwd,
             firstUserPrompt: firstUserPrompt,
-            messageCount: messageCount,
             derivedTitle: deriveTitle(firstUserPrompt: firstUserPrompt, cwd: cwd),
-            isSubagent: isSubagent
+            isSubagent: isSubagent,
+            hasContent: hasContent
         )
     }
 

@@ -93,12 +93,7 @@ actor CodexStorageService {
             firstPrompt: row.firstUserMessage.isEmpty ? nil : row.firstUserMessage,
             modifiedAt: row.updatedAt,
             projectPath: row.cwd,
-            transcriptURL: URL(fileURLWithPath: row.rolloutPath),
-            // The DB doesn't track per-thread message counts. Hide
-            // the badge for Codex rows; populating it would mean
-            // reading the JSONL on every refresh, defeating the
-            // perf win of querying the DB in the first place.
-            messageCount: nil
+            transcriptURL: URL(fileURLWithPath: row.rolloutPath)
         )
     }
 
@@ -154,9 +149,9 @@ actor CodexStorageService {
             if summary.isSubagent {
                 continue
             }
-            // Filter zero-message sessions (rollouts that died before
-            // any user/assistant turn happened).
-            if summary.messageCount == 0 {
+            // Filter rollouts that died before any user/assistant
+            // turn (or compacted summary) happened.
+            if !summary.hasContent {
                 continue
             }
 
@@ -167,8 +162,7 @@ actor CodexStorageService {
                 firstPrompt: summary.firstUserPrompt,
                 modifiedAt: mtime,
                 projectPath: summary.cwd,
-                transcriptURL: url,
-                messageCount: summary.messageCount
+                transcriptURL: url
             ))
         }
 

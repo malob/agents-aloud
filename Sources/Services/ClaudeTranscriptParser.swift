@@ -53,7 +53,7 @@ enum ClaudeTranscriptParser {
         var aiTitle: String?
         var firstPrompt: String?
         var projectPath: String?
-        var messageCount = 0
+        var sawAnyMessage = false
         var droppedLineCount = 0
 
         for lineSlice in rawTranscript.split(whereSeparator: \.isNewline) {
@@ -63,8 +63,9 @@ enum ClaudeTranscriptParser {
                 continue
             }
 
-            if makeTranscriptMessage(from: entry, using: dateParsers) != nil {
-                messageCount += 1
+            if !sawAnyMessage,
+               makeTranscriptMessage(from: entry, using: dateParsers) != nil {
+                sawAnyMessage = true
             }
 
             if let decodedSessionID = normalized(entry.sessionID) {
@@ -100,7 +101,7 @@ enum ClaudeTranscriptParser {
         // Drop sessions that are purely metadata (ai-title / custom-title
         // without any real turns and no first prompt). See the comment on
         // this function for the motivating case.
-        guard messageCount > 0 || firstPrompt != nil else {
+        guard sawAnyMessage || firstPrompt != nil else {
             return nil
         }
 
@@ -121,8 +122,7 @@ enum ClaudeTranscriptParser {
             firstPrompt: firstPrompt,
             modifiedAt: modifiedAt,
             projectPath: projectPath ?? fallbackProjectPath,
-            transcriptURL: fileURL,
-            messageCount: messageCount
+            transcriptURL: fileURL
         )
     }
 

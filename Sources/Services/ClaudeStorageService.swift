@@ -27,9 +27,9 @@ actor ClaudeStorageService {
     func loadSessions(
         since: Date = .distantPast,
         minimumCount: Int = 5
-    ) throws -> [ClaudeSessionSummary] {
-        try PerfLog.time("Storage.loadSessions") {
-            try _loadSessions(since: since, minimumCount: minimumCount)
+    ) async throws -> [ClaudeSessionSummary] {
+        try await PerfLog.time("Storage.loadSessions") {
+            try await _loadSessions(since: since, minimumCount: minimumCount)
         }
     }
 
@@ -46,7 +46,7 @@ actor ClaudeStorageService {
     // If this ever becomes a bottleneck the right fix is probably an
     // incremental / streaming parser that allocates less per line, not
     // parallelization.
-    private func _loadSessions(since: Date, minimumCount: Int) throws -> [ClaudeSessionSummary] {
+    private func _loadSessions(since: Date, minimumCount: Int) async throws -> [ClaudeSessionSummary] {
         let sortedCandidates = try enumerateCandidates()  // sorted mtime desc
 
         // Walk-until-enough policy:
@@ -91,7 +91,7 @@ actor ClaudeStorageService {
             }
 
             let metadata = try loadProjectMetadataIndex(for: projectURL)
-            guard let summary = try Self.summarize(candidate: candidate, metadata: metadata) else {
+            guard let summary = try await Self.summarize(candidate: candidate, metadata: metadata) else {
                 continue  // artifact — walk past it
             }
             sessionSummaryCache[candidate.url.path] = CachedSessionSummary(
@@ -155,17 +155,36 @@ actor ClaudeStorageService {
         return transcriptCandidates.sorted { $0.modifiedAt > $1.modifiedAt }
     }
 
-    // Per-file summarize work. Pure function of its inputs — reads the file,
-    // calls the parser, returns a summary. Kept as a nonisolated static to
-    // keep the type honest (no actor state needed) and to allow test/diagnostic
-    // callers to invoke it directly.
+    // Per-file summarize work. Reads only the first N lines of the
+    // JSONL via Foundation's URL.lines AsyncLineSequence — far cheaper
+    // than slurping the whole file (some active sessions are tens of
+    // MB), and everything the sidebar actually needs lives near the
+    // top: Claude writes the first user message at L2-3, the optional
+    // ai-title around L6-7, and cwd appears in any record. 20 lines
+    // gives us a healthy safety buffer over the typical layout.
+    //
+    // For sessions that legitimately have their title metadata past
+    // L20, we fall back to deriving the title from the first user
+    // prompt — same fallback the parser already uses when no
+    // ai/custom-title record is present.
+    //
+    // `nonisolated` because no actor state is read; `async throws`
+    // because URL.lines is an AsyncLineSequence and only iterates
+    // asynchronously.
+    private static let summaryHeadLineLimit = 20
+
     private nonisolated static func summarize(
         candidate: TranscriptCandidate,
         metadata: ProjectMetadataIndex
-    ) throws -> ClaudeSessionSummary? {
-        let rawTranscript = try String(contentsOf: candidate.url, encoding: .utf8)
+    ) async throws -> ClaudeSessionSummary? {
+        var lines: [String] = []
+        for try await line in candidate.url.lines {
+            lines.append(line)
+            if lines.count >= summaryHeadLineLimit { break }
+        }
+        let head = lines.joined(separator: "\n")
         return ClaudeTranscriptParser.summarizeTranscript(
-            rawTranscript,
+            head,
             fileURL: candidate.url,
             modifiedAt: candidate.modifiedAt,
             projectMetadataIndex: metadata
