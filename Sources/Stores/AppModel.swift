@@ -31,6 +31,7 @@ final class AppModel {
     private static let sessionLookback: TimeInterval = 24 * 60 * 60  // 24 hours
 
     private let storageService: ClaudeStorageService
+    private let codexStorageService: CodexStorageService
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "AppModel")
     @ObservationIgnored private let userDefaults: UserDefaults
     @ObservationIgnored private let keychain: KeychainStorage
@@ -42,6 +43,22 @@ final class AppModel {
     @ObservationIgnored private var speechTextProcessor: any SpeechTextProcessor
 
     var sessionsState: SessionsState = .loading([])
+
+    // Sidebar filter chip state. `nil` ⇒ show All; non-nil scopes
+    // the visible session list to a single source. Persisted in
+    // memory only — defaults to All on each launch (no UserDefaults
+    // round-trip; the recency-based "what am I working on" mental
+    // model means a sticky filter would be more confusing than
+    // helpful across launches).
+    var sidebarSourceFilter: TranscriptSource? = nil
+
+    // The visible session list, after applying the sidebar filter.
+    // Sidebar binds to this, not to sessionsState.sessions, so
+    // toggling the filter chip is a pure-view change.
+    var visibleSessions: [ClaudeSessionSummary] {
+        guard let filter = sidebarSourceFilter else { return sessions }
+        return sessions.filter { $0.source == filter }
+    }
     var selectedSessionID: ClaudeSessionSummary.ID? {
         didSet {
             guard oldValue != selectedSessionID else {
@@ -271,6 +288,7 @@ final class AppModel {
 
     init(
         storageService: ClaudeStorageService = ClaudeStorageService(),
+        codexStorageService: CodexStorageService = CodexStorageService(),
         speechController: SpeechController = SpeechController(),
         userDefaults: UserDefaults = .standard,
         selectedTranscriptWatcher: any TranscriptFileWatching = TranscriptFileWatcher(),
@@ -282,6 +300,7 @@ final class AppModel {
         speechTextProcessor: (any SpeechTextProcessor)? = nil
     ) {
         self.storageService = storageService
+        self.codexStorageService = codexStorageService
         self.speechController = speechController
         self.userDefaults = userDefaults
         self.selectedTranscriptWatcher = selectedTranscriptWatcher
@@ -637,9 +656,50 @@ final class AppModel {
         let existingSessions = sessionsState.sessions
 
         do {
-            let loadedSessions = try await storageService.loadSessions(
-                since: Date().addingTimeInterval(-Self.sessionLookback)
-            )
+            let since = Date().addingTimeInterval(-Self.sessionLookback)
+            // Load both sources in parallel. If one source fails (e.g.
+            // Codex isn't installed and the directory is missing — but
+            // the Codex service handles that case as []) we still want
+            // sessions from the surviving source. We intentionally do
+            // NOT throw on a single-source failure unless both throw.
+            async let claudeTask = storageService.loadSessions(since: since)
+            async let codexTask = codexStorageService.loadSessions(since: since)
+
+            var aggregated: [ClaudeSessionSummary] = []
+            var aggregatedError: Error?
+
+            do {
+                aggregated.append(contentsOf: try await claudeTask)
+            } catch {
+                aggregatedError = error
+                logger.error("Claude storage load failed: \(error.localizedDescription, privacy: .public)")
+            }
+
+            do {
+                aggregated.append(contentsOf: try await codexTask)
+            } catch {
+                // Single-source failure: log but keep going. Banner
+                // only when BOTH sources failed.
+                if aggregatedError == nil {
+                    logger.error("Codex storage load failed: \(error.localizedDescription, privacy: .public)")
+                } else {
+                    aggregatedError = error
+                }
+            }
+
+            // If both sources errored, surface like the old single-
+            // source behavior. Otherwise, present what we have.
+            if aggregated.isEmpty, let err = aggregatedError {
+                throw err
+            }
+
+            // Merge sort by mtime descending — gives the unified
+            // "what was I working on lately" view that's the whole
+            // point of the unified feed.
+            let loadedSessions = aggregated.sorted {
+                ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast)
+            }
+
             if sessionsState != .loaded(loadedSessions) {
                 sessionsState = .loaded(loadedSessions)
             }
@@ -696,7 +756,16 @@ final class AppModel {
         }
 
         do {
-            let loadedTranscript = try await storageService.loadTranscript(for: session)
+            // Route to the correct backend based on the session's
+            // source. Each backend's parser knows the on-disk schema
+            // for its own CLI.
+            let loadedTranscript: [TranscriptMessage]
+            switch session.source {
+            case .claude:
+                loadedTranscript = try await storageService.loadTranscript(for: session)
+            case .codex:
+                loadedTranscript = try await codexStorageService.loadTranscript(for: session)
+            }
             PerfLog.mark("AppModel.refreshTranscript loaded count=\(loadedTranscript.count)")
             guard !Task.isCancelled else {
                 return
