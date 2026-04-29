@@ -142,10 +142,27 @@ final class CodexCLISpeechProcessor: SpeechTextProcessor {
 
     init(
         instructions: String = CodexCLISpeechProcessor.defaultInstructions,
-        model: String = "gpt-5.4-mini",
+        // Default: gpt-5.5. The 54-run eval showed gpt-5.4-mini was
+        // unreliable on code-block handling (4/18 outputs leaked raw
+        // Swift verbatim — disastrous for TTS); 5.5 was reliable
+        // across all 18. gpt-5.3-codex-spark was the fastest + also
+        // reliable, but it's research-preview and Pro-only — better
+        // to expose as an opt-in alternative than as the default.
+        model: String = "gpt-5.5",
+        // Default: low. Same finding as Claude — quality is
+        // indistinguishable from medium/high for our task and low is
+        // the fastest of the three.
         effort: String = "low",
-        verbosity: String = "low",
-        useFastTier: Bool = true,
+        // Default: medium. Slightly more connective tissue than low
+        // makes the rewrites flow better as listened audio without
+        // adding meaningful length.
+        verbosity: String = "medium",
+        // Default: off (let Codex pick the user's plan default).
+        // Fast tier consumes credits at a higher rate per OpenAI's
+        // rate card and the eval didn't show a reliable latency
+        // benefit anyway. Keep this as an opt-in if we ever expose
+        // it; not worth the rate-limit cost as a default.
+        useFastTier: Bool = false,
         binaryLocator: @escaping @Sendable () -> URL? = { CodexCLISpeechProcessor.findCodexBinary() }
     ) {
         self.instructions = instructions
