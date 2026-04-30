@@ -189,19 +189,32 @@ Sources/
   scenarios. Test targets are scoped per service / driver / store;
   add new tests next to the closest existing suite. Run one suite
   with `swift test --filter ClaudeStorageServiceTests` (or any
-  suite name).
+  suite name). Storage-layer tests follow the temp-directory-fixture
+  pattern (write a small JSONL into `FileManager.temporaryDirectory`,
+  load via the service, `defer { try? fileManager.removeItem(...) }`);
+  see `ClaudeStorageServiceTests` for the canonical shape.
 - **OSLog:** subsystem is `local.claudecodevoice`; one category per
   service (`Storage`, `CodexStorage`, `TranscriptParser`,
   `CodexTranscriptParser`, `Speech`, `ElevenLabsDriver`,
   `StreamingAudioPlayer`, `AppModel`, `Perf`, …). Stream with
   `log stream --info --style compact --predicate 'subsystem == "local.claudecodevoice"'`,
   scope further with `&& category == "X"` as needed.
+- **Timing instrumentation:** wrap measurable hot-path work with
+  `PerfLog.time("Service.operation") { … }` (sync or async; the
+  async overload inherits caller actor isolation via `#isolation`)
+  and emit phase markers with `PerfLog.mark(...)`. Both stream as
+  the `Perf` OSLog category.
 
 ## Style
 
 - Swift 6 strict concurrency. Lean on `@MainActor @Observable` for
   app-level state; use `actor` for I/O services; mark helper
   formatters `nonisolated` when they touch no actor state.
+- **Models/ stays SwiftUI-free.** Domain types are pure Foundation +
+  Swift stdlib. SwiftUI-typed extensions (e.g. `Color`-returning
+  helpers per source) live alongside the View that owns the
+  rendering — see `Sources/Views/SourceBrandIcon.swift` for the
+  pattern.
 - Prefer `@Bindable var model` in SwiftUI views that need bindings
   over hand-rolled `Binding(get:set:)`.
 - Comments: WHY, not WHAT. Default is no comment; only add one when
