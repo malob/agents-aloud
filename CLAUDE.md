@@ -177,6 +177,9 @@ Sources/
 
 ## Tooling / workflow
 
+- **Prerequisites:** Xcode 26+ (provides `swift`, `xcrun actool`, and
+  the macOS 26 SDK targeted in `Package.swift`). `gh` for PR work.
+  No other system tools are required by the build itself.
 - **Build + run:** `./script/build_and_run.sh` wraps `swift build`,
   stages SPM resource bundles into the `.app`, runs `xcrun actool`
   on the asset catalog, and codesigns. Accepts `run` (default),
@@ -184,7 +187,9 @@ Sources/
 - **Tests:** `swift test`. `waitUntil` (in `Tests/TestHelpers.swift`)
   beats fixed `Task.sleep` for "wait for an async side effect"
   scenarios. Test targets are scoped per service / driver / store;
-  add new tests next to the closest existing suite.
+  add new tests next to the closest existing suite. Run one suite
+  with `swift test --filter ClaudeStorageServiceTests` (or any
+  suite name).
 - **OSLog:** subsystem is `local.claudecodevoice`; one category per
   service (`Storage`, `CodexStorage`, `TranscriptParser`,
   `CodexTranscriptParser`, `Speech`, `ElevenLabsDriver`,
@@ -206,10 +211,19 @@ Sources/
 - No inline `?:` chains more than one level deep — break into a
   computed property or `switch`.
 
-## Where the review backlog lives
+## Deferred refactors
 
-`/Users/malo/.claude/plans/inherited-wondering-gizmo.md` has the full
-agent-surfaced review. Completed items reference commit IDs; the
-deferred items are the 5s poll → FSEvents refactor and the
-`SessionSelection` enum fusion — both substantive refactors whose
-benefit didn't justify the scope at the time.
+Two substantive refactors that have been considered and parked
+because the benefit didn't justify the scope at the time. Documented
+here so they don't get re-derived from scratch:
+
+- **5 s polling sidebar refresh → FSEvents.** `AppModel.swift`
+  currently re-enumerates `~/.claude/projects/` every 5 s (search for
+  `Task.sleep(for: .seconds(5))`). FSEvents on the projects root
+  would eliminate the idle poll, but the current behavior is quiet
+  enough that the win is invisible.
+- **`SessionSelection` enum fusion.** A handful of optionals
+  (`selectedSessionID`, `liveReadSessionID`, etc.) could be unified
+  into a single state enum that makes invalid combinations
+  unrepresentable. Real refactor, nothing currently broken because
+  of the loose representation.
