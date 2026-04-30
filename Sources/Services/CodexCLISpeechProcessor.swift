@@ -124,19 +124,19 @@ final class CodexCLISpeechProcessor: SpeechTextProcessor {
     example "the AppConfig Swift file," "the regenerate-fixtures \
     script," "the benchmarks CSV." Never use full paths.
 
-    Some passages must be preserved verbatim because the literal \
-    wording matters, not just the meaning — drafts the listener might \
-    send, proposed phrasings, quoted statements, anything where \
-    rewriting would lose information the listener cares about. \
+    Some passages must be preserved verbatim because the words \
+    themselves are the content — drafts of messages, proposed \
+    phrasings, exact quotes, anything where the specific wording is \
+    part of the information, not just a vehicle for the meaning. \
     Markdown blockquotes (lines prefixed with `>`) are the clearest \
     signal; inline quotes ("he said: …") and labelled drafts \
-    ("Draft:", "Proposed:") qualify too. Use judgment: ask whether \
-    transforming this passage would erase something the listener \
-    wants to hear in their own words — if yes, keep it verbatim; \
-    if no, rewrite freely. Inside a verbatim passage: no paraphrasing \
-    or substitution, though markdown markers still get stripped per \
-    the rule above. A short lead-in like "the draft reads:" is fine \
-    before a verbatim section.
+    ("Draft:", "Proposed:") qualify too. Use judgment: would \
+    paraphrasing this passage lose information that's in the wording \
+    itself? If yes, preserve it verbatim; if no, rewrite freely. \
+    Inside a verbatim passage: no paraphrasing or substitution, \
+    though markdown markers still get stripped per the rule above. \
+    A short lead-in like "the draft reads:" is fine before a \
+    verbatim section.
 
     Describe code in natural English, preserving every identifier name \
     exactly as written.
