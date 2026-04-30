@@ -15,6 +15,7 @@ final class AppModel {
     private static let codexCLIModelKey = "codexCLIModel"
     private static let codexCLIEffortKey = "codexCLIEffort"
     private static let codexCLIVerbosityKey = "codexCLIVerbosity"
+    private static let showOnlyFinalAssistantMessagesKey = "showOnlyFinalAssistantMessages"
     static let defaultKeychainService = "local.claudecodevoice"
     static let elevenLabsAPIKeyAccount = "elevenlabs_api_key"
     // Default rate when the user hasn't picked one. Matches what the
@@ -247,6 +248,31 @@ final class AppModel {
         }
     }
 
+    // Whether to filter out intermediate (tool-use / non-final-phase)
+    // assistant messages from the transcript view. Default true: each
+    // visible row is then a complete user→assistant exchange handoff,
+    // which is much closer to "the conversation as the human
+    // experienced it" than the raw 90%-tool-use stream. The cap also
+    // shrinks (TranscriptDisplayLimits.messageCapFinalOnly = 10) to
+    // match the higher information density per row. Toggle off to see
+    // all assistant turns, including the work-in-progress chatter.
+    var showOnlyFinalAssistantMessages: Bool {
+        didSet {
+            guard oldValue != showOnlyFinalAssistantMessages else { return }
+            userDefaults.set(showOnlyFinalAssistantMessages, forKey: Self.showOnlyFinalAssistantMessagesKey)
+            // The cache key in both storage services tracks
+            // filterToFinalOnly, so the next loadTranscript call will
+            // re-tail-load with the new mode rather than returning
+            // stale cached results. Trigger a refresh of the currently
+            // selected session immediately so the user sees the change.
+            if let id = selectedSessionID {
+                Task { [weak self] in
+                    await self?.refreshTranscript(for: id, showLoadingState: false)
+                }
+            }
+        }
+    }
+
     // Per-message expansion state for the collapse/expand affordance on
     // long transcript rows. Defaults to collapsed; the user toggles via
     // the "Show more/less" button. Lives here — not as @State in the
@@ -325,6 +351,15 @@ final class AppModel {
         // keys, which we treat as "use the default."
         let storedWPM = userDefaults.integer(forKey: Self.preferredWordsPerMinuteKey)
         preferredWordsPerMinute = storedWPM > 0 ? storedWPM : Self.defaultWordsPerMinute
+
+        // showOnlyFinalAssistantMessages pref. Default true. UserDefaults
+        // returns false for a missing Bool key, so explicitly check for
+        // presence: if absent, use the default; if present, honor it.
+        if userDefaults.object(forKey: Self.showOnlyFinalAssistantMessagesKey) != nil {
+            showOnlyFinalAssistantMessages = userDefaults.bool(forKey: Self.showOnlyFinalAssistantMessagesKey)
+        } else {
+            showOnlyFinalAssistantMessages = true
+        }
 
         // ElevenLabs prefs. Log-then-swallow keychain read failures so init
         // still succeeds (e.g. sandboxed test run, user denied ACL). Without
@@ -762,9 +797,15 @@ final class AppModel {
             let loadedTranscript: [TranscriptMessage]
             switch session.source {
             case .claude:
-                loadedTranscript = try await storageService.loadTranscript(for: session)
+                loadedTranscript = try await storageService.loadTranscript(
+                    for: session,
+                    filterToFinalOnly: showOnlyFinalAssistantMessages
+                )
             case .codex:
-                loadedTranscript = try await codexStorageService.loadTranscript(for: session)
+                loadedTranscript = try await codexStorageService.loadTranscript(
+                    for: session,
+                    filterToFinalOnly: showOnlyFinalAssistantMessages
+                )
             }
             PerfLog.mark("AppModel.refreshTranscript loaded count=\(loadedTranscript.count)")
             guard !Task.isCancelled else {

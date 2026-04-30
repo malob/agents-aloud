@@ -34,6 +34,7 @@ struct SettingsView: View {
 
             speechRateSection
             speechOptimizationSection
+            transcriptDisplaySection
         }
         .formStyle(.grouped)
         .padding()
@@ -130,6 +131,15 @@ struct SettingsView: View {
         case .codexCLI:
             guard !model.isCodexCLIAvailable else { return nil }
             return "`codex` CLI not found on PATH. Install from developers.openai.com/codex or add its directory to PATH; until then, messages will be spoken unchanged."
+        }
+    }
+
+    private var transcriptDisplaySection: some View {
+        Section("Transcript Display") {
+            Toggle("Show only final assistant messages", isOn: $model.showOnlyFinalAssistantMessages)
+            Text("When on, the transcript shows only the natural turn-end replies — drafts, conclusions, answers — and hides the in-between work-in-progress chatter (tool calls, scratchpad reasoning). Off shows every assistant message including intermediate ones.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

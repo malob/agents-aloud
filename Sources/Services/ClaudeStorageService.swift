@@ -229,7 +229,10 @@ actor ClaudeStorageService {
         return lines
     }
 
-    func loadTranscript(for session: ClaudeSessionSummary) throws -> [TranscriptMessage] {
+    func loadTranscript(
+        for session: ClaudeSessionSummary,
+        filterToFinalOnly: Bool
+    ) throws -> [TranscriptMessage] {
         try PerfLog.time("Storage.loadTranscript") {
             // URL caches resourceValues on the instance, which would make
             // mtime/fileSize reads stale when loadTranscript is invoked
@@ -241,8 +244,14 @@ actor ClaudeStorageService {
             let values = try transcriptURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             let modifiedAt = values.contentModificationDate ?? .distantPast
             let fileSize = values.fileSize ?? 0
+            let messageCap = TranscriptDisplayLimits.messageCap(filterToFinalOnly: filterToFinalOnly)
 
-            if let cached = transcriptCache[cacheKey] {
+            // Cache mode-aware: a cached entry produced for one filter
+            // mode can't satisfy the other (different cap, different
+            // filter applied during widening). On mode change we fall
+            // through to a fresh tail-load.
+            if let cached = transcriptCache[cacheKey],
+               cached.filterToFinalOnly == filterToFinalOnly {
                 if cached.modifiedAt == modifiedAt {
                     PerfLog.mark("Storage.loadTranscript cacheHit")
                     return cached.messages
@@ -266,19 +275,24 @@ actor ClaudeStorageService {
                    currentSignature == cached.tailSignature,
                    let appended = try? tailMessages(transcriptURL, fromOffset: cached.fileSize) {
                     // Roll the visible window forward: append the new
-                    // messages, then trim back to the display cap.
-                    // Drops the oldest messages from the cached list
-                    // when a long-running session keeps growing.
-                    let merged = mergeInTimestampOrder(cached.messages, appended)
-                    let capped = Array(merged.suffix(TranscriptDisplayLimits.messageCap))
+                    // messages, filter if needed, then trim back to the
+                    // display cap. Drops the oldest messages from the
+                    // cached list when a long-running session keeps
+                    // growing past the cap.
+                    let appendedFiltered = filterToFinalOnly
+                        ? appended.filter { !$0.isIntermediate }
+                        : appended
+                    let merged = mergeInTimestampOrder(cached.messages, appendedFiltered)
+                    let capped = Array(merged.suffix(messageCap))
                     let newSignature = (try? readTailSignature(transcriptURL, upTo: fileSize)) ?? Data()
                     transcriptCache[cacheKey] = CachedTranscript(
                         modifiedAt: modifiedAt,
                         fileSize: fileSize,
                         tailSignature: newSignature,
-                        messages: capped
+                        messages: capped,
+                        filterToFinalOnly: filterToFinalOnly
                     )
-                    PerfLog.mark("Storage.loadTranscript incremental appended=\(appended.count) capped=\(capped.count)")
+                    PerfLog.mark("Storage.loadTranscript incremental appended=\(appended.count) capped=\(capped.count) filterFinalOnly=\(filterToFinalOnly)")
                     return capped
                 }
             }
@@ -289,28 +303,36 @@ actor ClaudeStorageService {
             // instead of the whole multi-MB JSONL, which is the dominant
             // cold-load win for chatty sessions.
             let cappedMessages = try PerfLog.time("Storage.loadTranscript.tailLoad") {
-                try loadTranscriptTail(url: transcriptURL, targetCount: TranscriptDisplayLimits.messageCap)
+                try loadTranscriptTail(
+                    url: transcriptURL,
+                    targetCount: messageCap,
+                    filterToFinalOnly: filterToFinalOnly
+                )
             }
             let signature = (try? readTailSignature(transcriptURL, upTo: fileSize)) ?? Data()
             transcriptCache[cacheKey] = CachedTranscript(
                 modifiedAt: modifiedAt,
                 fileSize: fileSize,
                 tailSignature: signature,
-                messages: cappedMessages
+                messages: cappedMessages,
+                filterToFinalOnly: filterToFinalOnly
             )
             return cappedMessages
         }
     }
 
     // Read the file backward in expanding windows until we have at least
-    // `targetCount` user/assistant messages, or until we've read the entire
-    // file. The window starts at 256 KB (covers ~50 messages of typical
-    // chat traffic) and doubles each iteration — bounding the worst case
-    // (a session full of giant code-block messages) without paying the
-    // huge-window cost in the common case.
+    // `targetCount` user/assistant messages (after applying the optional
+    // intermediate-filter), or until we've read the entire file. The
+    // window starts at 256 KB and doubles each iteration — bounding the
+    // worst case (a session full of giant code-block messages, or a
+    // chatty tool-use-heavy session under final-only mode where the
+    // filter eats most of each window) without paying the huge-window
+    // cost in the common case.
     private func loadTranscriptTail(
         url: URL,
-        targetCount: Int
+        targetCount: Int,
+        filterToFinalOnly: Bool
     ) throws -> [TranscriptMessage] {
         var windowSize = Self.initialTailWindowBytes
         while true {
@@ -329,9 +351,12 @@ actor ClaudeStorageService {
                 windowSize *= 2
                 continue
             }
-            let messages = ClaudeTranscriptParser.parseTranscript(raw)
-            if messages.count >= targetCount || window.coversWholeFile {
-                return Array(messages.suffix(targetCount))
+            let allMessages = ClaudeTranscriptParser.parseTranscript(raw)
+            let filtered = filterToFinalOnly
+                ? allMessages.filter { !$0.isIntermediate }
+                : allMessages
+            if filtered.count >= targetCount || window.coversWholeFile {
+                return Array(filtered.suffix(targetCount))
             }
             windowSize *= 2
         }
@@ -489,6 +514,11 @@ private struct CachedTranscript {
     let fileSize: Int
     let tailSignature: Data
     let messages: [TranscriptMessage]
+    // Mode this entry was produced under. The tail-loader widens
+    // until it has enough post-filter messages for the right cap;
+    // a cache entry produced for the other mode can't satisfy
+    // current callers (different cap, different filtered set).
+    let filterToFinalOnly: Bool
 }
 
 private struct CachedProjectMetadata {

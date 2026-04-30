@@ -183,12 +183,18 @@ final class CodexTranscriptParser {
         default: return nil
         }
 
-        // For assistant messages, skip non-final phases (intermediate
-        // tool-use / reasoning chatter, not the user-facing reply).
-        if mappedRole == .assistant {
-            if let phase = payload["phase"] as? String, phase != "final_answer" {
-                return nil
-            }
+        // Mark assistant messages with non-final phases as intermediate
+        // (tool-use / reasoning chatter, not the user-facing reply).
+        // We no longer skip them at parse time — the storage layer
+        // decides whether to filter them out based on the user's
+        // "show only final messages" preference.
+        let isIntermediate: Bool
+        if mappedRole == .assistant,
+           let phase = payload["phase"] as? String,
+           phase != "final_answer" {
+            isIntermediate = true
+        } else {
+            isIntermediate = false
         }
 
         let text = collectText(from: payload["content"])
@@ -201,7 +207,8 @@ final class CodexTranscriptParser {
             role: mappedRole,
             text: text,
             timestamp: timestamp,
-            sessionID: sessionID
+            sessionID: sessionID,
+            isIntermediate: isIntermediate
         )
     }
 

@@ -91,13 +91,29 @@ struct TranscriptMessage: Identifiable, Hashable {
     let content: Content
     let timestamp: Date
     let sessionID: String
+    // True when this is an assistant message that ended its turn by
+    // calling a tool (Claude `stop_reason == "tool_use"`) or that's
+    // marked as a non-final phase (Codex `phase != "final_answer"`).
+    // Intermediate assistant messages are noisy work-in-progress
+    // chatter relative to natural turn-ends; the storage layer
+    // optionally filters them out before applying the display cap.
+    // Always false for user messages.
+    let isIntermediate: Bool
 
-    init(id: String, role: Role, text: String, timestamp: Date, sessionID: String) {
+    init(
+        id: String,
+        role: Role,
+        text: String,
+        timestamp: Date,
+        sessionID: String,
+        isIntermediate: Bool = false
+    ) {
         self.id = id
         self.role = role
         self.content = Content.detect(from: text)
         self.timestamp = timestamp
         self.sessionID = sessionID
+        self.isIntermediate = isIntermediate
     }
 
     var text: String {

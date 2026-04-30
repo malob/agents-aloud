@@ -173,7 +173,8 @@ enum ClaudeTranscriptParser {
                 role: .assistant,
                 text: text,
                 timestamp: timestamp,
-                sessionID: entry.sessionID ?? ""
+                sessionID: entry.sessionID ?? "",
+                isIntermediate: envelope.stopReason == "tool_use"
             )
 
         default:
@@ -299,6 +300,17 @@ private struct TranscriptLine: Decodable {
 private struct TranscriptEnvelope: Decodable {
     let role: String?
     let content: TranscriptContent
+    // Anthropic API stop reason; `tool_use` means the model ended
+    // this turn by calling a tool (more turns coming). Other values
+    // (`end_turn`, `stop_sequence`, `max_tokens`, nil) all represent
+    // model-finished states and are treated as final for display.
+    let stopReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case role
+        case content
+        case stopReason = "stop_reason"
+    }
 }
 
 private enum TranscriptContent: Decodable {

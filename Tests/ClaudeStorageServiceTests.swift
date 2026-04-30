@@ -22,7 +22,7 @@ struct ClaudeStorageServiceTests {
         let sessions = try await service.loadSessions()
         let session = try #require(sessions.first)
 
-        let initialMessages = try await service.loadTranscript(for: session)
+        let initialMessages = try await service.loadTranscript(for: session, filterToFinalOnly: false)
         #expect(initialMessages.map(\.id) == ["user-1", "assistant-1"])
 
         // Appending a new line exercises the incremental tail-parse path: the
@@ -36,7 +36,7 @@ struct ClaudeStorageServiceTests {
         try handle.write(contentsOf: Data(appendedLine.utf8))
         try handle.close()
 
-        let updatedMessages = try await service.loadTranscript(for: session)
+        let updatedMessages = try await service.loadTranscript(for: session, filterToFinalOnly: false)
         #expect(updatedMessages.map(\.id) == ["user-1", "assistant-1", "user-2"])
         #expect(updatedMessages.last?.text == "Follow-up prompt.")
     }
@@ -60,7 +60,7 @@ struct ClaudeStorageServiceTests {
         let sessions = try await service.loadSessions()
         let session = try #require(sessions.first)
 
-        _ = try await service.loadTranscript(for: session)
+        _ = try await service.loadTranscript(for: session, filterToFinalOnly: false)
 
         // Simulate a rewind / fork / in-place edit by replacing the file with
         // strictly larger but entirely different content. The cache thinks the
@@ -70,7 +70,7 @@ struct ClaudeStorageServiceTests {
         try await Task.sleep(for: .milliseconds(50))
         try rewrittenTranscript.write(to: transcriptURL, atomically: true, encoding: .utf8)
 
-        let updatedMessages = try await service.loadTranscript(for: session)
+        let updatedMessages = try await service.loadTranscript(for: session, filterToFinalOnly: false)
         #expect(updatedMessages.map(\.id) == ["user-A", "assistant-A", "user-B"])
         #expect(updatedMessages.last?.text == "Follow-up on the new branch.")
     }
@@ -241,7 +241,7 @@ struct ClaudeStorageServiceTests {
     @Test
     func loadTranscriptCapsAtDisplayLimitForLongSessions() async throws {
         // Long-session cold-load contract: only the most recent
-        // TranscriptDisplayLimits.messageCap user/assistant messages
+        // TranscriptDisplayLimits.messageCapIncludingIntermediates user/assistant messages
         // should come back, and they should be the *last* messages
         // chronologically (not the first cap, not a random slice).
         let fileManager = FileManager.default
@@ -254,7 +254,7 @@ struct ClaudeStorageServiceTests {
         try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
         defer { try? fileManager.removeItem(at: temporaryRoot) }
 
-        let total = TranscriptDisplayLimits.messageCap + 20  // exceed the cap by enough to be unambiguous
+        let total = TranscriptDisplayLimits.messageCapIncludingIntermediates + 20  // exceed the cap by enough to be unambiguous
         try generatedTranscript(messageCount: total)
             .write(to: transcriptURL, atomically: true, encoding: .utf8)
 
@@ -262,10 +262,10 @@ struct ClaudeStorageServiceTests {
         let sessions = try await service.loadSessions()
         let session = try #require(sessions.first)
 
-        let messages = try await service.loadTranscript(for: session)
-        #expect(messages.count == TranscriptDisplayLimits.messageCap)
+        let messages = try await service.loadTranscript(for: session, filterToFinalOnly: false)
+        #expect(messages.count == TranscriptDisplayLimits.messageCapIncludingIntermediates)
         // Last `cap` of `total` → starts at id index (total - cap).
-        let firstReturnedIndex = total - TranscriptDisplayLimits.messageCap
+        let firstReturnedIndex = total - TranscriptDisplayLimits.messageCapIncludingIntermediates
         #expect(messages.first?.id == "msg-\(firstReturnedIndex)")
         #expect(messages.last?.id == "msg-\(total - 1)")
     }
@@ -287,7 +287,7 @@ struct ClaudeStorageServiceTests {
 
         // Start at exactly the cap so the very next append must shift
         // the window — this is the boundary where rolling kicks in.
-        let initialCount = TranscriptDisplayLimits.messageCap
+        let initialCount = TranscriptDisplayLimits.messageCapIncludingIntermediates
         try generatedTranscript(messageCount: initialCount)
             .write(to: transcriptURL, atomically: true, encoding: .utf8)
 
@@ -295,8 +295,8 @@ struct ClaudeStorageServiceTests {
         let sessions = try await service.loadSessions()
         let session = try #require(sessions.first)
 
-        let initial = try await service.loadTranscript(for: session)
-        #expect(initial.count == TranscriptDisplayLimits.messageCap)
+        let initial = try await service.loadTranscript(for: session, filterToFinalOnly: false)
+        #expect(initial.count == TranscriptDisplayLimits.messageCapIncludingIntermediates)
         #expect(initial.first?.id == "msg-0")
         #expect(initial.last?.id == "msg-\(initialCount - 1)")
 
@@ -312,11 +312,55 @@ struct ClaudeStorageServiceTests {
         try handle.write(contentsOf: Data(appendBlock.utf8))
         try handle.close()
 
-        let updated = try await service.loadTranscript(for: session)
-        #expect(updated.count == TranscriptDisplayLimits.messageCap)
+        let updated = try await service.loadTranscript(for: session, filterToFinalOnly: false)
+        #expect(updated.count == TranscriptDisplayLimits.messageCapIncludingIntermediates)
         // Window slid forward by `extra`: oldest five are dropped.
         #expect(updated.first?.id == "msg-\(extra)")
         #expect(updated.last?.id == "msg-\(initialCount + extra - 1)")
+    }
+
+    @Test
+    func loadTranscriptFinalOnlyDropsIntermediateAssistantMessages() async throws {
+        // Filter contract: with filterToFinalOnly: true, assistant
+        // messages whose stop_reason is "tool_use" are dropped from
+        // the returned list. Final assistants (any other stop_reason
+        // or none) pass through. The cap is the smaller messageCapFinalOnly,
+        // so on a fixture exceeding it, only the most recent finals
+        // come back.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
+
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        // 15 intermediate assistants (stop_reason "tool_use"), then
+        // 12 final assistants (stop_reason "end_turn"). All assistant
+        // role for simplicity; the filter keys on isIntermediate, not
+        // role.
+        var lines: [String] = []
+        for i in 0..<15 {
+            lines.append(assistantLine(index: i, stopReason: "tool_use"))
+        }
+        for i in 15..<27 {
+            lines.append(assistantLine(index: i, stopReason: "end_turn"))
+        }
+        try lines.joined().write(to: transcriptURL, atomically: true, encoding: .utf8)
+
+        let service = ClaudeStorageService(projectsRoot: projectsRoot)
+        let sessions = try await service.loadSessions()
+        let session = try #require(sessions.first)
+
+        let messages = try await service.loadTranscript(for: session, filterToFinalOnly: true)
+        #expect(messages.count == TranscriptDisplayLimits.messageCapFinalOnly)
+        // 12 finals (indices 15..26), last 10 → indices 17..26.
+        #expect(messages.first?.id == "msg-17")
+        #expect(messages.last?.id == "msg-26")
+        // Sanity: all returned are non-intermediate.
+        #expect(messages.allSatisfy { !$0.isIntermediate })
     }
 
     // Generate a synthetic transcript with `messageCount` user/assistant
@@ -342,6 +386,18 @@ struct ClaudeStorageServiceTests {
             {"type":"assistant","uuid":"\#(id)","timestamp":"\#(timestamp)","sessionId":"session-1","message":{"role":"assistant","content":[{"type":"text","text":"Assistant reply \#(index)."}]}}
             """# + "\n"
         }
+    }
+
+    // Assistant-only line generator with explicit stop_reason. Used by
+    // the final-only filter test to construct a fixture with a known
+    // mix of intermediate and final messages.
+    private func assistantLine(index: Int, stopReason: String) -> String {
+        let seconds = String(format: "%05d", index)
+        let timestamp = "2026-04-17T17:00:00.\(seconds)Z"
+        let id = "msg-\(index)"
+        return #"""
+        {"type":"assistant","uuid":"\#(id)","timestamp":"\#(timestamp)","sessionId":"session-1","cwd":"/tmp/demo-project","message":{"role":"assistant","stop_reason":"\#(stopReason)","content":[{"type":"text","text":"Assistant reply \#(index)."}]}}
+        """# + "\n"
     }
 
     private var rewrittenTranscript: String {

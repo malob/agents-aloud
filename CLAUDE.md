@@ -85,18 +85,26 @@ Sources/
   rewrite the prefix. Comparing the last ~128 cached bytes against
   what's now on disk guards the fast path; mismatch → full reparse.
 
-- **Transcripts hold a 50-message rolling window, never the full JSONL.**
-  Cold loads tail-read in widening chunks (256 KB initial, doubles on
-  miss) until they have 50 user/assistant messages — the whole file is
-  never parsed regardless of session length. Claude's incremental-
-  append fast path trims the merged list back to the cap on each
-  append; Codex doesn't have an incremental path but caches by mtime
-  so re-clicks are sub-ms. There is intentionally no "load earlier"
-  affordance — the app's job is reading current messages aloud, not
-  historical scrollback. Don't lift the cap "because we have the
-  bytes" without re-running the cold-load timing on a long session.
+- **Transcripts hold a rolling window of 10 or 50 messages depending
+  on the intermediate-message filter, never the full JSONL.** Cold
+  loads tail-read in widening chunks (256 KB initial, doubles on
+  miss) until they have enough post-filter messages — the whole file
+  is never parsed regardless of session length. The filter is
+  controlled by `AppModel.showOnlyFinalAssistantMessages` (default
+  true): when on, assistant messages with `stop_reason == "tool_use"`
+  (Claude) or `phase != "final_answer"` (Codex) are dropped, and the
+  cap is `messageCapFinalOnly = 10`. When off, all assistant turns
+  pass through and the cap is `messageCapIncludingIntermediates = 50`.
+  Both storage caches key on `(path, filterToFinalOnly)` so toggling
+  the mode triggers a fresh tail-load. There is intentionally no
+  "load earlier" affordance — the app's job is reading current
+  messages aloud, not historical scrollback. Don't lift either cap
+  "because we have the bytes" without re-running the cold-load
+  timing on a long session.
   See: [Sources/Models/TranscriptDisplayLimits.swift](Sources/Models/TranscriptDisplayLimits.swift),
-  [Sources/Support/TranscriptTailReader.swift](Sources/Support/TranscriptTailReader.swift)
+  [Sources/Support/TranscriptTailReader.swift](Sources/Support/TranscriptTailReader.swift),
+  [Sources/Models/TranscriptMessage.swift](Sources/Models/TranscriptMessage.swift)
+  (the `isIntermediate` field).
 
 - **The "Loading transcript…" overlay is gated on
   `transcriptMessages.isEmpty`, not just `isLoadingTranscript`.**

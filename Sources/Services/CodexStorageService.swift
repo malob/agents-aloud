@@ -55,6 +55,11 @@ actor CodexStorageService {
     private struct CachedTranscript {
         let modifiedAt: Date
         let messages: [TranscriptMessage]
+        // Mode this entry was produced under. The tail-loader widens
+        // until enough post-filter messages are in hand for the right
+        // cap; a cache entry produced for the other mode can't satisfy
+        // current callers (different cap, different filtered set).
+        let filterToFinalOnly: Bool
     }
 
     init(
@@ -189,7 +194,10 @@ actor CodexStorageService {
         return summaries
     }
 
-    func loadTranscript(for session: ClaudeSessionSummary) throws -> [TranscriptMessage] {
+    func loadTranscript(
+        for session: ClaudeSessionSummary,
+        filterToFinalOnly: Bool
+    ) throws -> [TranscriptMessage] {
         try PerfLog.time("CodexStorage.loadTranscript") {
             // URL caches resourceValues on the instance; flush so we
             // see the current mtime even after the file has grown
@@ -199,24 +207,29 @@ actor CodexStorageService {
             let cacheKey = transcriptURL.path
             let modifiedAt = (try? transcriptURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
                 ?? .distantPast
+            let messageCap = TranscriptDisplayLimits.messageCap(filterToFinalOnly: filterToFinalOnly)
 
-            if let cached = transcriptCache[cacheKey], cached.modifiedAt == modifiedAt {
+            if let cached = transcriptCache[cacheKey],
+               cached.modifiedAt == modifiedAt,
+               cached.filterToFinalOnly == filterToFinalOnly {
                 PerfLog.mark("CodexStorage.loadTranscript cacheHit")
                 return cached.messages
             }
 
-            // Tail-only read keyed off TranscriptDisplayLimits.messageCap.
-            // For long Codex sessions this avoids re-parsing the whole
-            // multi-MB rollout JSONL. Codex's first line is `session_meta`
-            // which the parser doesn't strictly need (sessionID comes
-            // from the filename), so dropping the file's prefix is safe.
+            // Tail-only read keyed off the filter-aware cap. For long
+            // Codex sessions this avoids re-parsing the whole multi-MB
+            // rollout JSONL. Codex's first line is `session_meta` which
+            // the parser doesn't strictly need (sessionID comes from
+            // the filename), so dropping the file's prefix is safe.
             let messages = try loadTranscriptTail(
                 url: transcriptURL,
-                targetCount: TranscriptDisplayLimits.messageCap
+                targetCount: messageCap,
+                filterToFinalOnly: filterToFinalOnly
             )
             transcriptCache[cacheKey] = CachedTranscript(
                 modifiedAt: modifiedAt,
-                messages: messages
+                messages: messages,
+                filterToFinalOnly: filterToFinalOnly
             )
             return messages
         }
@@ -224,13 +237,16 @@ actor CodexStorageService {
 
     // Mirror of ClaudeStorageService's loadTranscriptTail: read the file
     // backward in widening windows until we have enough user/assistant
-    // messages or the window covers the whole file. Codex transcripts
-    // typically include lots of non-message lines (tool calls, reasoning
-    // events, turn_context, event_msg) so we may need to widen past the
-    // initial 256 KB on long sessions to gather the cap.
+    // messages (after applying the optional intermediate-filter) or the
+    // window covers the whole file. Codex transcripts typically include
+    // lots of non-message lines (tool calls, reasoning events,
+    // turn_context, event_msg) plus, in final-only mode, intermediate
+    // assistant messages that the filter drops — so we may need to
+    // widen past the initial 256 KB on long sessions to gather the cap.
     private func loadTranscriptTail(
         url: URL,
-        targetCount: Int
+        targetCount: Int,
+        filterToFinalOnly: Bool
     ) throws -> [TranscriptMessage] {
         let sessionID = CodexTranscriptParser.sessionID(from: url)
         var windowSize = Self.initialTailWindowBytes
@@ -241,9 +257,12 @@ actor CodexStorageService {
                 windowSize = max(windowSize * 2, windowSize + Self.initialTailWindowBytes)
                 continue
             }
-            let messages = CodexTranscriptParser.parseTranscript(data: window.data, sessionID: sessionID)
-            if messages.count >= targetCount || window.coversWholeFile {
-                return Array(messages.suffix(targetCount))
+            let allMessages = CodexTranscriptParser.parseTranscript(data: window.data, sessionID: sessionID)
+            let filtered = filterToFinalOnly
+                ? allMessages.filter { !$0.isIntermediate }
+                : allMessages
+            if filtered.count >= targetCount || window.coversWholeFile {
+                return Array(filtered.suffix(targetCount))
             }
             windowSize *= 2
         }
