@@ -9,6 +9,14 @@ import SwiftUI
 @MainActor
 struct MessageRowView: View, Equatable {
     let message: TranscriptMessage
+    // Source of the surrounding session. Drives the assistant-row
+    // header so Claude Code transcripts read "Claude" with the
+    // Claude burst icon and Codex transcripts read "Codex" with the
+    // Codex hex. nil falls back to the generic "Assistant" + waveform
+    // chrome (e.g. previews, tests, or any future source we don't yet
+    // brand). Not part of `==` because source is fixed for the
+    // lifetime of a row instance.
+    let source: TranscriptSource?
     let status: SpeechController.MessageStatus
     let isExpanded: Bool
     let onPlay: () -> Void
@@ -52,7 +60,7 @@ struct MessageRowView: View, Equatable {
     }
 
     private var roleAppearance: RoleAppearance {
-        RoleAppearance(role: message.role)
+        RoleAppearance(role: message.role, source: source)
     }
 
     // When the user hovers the Speak button with Option held, the button
@@ -77,9 +85,21 @@ struct MessageRowView: View, Equatable {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Label(roleAppearance.title, systemImage: roleAppearance.symbolName)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(roleAppearance.color)
+                Label {
+                    Text(roleAppearance.title)
+                } icon: {
+                    switch roleAppearance.symbol {
+                    case .system(let name):
+                        Image(systemName: name)
+                    case .brand(let source):
+                        // size matches caption-font glyph height so it
+                        // visually aligns with the title text and the
+                        // timestamp glyphs to its right.
+                        SourceBrandIcon(source: source, size: 12, palette: .brand)
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(roleAppearance.color)
 
                 Text(message.timestamp.formatted(date: .omitted, time: .shortened))
                     .font(.caption)
@@ -453,21 +473,45 @@ struct MessageRowView: View, Equatable {
 
 private struct RoleAppearance {
     let title: String
-    let symbolName: String
+    let symbol: Symbol
     let color: Color
     let background: Color
 
-    init(role: TranscriptMessage.Role) {
+    enum Symbol {
+        case system(String)               // SF Symbol name
+        case brand(TranscriptSource)      // custom .symbolset asset
+    }
+
+    init(role: TranscriptMessage.Role, source: TranscriptSource?) {
         switch role {
         case .user:
             title = "You"
-            symbolName = "person"
+            symbol = .system("person")
             color = .secondary
             background = Color.secondary.opacity(0.08)
         case .assistant:
-            title = "Assistant"
-            symbolName = "waveform"
-            color = .accentColor
+            switch source {
+            case .claude:
+                title = "Claude"
+                symbol = .brand(.claude)
+                // Match title hue to the icon's dominant fill so the
+                // chip reads as one branded unit. See
+                // TranscriptSource.labelColor for the source-of-truth
+                // color tokens.
+                color = TranscriptSource.claude.labelColor
+            case .codex:
+                title = "Codex"
+                symbol = .brand(.codex)
+                color = TranscriptSource.codex.labelColor
+            case .none:
+                // Source unknown (previews / future sources without a
+                // brand glyph yet). Generic chrome preserves the prior
+                // behavior so callers that haven't been updated still
+                // render reasonably.
+                title = "Assistant"
+                symbol = .system("waveform")
+                color = .accentColor
+            }
             background = Color.secondary.opacity(0.14)
         }
     }
@@ -483,6 +527,7 @@ private struct RoleAppearance {
                 timestamp: .now,
                 sessionID: "preview-session"
             ),
+            source: .claude,
             status: .idle,
             isExpanded: false,
             onPlay: {},
@@ -498,6 +543,7 @@ private struct RoleAppearance {
                 timestamp: .now,
                 sessionID: "preview-session"
             ),
+            source: .claude,
             status: .rewriting,
             isExpanded: false,
             onPlay: {},
@@ -513,6 +559,7 @@ private struct RoleAppearance {
                 timestamp: .now,
                 sessionID: "preview-session"
             ),
+            source: .codex,
             status: .speaking,
             isExpanded: false,
             onPlay: {},
@@ -528,6 +575,7 @@ private struct RoleAppearance {
                 timestamp: .now,
                 sessionID: "preview-session"
             ),
+            source: .claude,
             status: .queued(position: 0),
             isExpanded: false,
             onPlay: {},
@@ -543,6 +591,7 @@ private struct RoleAppearance {
                 timestamp: .now,
                 sessionID: "preview-session"
             ),
+            source: .codex,
             status: .queued(position: 2),
             isExpanded: false,
             onPlay: {},
@@ -558,6 +607,7 @@ private struct RoleAppearance {
                 timestamp: .now,
                 sessionID: "preview-session"
             ),
+            source: .claude,
             status: .idle,
             isExpanded: false,
             onPlay: {},

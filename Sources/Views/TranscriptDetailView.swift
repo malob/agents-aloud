@@ -58,6 +58,7 @@ struct TranscriptDetailView: View {
                         ForEach(transcriptMessages) { message in
                             MessageRowView(
                                 message: message,
+                                source: session.source,
                                 status: model.speechController.status(for: message.id),
                                 isExpanded: model.isMessageExpanded(message.id),
                                 onPlay: { model.playMessage(message) },

@@ -58,3 +58,27 @@ struct SourceBrandIcon: View {
         return Bundle.module
     }
 }
+
+// Color tokens that match the dominant fill in each source's
+// .symbolset glyph. Used to color the assistant title text in the
+// transcript header so the chip reads as a single branded unit
+// rather than an accent-blue label next to a warm/purple icon.
+//
+// Lives in this file (rather than alongside the TranscriptSource
+// enum in Models/) because Color is a SwiftUI type and the Models
+// layer is otherwise free of SwiftUI imports.
+extension TranscriptSource {
+    var labelColor: Color {
+        switch self {
+        case .claude:
+            // Anthropic Crail (#D97757) — pulled from the multicolor-0:custom
+            // fill in claude.symbolset/claude.svg so icon and label match.
+            return Color(red: 0xD9 / 255.0, green: 0x77 / 255.0, blue: 0x57 / 255.0)
+        case .codex:
+            // codex.symbolset uses systemIndigoColor for its multicolor
+            // layer, which maps directly to SwiftUI's Color.indigo.
+            // Adaptive across light/dark mode for free.
+            return .indigo
+        }
+    }
+}
