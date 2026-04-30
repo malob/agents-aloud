@@ -152,12 +152,15 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
     //    filenames like `AppConfig.swift` intact — TTS then reads
     //    them as "AppConfig dot swift." Caught this in a 4-run
     //    benchmark: 3/4 runs leaked filename-with-extension.
-    //  - Without the blockquote-verbatim line, the model paraphrases
-    //    drafts of messages / quoted passages that the user wants to
-    //    hear word-for-word (e.g. "the assistant suggested writing to
-    //    Alexander about scheduling" in place of the actual proposed
-    //    text). Markdown blockquotes (`> …`) are the cleanest signal
-    //    Claude itself uses when surfacing draft wording.
+    //  - Without the verbatim-passage rule, the model paraphrases
+    //    drafts of messages, proposed phrasings, and quoted text the
+    //    user wants to hear word-for-word (e.g. "the assistant
+    //    suggested writing to Alexander about scheduling" in place
+    //    of the actual proposed text). Phrased as a judgment call
+    //    ("would rewriting erase something the listener cares
+    //    about?") rather than matching one syntactic form, so it
+    //    covers blockquotes, inline quotes, and labelled drafts —
+    //    not just the markdown `>` shape.
     //
     // Keep all three rules. They add ~500 chars to the prompt and the
     // latency impact is within API-side noise.
@@ -178,13 +181,19 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
     example "the AppConfig Swift file," "the regenerate-fixtures \
     script," "the benchmarks CSV." Never use full paths.
 
-    Treat blockquotes (lines prefixed with `>`) as verbatim — typically \
-    they hold a draft message or proposed wording the listener wants \
-    to hear word-for-word. Read the quoted prose exactly as written, \
-    with no paraphrasing, summarizing, or substitution within the \
-    quote. Markdown markers inside the quote are still stripped per \
-    the rule above; only the actual prose stays verbatim. A short \
-    natural lead-in like "the draft reads:" is fine.
+    Some passages must be preserved verbatim because the literal \
+    wording matters, not just the meaning — drafts the listener might \
+    send, proposed phrasings, quoted statements, anything where \
+    rewriting would lose information the listener cares about. \
+    Markdown blockquotes (lines prefixed with `>`) are the clearest \
+    signal; inline quotes ("he said: …") and labelled drafts \
+    ("Draft:", "Proposed:") qualify too. Use judgment: ask whether \
+    transforming this passage would erase something the listener \
+    wants to hear in their own words — if yes, keep it verbatim; \
+    if no, rewrite freely. Inside a verbatim passage: no paraphrasing \
+    or substitution, though markdown markers still get stripped per \
+    the rule above. A short lead-in like "the draft reads:" is fine \
+    before a verbatim section.
 
     Describe code in natural English, preserving every identifier name \
     exactly as written.
