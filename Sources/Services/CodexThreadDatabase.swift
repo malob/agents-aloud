@@ -130,6 +130,10 @@ final class CodexThreadDatabase: Sendable {
         WHERE archived = 0
           AND agent_nickname IS NULL
           AND agent_role IS NULL
+          AND CASE
+                WHEN json_valid(source) THEN json_extract(source, '$.subagent') IS NULL
+                ELSE 1
+              END
           AND COALESCE(updated_at_ms, updated_at * 1000) >= ?
         ORDER BY updated_ms DESC
         LIMIT 50;
