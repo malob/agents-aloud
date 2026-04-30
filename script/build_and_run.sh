@@ -41,6 +41,33 @@ mkdir -p "$APP_MACOS"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
 
+# SPM places per-target resource bundles next to the binary at
+# `<bin-path>/<Package>_<Target>.bundle`. A signed macOS app cannot
+# carry arbitrary bundles at the .app root, so the wrapper stages them
+# in the conventional Contents/Resources location. App code that needs
+# these resources should resolve them from Bundle.main.resourceURL when
+# running from the staged app, with Bundle.module kept as the SwiftPM
+# build/test fallback.
+APP_RESOURCES="$APP_CONTENTS/Resources"
+mkdir -p "$APP_RESOURCES"
+BIN_DIR="$(swift build --show-bin-path)"
+shopt -s nullglob
+for bundle in "$BIN_DIR"/*.bundle; do
+  cp -R "$bundle" "$APP_RESOURCES/"
+done
+shopt -u nullglob
+
+PACKAGE_RESOURCE_BUNDLE="$APP_RESOURCES/${APP_NAME}_${APP_NAME}.bundle"
+ASSET_CATALOG="$ROOT_DIR/Sources/Resources/Assets.xcassets"
+if [[ -d "$ASSET_CATALOG" && -d "$PACKAGE_RESOURCE_BUNDLE" ]]; then
+  xcrun actool "$ASSET_CATALOG" \
+    --compile "$PACKAGE_RESOURCE_BUNDLE" \
+    --platform macosx \
+    --minimum-deployment-target "$MIN_SYSTEM_VERSION" \
+    --target-device mac \
+    --output-format human-readable-text
+fi
+
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -21,7 +21,14 @@ let package = Package(
             dependencies: [
                 .product(name: "Textual", package: "textual"),
             ],
-            path: "Sources"
+            path: "Sources",
+            resources: [
+                // Includes custom SF Symbol exports plus any loose
+                // resources SwiftPM needs to bundle for development
+                // and tests. The app wrapper compiles the asset
+                // catalog with actool before signing the .app.
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "ClaudeCodeVoiceTests",

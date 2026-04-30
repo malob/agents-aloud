@@ -22,14 +22,10 @@ enum TranscriptSource: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    // SF Symbol for the source. Reused in both the sidebar filter
-    // picker and the per-row indicator. SF Symbols doesn't ship
-    // brand assets; we lean on suggestive abstract symbols and
-    // tooltips for clarity. Could swap for custom assets later.
-    var symbolName: String {
-        switch self {
-        case .claude: return "bubble.left.and.bubble.right.fill"
-        case .codex: return "sparkles"
-        }
+    // Custom SF Symbol asset name for the source's brand glyph.
+    // Used by both the sidebar filter picker and the per-row
+    // indicator.
+    var assetName: String {
+        rawValue  // "claude" / "codex" — matches the symbolset names.
     }
 }
