@@ -171,9 +171,47 @@ actor CodexStorageService {
 
     func loadTranscript(for session: ClaudeSessionSummary) throws -> [TranscriptMessage] {
         try PerfLog.time("CodexStorage.loadTranscript") {
-            try parser.parseTranscript(from: session.transcriptURL)
+            // Tail-only read keyed off TranscriptDisplayLimits.messageCap.
+            // For long Codex sessions this avoids re-parsing the whole
+            // multi-MB rollout JSONL on every refresh tick. Codex's first
+            // line is `session_meta` which the parser doesn't strictly
+            // need (sessionID comes from the filename), so dropping the
+            // file's prefix is safe.
+            try loadTranscriptTail(
+                url: session.transcriptURL,
+                targetCount: TranscriptDisplayLimits.messageCap
+            )
         }
     }
+
+    // Mirror of ClaudeStorageService's loadTranscriptTail: read the file
+    // backward in widening windows until we have enough user/assistant
+    // messages or the window covers the whole file. Codex transcripts
+    // typically include lots of non-message lines (tool calls, reasoning
+    // events, turn_context, event_msg) so we may need to widen past the
+    // initial 256 KB on long sessions to gather the cap.
+    private func loadTranscriptTail(
+        url: URL,
+        targetCount: Int
+    ) throws -> [TranscriptMessage] {
+        let sessionID = CodexTranscriptParser.sessionID(from: url)
+        var windowSize = Self.initialTailWindowBytes
+        while true {
+            let window = try TranscriptTailReader.readTrailingWindow(url: url, windowSize: windowSize)
+            if window.data.isEmpty {
+                if window.coversWholeFile { return [] }
+                windowSize = max(windowSize * 2, windowSize + Self.initialTailWindowBytes)
+                continue
+            }
+            let messages = CodexTranscriptParser.parseTranscript(data: window.data, sessionID: sessionID)
+            if messages.count >= targetCount || window.coversWholeFile {
+                return Array(messages.suffix(targetCount))
+            }
+            windowSize *= 2
+        }
+    }
+
+    private static let initialTailWindowBytes = 256 * 1024
 
     // MARK: - Filesystem walk
 

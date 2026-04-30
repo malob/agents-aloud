@@ -238,6 +238,112 @@ struct ClaudeStorageServiceTests {
         #expect(refreshedSummary == "AI-generated distinctive title")
     }
 
+    @Test
+    func loadTranscriptCapsAtDisplayLimitForLongSessions() async throws {
+        // Long-session cold-load contract: only the most recent
+        // TranscriptDisplayLimits.messageCap user/assistant messages
+        // should come back, and they should be the *last* messages
+        // chronologically (not the first cap, not a random slice).
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
+
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        let total = TranscriptDisplayLimits.messageCap + 20  // exceed the cap by enough to be unambiguous
+        try generatedTranscript(messageCount: total)
+            .write(to: transcriptURL, atomically: true, encoding: .utf8)
+
+        let service = ClaudeStorageService(projectsRoot: projectsRoot)
+        let sessions = try await service.loadSessions()
+        let session = try #require(sessions.first)
+
+        let messages = try await service.loadTranscript(for: session)
+        #expect(messages.count == TranscriptDisplayLimits.messageCap)
+        // Last `cap` of `total` → starts at id index (total - cap).
+        let firstReturnedIndex = total - TranscriptDisplayLimits.messageCap
+        #expect(messages.first?.id == "msg-\(firstReturnedIndex)")
+        #expect(messages.last?.id == "msg-\(total - 1)")
+    }
+
+    @Test
+    func loadTranscriptKeepsRollingWindowAcrossAppends() async throws {
+        // Rolling-cap contract: when the cache is already full and new
+        // messages are appended, the oldest cached messages drop out
+        // of the returned list so the visible window stays bounded.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
+
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: temporaryRoot) }
+
+        // Start at exactly the cap so the very next append must shift
+        // the window — this is the boundary where rolling kicks in.
+        let initialCount = TranscriptDisplayLimits.messageCap
+        try generatedTranscript(messageCount: initialCount)
+            .write(to: transcriptURL, atomically: true, encoding: .utf8)
+
+        let service = ClaudeStorageService(projectsRoot: projectsRoot)
+        let sessions = try await service.loadSessions()
+        let session = try #require(sessions.first)
+
+        let initial = try await service.loadTranscript(for: session)
+        #expect(initial.count == TranscriptDisplayLimits.messageCap)
+        #expect(initial.first?.id == "msg-0")
+        #expect(initial.last?.id == "msg-\(initialCount - 1)")
+
+        // Append 5 more messages — should exercise the incremental
+        // tail-parse path, not a cold reload.
+        try await Task.sleep(for: .milliseconds(50))  // ensure mtime advances
+        let extra = 5
+        let appendBlock = (initialCount..<(initialCount + extra))
+            .map { generatedLine(index: $0) }
+            .joined()
+        let handle = try FileHandle(forWritingTo: transcriptURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(appendBlock.utf8))
+        try handle.close()
+
+        let updated = try await service.loadTranscript(for: session)
+        #expect(updated.count == TranscriptDisplayLimits.messageCap)
+        // Window slid forward by `extra`: oldest five are dropped.
+        #expect(updated.first?.id == "msg-\(extra)")
+        #expect(updated.last?.id == "msg-\(initialCount + extra - 1)")
+    }
+
+    // Generate a synthetic transcript with `messageCount` user/assistant
+    // messages alternating, all timestamped sequentially so the parser's
+    // chronological sort is well-defined. IDs are msg-0, msg-1, … so
+    // tests can assert which slice came back.
+    private func generatedTranscript(messageCount: Int) -> String {
+        (0..<messageCount).map { generatedLine(index: $0) }.joined()
+    }
+
+    private func generatedLine(index: Int) -> String {
+        let role = index.isMultiple(of: 2) ? "user" : "assistant"
+        // Pad timestamp seconds so even 1000 messages sort lexically.
+        let seconds = String(format: "%05d", index)
+        let timestamp = "2026-04-17T17:00:00.\(seconds)Z"
+        let id = "msg-\(index)"
+        if role == "user" {
+            return #"""
+            {"type":"user","uuid":"\#(id)","timestamp":"\#(timestamp)","sessionId":"session-1","cwd":"/tmp/demo-project","message":{"role":"user","content":"User message \#(index)."}}
+            """# + "\n"
+        } else {
+            return #"""
+            {"type":"assistant","uuid":"\#(id)","timestamp":"\#(timestamp)","sessionId":"session-1","message":{"role":"assistant","content":[{"type":"text","text":"Assistant reply \#(index)."}]}}
+            """# + "\n"
+        }
+    }
+
     private var rewrittenTranscript: String {
         """
         {"type":"user","uuid":"user-A","timestamp":"2026-04-17T18:00:00Z","sessionId":"session-1","cwd":"/tmp/demo-project","message":{"role":"user","content":"A different first prompt after the rewind."}}

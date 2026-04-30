@@ -265,35 +265,79 @@ actor ClaudeStorageService {
                    let currentSignature = try? readTailSignature(transcriptURL, upTo: cached.fileSize),
                    currentSignature == cached.tailSignature,
                    let appended = try? tailMessages(transcriptURL, fromOffset: cached.fileSize) {
+                    // Roll the visible window forward: append the new
+                    // messages, then trim back to the display cap.
+                    // Drops the oldest messages from the cached list
+                    // when a long-running session keeps growing.
                     let merged = mergeInTimestampOrder(cached.messages, appended)
+                    let capped = Array(merged.suffix(TranscriptDisplayLimits.messageCap))
                     let newSignature = (try? readTailSignature(transcriptURL, upTo: fileSize)) ?? Data()
                     transcriptCache[cacheKey] = CachedTranscript(
                         modifiedAt: modifiedAt,
                         fileSize: fileSize,
                         tailSignature: newSignature,
-                        messages: merged
+                        messages: capped
                     )
-                    PerfLog.mark("Storage.loadTranscript incremental appended=\(appended.count)")
-                    return merged
+                    PerfLog.mark("Storage.loadTranscript incremental appended=\(appended.count) capped=\(capped.count)")
+                    return capped
                 }
             }
 
             // Cold read, cache miss, file shrank, prefix mutated, or in-place
-            // edit: full parse.
-            let rawTranscript = try PerfLog.time("Storage.loadTranscript.read") {
-                try String(contentsOf: transcriptURL, encoding: .utf8)
+            // edit: tail-load only as much of the file as we need to fill the
+            // display cap. Long sessions parse a fixed-size tail (~256 KB)
+            // instead of the whole multi-MB JSONL, which is the dominant
+            // cold-load win for chatty sessions.
+            let cappedMessages = try PerfLog.time("Storage.loadTranscript.tailLoad") {
+                try loadTranscriptTail(url: transcriptURL, targetCount: TranscriptDisplayLimits.messageCap)
             }
-            let sortedMessages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
             let signature = (try? readTailSignature(transcriptURL, upTo: fileSize)) ?? Data()
             transcriptCache[cacheKey] = CachedTranscript(
                 modifiedAt: modifiedAt,
                 fileSize: fileSize,
                 tailSignature: signature,
-                messages: sortedMessages
+                messages: cappedMessages
             )
-            return sortedMessages
+            return cappedMessages
         }
     }
+
+    // Read the file backward in expanding windows until we have at least
+    // `targetCount` user/assistant messages, or until we've read the entire
+    // file. The window starts at 256 KB (covers ~50 messages of typical
+    // chat traffic) and doubles each iteration — bounding the worst case
+    // (a session full of giant code-block messages) without paying the
+    // huge-window cost in the common case.
+    private func loadTranscriptTail(
+        url: URL,
+        targetCount: Int
+    ) throws -> [TranscriptMessage] {
+        var windowSize = Self.initialTailWindowBytes
+        while true {
+            let window = try TranscriptTailReader.readTrailingWindow(url: url, windowSize: windowSize)
+            if window.data.isEmpty {
+                if window.coversWholeFile { return [] }
+                // Single record longer than the window — widen.
+                windowSize = max(windowSize * 2, windowSize + Self.initialTailWindowBytes)
+                continue
+            }
+            guard let raw = String(data: window.data, encoding: .utf8) else {
+                // Should not happen given the line-boundary trim, but if
+                // the file contains invalid UTF-8 in the middle of the
+                // window, widen and retry.
+                if window.coversWholeFile { return [] }
+                windowSize *= 2
+                continue
+            }
+            let messages = ClaudeTranscriptParser.parseTranscript(raw)
+            if messages.count >= targetCount || window.coversWholeFile {
+                return Array(messages.suffix(targetCount))
+            }
+            windowSize *= 2
+        }
+    }
+
+    private static let initialTailWindowBytes = 256 * 1024
 
     // Read bytes from `offset` to end of file, decode as UTF-8, parse as JSONL.
     // Returns the messages found in that tail (already timestamp-sorted by the
