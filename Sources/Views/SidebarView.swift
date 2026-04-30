@@ -20,6 +20,13 @@ struct SidebarView: View {
                 }
             }
             .listStyle(.sidebar)
+            // macOS List preserves its underlying scroll view across
+            // filtered data swaps. When the source filter shrinks the
+            // list and then expands back to All, that stale scroll
+            // offset can leave the first row clipped under the filter
+            // control. Remounting per filter gives each scope its own
+            // clean initial scroll position.
+            .id(model.sidebarSourceFilter?.rawValue ?? "all")
             .overlay { sidebarStateOverlay }
         }
     }
