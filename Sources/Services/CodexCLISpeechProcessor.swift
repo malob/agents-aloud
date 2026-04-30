@@ -98,54 +98,13 @@ final class CodexCLISpeechProcessor: SpeechTextProcessor {
     // the user is better off hearing the source text than waiting.
     private static let subprocessTimeout: Duration = .seconds(60)
 
-    // System-prompt-equivalent text. Codex doesn't have a system-prompt
-    // flag at the CLI level, so this is delivered as the prompt arg
-    // (treated as a user message). The message-to-rewrite arrives as
-    // a `<stdin>` block underneath.
-    //
-    // Mirrors ClaudeCLISpeechProcessor's defaultInstructions intent
-    // verbatim — the rules are about TTS output shape, not about the
-    // backend, so they should produce the same rewrite regardless of
-    // which CLI we route through.
-    static let defaultInstructions = """
-    Rewrite the input as plain spoken English suitable for text-to-speech.
-
-    Strip all markdown (headings, bold, italic, code fences, table pipes, \
-    bullet and numbered list markers).
-
-    NEVER spell URLs or file paths out loud character by character \
-    (no "dot com slash benchmarks," no "slash Users slash malo slash …"). \
-    Replace a URL with a short natural phrase like "a link to the \
-    benchmark methodology."
-
-    NEVER include filenames with their dot-extensions — not \
-    "AppConfig.swift," not "fixtures.sh," not "benchmarks.csv." Refer \
-    to files by their short name plus the language or purpose, for \
-    example "the AppConfig Swift file," "the regenerate-fixtures \
-    script," "the benchmarks CSV." Never use full paths.
-
-    Some passages must be preserved verbatim because the words \
-    themselves are the content — drafts of messages, proposed \
-    phrasings, exact quotes, anything where the specific wording is \
-    part of the information, not just a vehicle for the meaning. \
-    Markdown blockquotes (lines prefixed with `>`) are the clearest \
-    signal; inline quotes ("he said: …") and labelled drafts \
-    ("Draft:", "Proposed:") qualify too. Use judgment: would \
-    paraphrasing this passage lose information that's in the wording \
-    itself? If yes, preserve it verbatim; if no, rewrite freely. \
-    Inside a verbatim passage: no paraphrasing or substitution, \
-    though markdown markers still get stripped per the rule above. \
-    A short lead-in like "the draft reads:" is fine before a \
-    verbatim section.
-
-    Describe code in natural English, preserving every identifier name \
-    exactly as written.
-
-    Preserve every piece of information — do not summarize or drop \
-    detail. Do not add preamble, commentary, or framing. Return only \
-    the rewritten text.
-    """
-
+    // System prompt is shared with ClaudeCLISpeechProcessor and lives
+    // in `SpeechRewriterInstructions` (Sources/Models/) — see that
+    // file for the load-bearing rules and their rationale. Codex
+    // doesn't have a system-prompt flag at the CLI level, so we
+    // deliver the text as the prompt argument (treated as a user
+    // message); the message-to-rewrite arrives as a `<stdin>` block
+    // underneath.
     private let instructions: String
     private let model: String
     private let effort: String          // model_reasoning_effort
@@ -155,7 +114,7 @@ final class CodexCLISpeechProcessor: SpeechTextProcessor {
     private let binaryURLProvider: @Sendable () -> URL?
 
     init(
-        instructions: String = CodexCLISpeechProcessor.defaultInstructions,
+        instructions: String = SpeechRewriterInstructions.defaultText,
         // Default: gpt-5.5. The 54-run eval showed gpt-5.4-mini was
         // unreliable on code-block handling (4/18 outputs leaked raw
         // Swift verbatim — disastrous for TTS); 5.5 was reliable
