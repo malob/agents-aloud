@@ -1,10 +1,13 @@
 # Claude Code Voice — Project Context
 
-macOS SwiftUI app that reads Claude Code transcripts aloud. It watches
-`~/.claude/projects/` for session JSONL files, renders a sidebar of
-recent sessions + a chat-style transcript view, and speaks assistant
-messages through one of three TTS backends (AVSpeech, macOS system
-`say`, or ElevenLabs streaming).
+macOS SwiftUI app that reads agent transcripts aloud. Surfaces a
+unified sidebar of recent Claude Code (`~/.claude/projects/`) and
+Codex (`~/.codex/sessions/`, indexed via `~/.codex/state_5.sqlite`)
+sessions, renders the selected session as a chat-style transcript
+view, and speaks assistant messages through one of two TTS backends
+(macOS system `say`, or ElevenLabs streaming). An optional rewriter
+step pre-processes message text via a CLI before TTS so spoken output
+strips code blocks, formats prose, and shortens preambles.
 
 ## Architecture at a glance
 
@@ -12,22 +15,30 @@ messages through one of three TTS backends (AVSpeech, macOS system
 Sources/
 ├── App/                  @main + scene + command menu
 ├── Models/               Immutable domain types (enums, DTOs)
-│   ├── SessionsState     .loading / .loaded / .failed carrying last-known payload
-│   ├── TranscriptState   same pattern for one session's transcript
-│   ├── PlaybackState     (inside SpeechController) idle/speaking/paused + queue
+│   ├── SessionsState           .loading / .loaded / .failed carrying last-known payload
+│   ├── TranscriptState         same pattern for one session's transcript
+│   ├── PlaybackState           (inside SpeechController) idle/speaking/paused + queue
+│   ├── TranscriptSource        .claude / .codex — source-of-truth for source-aware UI
+│   ├── TranscriptDisplayLimits the 50-message rolling-window cap
 │   └── ...
 ├── Services/             I/O and actors
-│   ├── ClaudeStorageService   actor; enumerates JSONL, caches parsed transcripts
-│   ├── ClaudeTranscriptParser nonisolated; JSONL → TranscriptMessage[]
-│   ├── TranscriptFileWatcher  DispatchSource + retry on ENOENT
-│   ├── SpeechController       @Observable; routes across drivers
-│   ├── SpeechBackendDriver    protocol + AVSpeech/SystemVoice/ElevenLabs impls
-│   ├── StreamingAudioPlayer   AVAudioEngine wrapper for ElevenLabs PCM streams
-│   └── ElevenLabsClient       URLSession TTS client
+│   ├── ClaudeStorageService      actor; walks ~/.claude/projects/, parses JSONL, mtime/size-cached
+│   ├── ClaudeTranscriptParser    nonisolated; Claude JSONL → TranscriptMessage[]
+│   ├── CodexStorageService       actor; reads ~/.codex/sessions/, mtime-cached
+│   ├── CodexThreadDatabase       SQLite reader over ~/.codex/state_5.sqlite (session index)
+│   ├── CodexTranscriptParser     nonisolated; Codex rollout JSONL → TranscriptMessage[]
+│   ├── TranscriptFileWatcher     DispatchSource on the selected file + retry on ENOENT
+│   ├── SpeechController          @Observable; queue + routing across drivers
+│   ├── SpeechBackendDriver       protocol + SystemVoice / ElevenLabs impls
+│   ├── StreamingAudioPlayer      AVAudioEngine wrapper for ElevenLabs PCM streams
+│   ├── ElevenLabsClient          URLSession TTS client
+│   ├── ClaudeCLISpeechProcessor  optional rewriter via `claude --print`
+│   ├── CodexCLISpeechProcessor   optional rewriter via `codex exec`
+│   └── NowPlayingCoordinator     MPNowPlayingInfoCenter + media-key bridge
 ├── Stores/
 │   └── AppModel          @MainActor @Observable; top-level coordinator
-├── Views/                SwiftUI; one file per screen
-└── Support/              KeychainStorage, PerfLog, small extensions
+├── Views/                SwiftUI; one file per screen + SourceBrandIcon helper
+└── Support/              KeychainStorage, PerfLog, TranscriptTailReader, small extensions
 ```
 
 ## Load-bearing decisions (don't re-derive these)
@@ -51,6 +62,23 @@ Sources/
   is mostly CPU-bound and Apple's allocator serializes anyway.
   See: [ClaudeStorageService.swift](Sources/Services/ClaudeStorageService.swift)
   top-of-file comment.
+
+- **Codex sessions are indexed via SQLite, not by walking the JSONL
+  filesystem.** `~/.codex/state_5.sqlite`'s `threads` table is the
+  authoritative session list; we open it read-only with the
+  `?mode=ro&immutable=1` URI form because plain read-only opens
+  intermittently fail with `SQLITE_CANTOPEN` while Codex's writers
+  hold WAL/SHM file locks. Walking `~/.codex/sessions/` directly was
+  the v0 implementation but it doesn't have project metadata, custom
+  titles, or archive state — the SQLite version is required for
+  parity with what `codex` itself shows.
+  See: [CodexThreadDatabase.swift](Sources/Services/CodexThreadDatabase.swift),
+  [CodexStorageService.swift](Sources/Services/CodexStorageService.swift)
+
+- **Claude has no authoritative session index** — the JSONL filesystem
+  IS the source of truth. We've checked: Anthropic GitHub issues
+  #9898, #29150, #14124 confirm there's no equivalent of Codex's
+  `state_5.sqlite`. Don't go looking for one.
 
 - **Transcript tail-signature check before incremental parse.** Claude
   Code writes JSONL append-only but rewind / edit / session-fork can
@@ -136,9 +164,12 @@ Sources/
   out ~8kHz).
 
 - **ElevenLabs `voice_settings.speed` accepts only 0.7–1.2.** Our
-  0.2–0.6 AVSpeech-calibrated slider is mapped linearly into that
-  range by `ElevenLabsBackendDriver.mapRateToSpeed`. Anything outside
-  returns 400.
+  WPM slider (100–500 wpm) is mapped linearly into that range by
+  `ElevenLabsBackendDriver.mapRateToSpeed`. Anything outside returns
+  400. ElevenLabs caps at 1.2× — meaningfully slower than what
+  SystemVoice can do at the top of the slider — so the same WPM
+  position is the same UI control across backends but not audibly
+  identical playback.
 
 - **Apple Dev signing also enables stable Keychain ACLs** — re-entering
   the API key once after switching from adhoc to Apple Dev is
@@ -146,16 +177,20 @@ Sources/
 
 ## Tooling / workflow
 
-- **Build + run:** `./script/build_and_run.sh` wraps `swift build` and
-  codesigns the bundle. Accepts `run` (default), `--debug`, `--logs`,
-  `--telemetry`, `--verify`.
-- **Tests:** `swift test`. 62 tests across 11 suites as of this
-  writing. `waitUntil` (in `Tests/TestHelpers.swift`) beats fixed
-  `Task.sleep` for "wait for an async side effect" scenarios.
-- **OSLog subsystem:** `local.claudecodevoice`. Categories include
-  `Perf`, `Speech`, `Storage`, `TranscriptParser`, `ElevenLabsDriver`,
-  `AppModel`. Stream with
-  `log stream --info --style compact --predicate 'subsystem == "local.claudecodevoice"'`.
+- **Build + run:** `./script/build_and_run.sh` wraps `swift build`,
+  stages SPM resource bundles into the `.app`, runs `xcrun actool`
+  on the asset catalog, and codesigns. Accepts `run` (default),
+  `--debug`, `--logs`, `--telemetry`, `--verify`.
+- **Tests:** `swift test`. `waitUntil` (in `Tests/TestHelpers.swift`)
+  beats fixed `Task.sleep` for "wait for an async side effect"
+  scenarios. Test targets are scoped per service / driver / store;
+  add new tests next to the closest existing suite.
+- **OSLog:** subsystem is `local.claudecodevoice`; one category per
+  service (`Storage`, `CodexStorage`, `TranscriptParser`,
+  `CodexTranscriptParser`, `Speech`, `ElevenLabsDriver`,
+  `StreamingAudioPlayer`, `AppModel`, `Perf`, …). Stream with
+  `log stream --info --style compact --predicate 'subsystem == "local.claudecodevoice"'`,
+  scope further with `&& category == "X"` as needed.
 
 ## Style
 
