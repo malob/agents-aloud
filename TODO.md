@@ -14,6 +14,17 @@ This is a lightweight holding pen for non-urgent issues that are real enough to 
 
 - Revisit the sidebar toolbar issue only if it becomes more noticeable or if a broader AppKit/window-chrome pass happens anyway.
 
+- **Re-enable markdown rendering in `TranscriptMarkdownView`.**
+  - Context: currently renders `Text(verbatim: content.text)` for all messages. Markdown rendering was disabled during a perf investigation when transcripts were unbounded and LazyVStack re-materialized cells on scroll, both of which made eager markdown parsing a hot path. Both conditions are gone: the 50-message cap (`TranscriptDisplayLimits`) bounds the worst case to ~50 cells, and we're on eager VStack so cells render once at mount with no on-scroll re-parse.
+  - Plumbing already in place: `TranscriptMessage.Content` (Sources/Models/TranscriptMessage.swift) classifies each message at parse time into `.literal` / `.plainText` / `.markdown` with a heuristic detector that handles Claude's XML-ish system prompts as `.literal` so they render verbatim. `TranscriptMarkdownView` already takes a `Content` value, not a raw string. The `Textual` dependency is declared in `Package.swift` but no source file imports it yet, kept ready for this restoration.
+  - Spike: branch the `body` of `TranscriptMarkdownView` on `content`:
+    - `.literal`, `.plainText` → current `Text(verbatim:)` path.
+    - `.markdown` → either `Text(AttributedString(markdown: text))` (Apple built-in, basic styling) or a `Textual` view (richer: code blocks, tables, etc.). Try Textual first since the dep is already there for that reason.
+  - Success criteria: long Claude/Codex sessions with code blocks and tables render markdown correctly without scroll stutter or visible per-cell parsing delay. Compare cold-load timing (`PerfLog` "Storage.loadTranscript" + initial render) before and after; eyeball scroll smoothness on a session with several code blocks.
+  - If it works: ship it. The CLAUDE.md `TranscriptMarkdownView` load-bearing entry can simplify to "renders markdown via the `Content` classification" instead of warning against re-enabling.
+  - If it doesn't (visible regression): revert is just deleting the `.markdown` case branch — no plumbing to undo.
+  - Estimated time: 20-30 min including manual testing on a heavy session.
+
 - **Replace `TranscriptDetailView`'s queued bottom-pin with a `.scrollPosition(id:anchor:)` + bottom-sentinel approach.**
   - Context: the view currently scrolls to the latest message via a generation-counter `Task` that runs `proxy.scrollTo` three times (Task.yield + 20 ms + 120 ms) to catch row-height re-measurement after the parent layout claims to be done. Works reliably under Codex's computer-use testing but the magic-number delays are ugly.
   - Spike: add a `Color.clear.frame(height: 1).id("bottom")` sentinel at the end of the VStack, bind `@State var scrollAnchorID: String? = "bottom"` via `.scrollPosition(id: $scrollAnchorID, anchor: .bottom)`, drive auto-pin off the same `userSetAtBottom` gate. The `.scrollPosition` binding-based API was previously avoided because it was broken with LazyVStack — now that we're on eager VStack (commit `fc89db9`, after the 50-message cap), it's worth retrying.
