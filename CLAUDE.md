@@ -174,9 +174,9 @@ Sources/
   The 20 ms / 120 ms intervals are empirical and ugly — they
   account for `Text(verbatim:)` rows finalizing height a frame or
   two after the parent layout claims to be done. A cleaner
-  alternative worth spiking later: `.scrollPosition(id:anchor:)`
-  binding against a dedicated bottom-sentinel view, which becomes
-  viable now that we're on VStack.
+  alternative — `.scrollPosition(id:anchor:)` against a bottom-
+  sentinel view — is on the [TODO.md](TODO.md) Later Ideas list
+  with the spike plan, success criteria, and revert path.
 
   `userSetAtBottom` is sampled ONLY when `ScrollPhase` transitions
   to `.idle` from a user-initiated phase
