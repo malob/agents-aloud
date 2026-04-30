@@ -27,22 +27,106 @@ struct SidebarView: View {
     // Three-segment filter: All / Claude / Codex. Icons-only with
     // tooltips per macOS HIG guidance for icon-only segmented
     // controls. Bound to `sidebarSourceFilter`; nil = All.
+    //
+    // The "All" segment stays on a system SF Symbol (it's a
+    // generic UI affordance, not a brand). The Claude / Codex
+    // segments use bundled custom symbols.
+    //
+    // Hand-rolled rather than `Picker(...).pickerStyle(...)` because
+    // both .segmented AND .palette flatten our custom multicolor
+    // .symbolset assets through their AppKit bridge:
+    //   - .segmented: Claude/Codex render as flat templates tinted
+    //     with secondaryLabelColor; in dark mode this desaturates to
+    //     a gray smudge.
+    //   - .palette (tried 2026-04-29): same template-tinting failure
+    //     mode AND path winding gets re-interpreted, so the Codex
+    //     hex outline renders as a filled shape instead of hollow.
+    // SwiftUI-native plain Buttons sidestep both bridges and
+    // preserve symbolRenderingMode(.multicolor) end-to-end. Don't
+    // re-spike this without a fresh OS-level test.
+    private static let pickerIconSize: CGFloat = 14
+
     private var sourceFilterPicker: some View {
-        Picker("Source", selection: Binding(
-            get: { model.sidebarSourceFilter },
-            set: { model.sidebarSourceFilter = $0 }
-        )) {
-            Image(systemName: "tray.full.fill")
-                .help("Show sessions from both Claude and Codex")
-                .tag(TranscriptSource?.none)
+        HStack(spacing: 2) {
+            sourceFilterButton(source: nil) {
+                Image(systemName: "tray.full.fill")
+                    .font(.system(size: Self.pickerIconSize, weight: .medium))
+            }
+            .help("Show sessions from both Claude and Codex")
+            .accessibilityLabel("All sources")
+
             ForEach(TranscriptSource.allCases) { source in
-                Image(systemName: source.symbolName)
-                    .help("Show only \(source.displayName) sessions")
-                    .tag(Optional(source))
+                sourceFilterButton(source: source) {
+                    SourceBrandIcon(
+                        source: source,
+                        size: Self.pickerIconSize,
+                        palette: .adaptive
+                    )
+                }
+                .help("Show only \(source.displayName) sessions")
+                .accessibilityLabel(source.displayName)
             }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
+        .padding(3)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        // VoiceOver: present the group as a single named control so
+        // users hear "Source filter" once instead of three unlabeled
+        // buttons. .contain keeps each segment individually focusable
+        // (with .isSelected applied to the active one), matching how
+        // sidebar toolbar groups read in Mail / Finder.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Source filter")
+        // Arrow-key cycling within the group, mirroring the native
+        // segmented Picker's behavior. Wraps at both ends. Only fires
+        // when the focus is on one of our buttons, so it doesn't
+        // collide with the List below.
+        .onKeyPress(.leftArrow) {
+            cycleFilter(direction: -1)
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            cycleFilter(direction: 1)
+            return .handled
+        }
+    }
+
+    // Order for arrow-key cycling. Sourced from TranscriptSource.allCases
+    // so adding a new source case automatically extends the cycle without
+    // touching this file.
+    private static let filterCycle: [TranscriptSource?] =
+        [nil] + TranscriptSource.allCases.map(Optional.init)
+
+    private func cycleFilter(direction: Int) {
+        guard let idx = Self.filterCycle.firstIndex(of: model.sidebarSourceFilter) else { return }
+        let count = Self.filterCycle.count
+        let next = (idx + direction + count) % count
+        model.sidebarSourceFilter = Self.filterCycle[next]
+    }
+
+    private func sourceFilterButton<Label: View>(
+        source: TranscriptSource?,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        let isSelected = model.sidebarSourceFilter == source
+
+        return Button {
+            model.sidebarSourceFilter = source
+        } label: {
+            label()
+                .foregroundStyle(isSelected ? .white : .primary)
+                .frame(width: 28, height: 24)
+                .contentShape(Rectangle())
+                .background {
+                    if isSelected {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.accentColor)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        // VoiceOver pairs this with the parent's "Source filter" group
+        // label so users hear e.g. "Source filter, Claude, selected".
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     @ViewBuilder
@@ -98,9 +182,7 @@ private struct SessionRowView: View {
             // glued to the title's first line even when the title
             // wraps to two lines.
             HStack(alignment: .firstTextBaseline, spacing: Self.iconTitleSpacing) {
-                Image(systemName: session.source.symbolName)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                SourceBrandIcon(source: session.source, size: 14)
                     .frame(width: Self.iconColumnWidth, alignment: .leading)
                     .help("\(session.source.displayName) session")
 
