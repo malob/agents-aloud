@@ -126,7 +126,16 @@ struct TranscriptDetailView: View {
                 }
             }
 
-            if isLoadingTranscript {
+            // Only show the loading spinner during a true cold load
+            // (no prior content to keep on screen). During a refresh of
+            // an already-populated session, TranscriptState.loading
+            // carries the prior `messages` through unchanged, so the
+            // ForEach above is already rendering them — overlaying a
+            // spinner on top reads as a flash of "loading…" over content
+            // the user can already see, which is what triggered this
+            // gate. Cold first-loads still show the spinner because
+            // `transcriptMessages` is empty until the await completes.
+            if isLoadingTranscript && transcriptMessages.isEmpty {
                 ProgressView("Loading transcript…")
                     .controlSize(.regular)
             } else if transcriptMessages.isEmpty {

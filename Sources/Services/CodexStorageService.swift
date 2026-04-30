@@ -24,11 +24,16 @@ import OSLog
 //   `Summary.isSubagent` based on `session_meta.agent_nickname` /
 //   `agent_role` / `source.subagent`; we filter them out here.
 //
-// - **No incremental tail-signature optimization for v1.** The Claude
-//   service tracks tail bytes for fast-path detection of append-only
-//   updates. Codex sessions append-only too, but we re-parse the
-//   whole file each time for now. Cheap on the bounded date window;
-//   we can add an incremental path later if it shows up in profiles.
+// - **mtime-keyed cache, no incremental-append fast path.** We cache
+//   the parsed message window keyed by file path, valid as long as
+//   mtime is unchanged. Re-clicks of an unchanged session and watcher
+//   ticks that don't actually advance mtime become sub-millisecond
+//   cache hits. On any mtime change we redo the full tail load (vs.
+//   Claude, which also has a tail-signature check to parse only the
+//   appended bytes). Codex's append cadence is low enough that the
+//   simpler invalidation is fine for now; the same byte-signature
+//   machinery from ClaudeStorageService can be lifted in here later
+//   if profiling ever shows the redundant tail-load on append events.
 actor CodexStorageService {
     private let fileManager = FileManager.default
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "CodexStorage")
@@ -36,6 +41,21 @@ actor CodexStorageService {
     private let sessionsRoot: URL
     private let archivedSessionsRoot: URL
     private let threadDatabase: CodexThreadDatabase
+    // mtime-keyed cache: keyed by transcript file path, valid while
+    // mtime is unchanged. Repeat clicks of an unchanged session and
+    // watcher ticks that don't actually advance mtime become
+    // sub-millisecond cache hits instead of re-parsing 256 KB+ of
+    // JSONL. We don't track fileSize / tail signature here (unlike
+    // ClaudeStorageService) — Codex doesn't get an incremental-append
+    // fast path; on any mtime change we redo the full tail load.
+    // The win is on no-op refreshes, which the watcher fires plenty
+    // of due to atomic rename / coalesced write events.
+    private var transcriptCache: [String: CachedTranscript] = [:]
+
+    private struct CachedTranscript {
+        let modifiedAt: Date
+        let messages: [TranscriptMessage]
+    }
 
     init(
         sessionsRoot: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -171,16 +191,34 @@ actor CodexStorageService {
 
     func loadTranscript(for session: ClaudeSessionSummary) throws -> [TranscriptMessage] {
         try PerfLog.time("CodexStorage.loadTranscript") {
+            // URL caches resourceValues on the instance; flush so we
+            // see the current mtime even after the file has grown
+            // since the URL was first constructed.
+            var transcriptURL = session.transcriptURL
+            transcriptURL.removeAllCachedResourceValues()
+            let cacheKey = transcriptURL.path
+            let modifiedAt = (try? transcriptURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+                ?? .distantPast
+
+            if let cached = transcriptCache[cacheKey], cached.modifiedAt == modifiedAt {
+                PerfLog.mark("CodexStorage.loadTranscript cacheHit")
+                return cached.messages
+            }
+
             // Tail-only read keyed off TranscriptDisplayLimits.messageCap.
             // For long Codex sessions this avoids re-parsing the whole
-            // multi-MB rollout JSONL on every refresh tick. Codex's first
-            // line is `session_meta` which the parser doesn't strictly
-            // need (sessionID comes from the filename), so dropping the
-            // file's prefix is safe.
-            try loadTranscriptTail(
-                url: session.transcriptURL,
+            // multi-MB rollout JSONL. Codex's first line is `session_meta`
+            // which the parser doesn't strictly need (sessionID comes
+            // from the filename), so dropping the file's prefix is safe.
+            let messages = try loadTranscriptTail(
+                url: transcriptURL,
                 targetCount: TranscriptDisplayLimits.messageCap
             )
+            transcriptCache[cacheKey] = CachedTranscript(
+                modifiedAt: modifiedAt,
+                messages: messages
+            )
+            return messages
         }
     }
 
