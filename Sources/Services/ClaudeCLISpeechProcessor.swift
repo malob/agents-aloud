@@ -144,7 +144,7 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
     private static let subprocessTimeout: Duration = .seconds(60)
 
     // System prompt steering the model toward "rewrite for speech,
-    // preserve everything." The two NEVER lines are both load-bearing:
+    // preserve everything." Several rules are load-bearing:
     //
     //  - Without the URL/path-spelling line, the model (Haiku and
     //    Sonnet both) dot-slash-spells URLs and paths letter by letter.
@@ -152,8 +152,14 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
     //    filenames like `AppConfig.swift` intact — TTS then reads
     //    them as "AppConfig dot swift." Caught this in a 4-run
     //    benchmark: 3/4 runs leaked filename-with-extension.
+    //  - Without the blockquote-verbatim line, the model paraphrases
+    //    drafts of messages / quoted passages that the user wants to
+    //    hear word-for-word (e.g. "the assistant suggested writing to
+    //    Alexander about scheduling" in place of the actual proposed
+    //    text). Markdown blockquotes (`> …`) are the cleanest signal
+    //    Claude itself uses when surfacing draft wording.
     //
-    // Keep both rules. They add ~300 chars to the prompt and the
+    // Keep all three rules. They add ~500 chars to the prompt and the
     // latency impact is within API-side noise.
     static let defaultInstructions = """
     Rewrite the input as plain spoken English suitable for text-to-speech.
@@ -171,6 +177,14 @@ final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
     to files by their short name plus the language or purpose, for \
     example "the AppConfig Swift file," "the regenerate-fixtures \
     script," "the benchmarks CSV." Never use full paths.
+
+    Treat blockquotes (lines prefixed with `>`) as verbatim — typically \
+    they hold a draft message or proposed wording the listener wants \
+    to hear word-for-word. Read the quoted prose exactly as written, \
+    with no paraphrasing, summarizing, or substitution within the \
+    quote. Markdown markers inside the quote are still stripped per \
+    the rule above; only the actual prose stays verbatim. A short \
+    natural lead-in like "the draft reads:" is fine.
 
     Describe code in natural English, preserving every identifier name \
     exactly as written.

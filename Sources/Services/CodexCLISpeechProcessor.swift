@@ -124,6 +124,14 @@ final class CodexCLISpeechProcessor: SpeechTextProcessor {
     example "the AppConfig Swift file," "the regenerate-fixtures \
     script," "the benchmarks CSV." Never use full paths.
 
+    Treat blockquotes (lines prefixed with `>`) as verbatim — typically \
+    they hold a draft message or proposed wording the listener wants \
+    to hear word-for-word. Read the quoted prose exactly as written, \
+    with no paraphrasing, summarizing, or substitution within the \
+    quote. Markdown markers inside the quote are still stripped per \
+    the rule above; only the actual prose stays verbatim. A short \
+    natural lead-in like "the draft reads:" is fine.
+
     Describe code in natural English, preserving every identifier name \
     exactly as written.
 
