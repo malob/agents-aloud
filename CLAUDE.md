@@ -139,29 +139,32 @@ Sources/
   appended content. The existing test
   `loadTranscriptIncorporatesAppendedJSONLLines` will catch regressions.
 
-- **Scroll-to-bottom:** three layered mechanisms in
-  `TranscriptDetailView`, each addressing a different case —
-  removing any one breaks something subtle:
-  1. `.defaultScrollAnchor(.bottom)` on the ScrollView lands
-     correctly at initial mount for sessions with wildly-variable
-     message heights. (The old manual `proxy.scrollTo` path landed
-     mid-content because LazyVStack reports sum-of-estimated-heights,
-     not actuals.) Only fires on first mount, not on data change.
-  2. `onScrollGeometryChange` watching `contentSize` + a
-     `userSetAtBottom` gate sampled in `onScrollPhaseChange` →
-     auto-pin to new messages while respecting "user scrolled up,
-     don't yank."
-  3. `.onChange(of: session.id)` resets `userSetAtBottom` and
-     explicitly scrolls to the latest message on session switch.
-     `TranscriptDetailView` is reused across sessions (only the
-     `session` parameter changes), so without this reset, clicking
-     from a scrolled-up session A into session B inherits A's
-     contentOffset AND `userSetAtBottom=false`, landing B
-     mid-scroll. `.defaultScrollAnchor` doesn't help because it
-     only fires on initial mount.
-  See [TranscriptDetailView.swift](Sources/Views/TranscriptDetailView.swift)
-  header comment for the LazyVStack-bug context driving the whole
-  shape.
+- **Scroll-to-bottom uses eager VStack, not LazyVStack.** The 50-
+  message cap (TranscriptDisplayLimits) keeps eager layout cheap and
+  lets SwiftUI's standard anchor APIs work. With LazyVStack,
+  `.defaultScrollAnchor(.bottom)` and `proxy.scrollTo(id, anchor:
+  .bottom)` both reliably landed "one or two messages short of the
+  true bottom" because cell-height estimates diverged from actuals
+  (Apple Forums thread 741406, still open). Switching to VStack made
+  the bug class go away.
+
+  Three mechanisms are layered in `TranscriptDetailView`:
+  1. `.defaultScrollAnchor(.bottom)` lands at bottom on initial
+     ScrollView mount.
+  2. `onScrollGeometryChange(contentSize)` + `userSetAtBottom` gate
+     (sampled in `onScrollPhaseChange` only on user-initiated phase
+     transitions) → auto-pin to the latest message when new content
+     arrives, but only when the user is at the bottom.
+  3. `.id(session.id)` on `TranscriptDetailView` in
+     [ContentView.swift](Sources/Views/ContentView.swift) tears down
+     and rebuilds the whole view on session switch, which resets
+     @State and gives mechanism 1 a fresh mount to fire on. Without
+     this `.id`, switching from a scrolled-up session A to session B
+     would inherit A's contentOffset and `userSetAtBottom=false`,
+     landing B mid-scroll.
+
+  Don't switch back to LazyVStack unless you're also raising the
+  cap to a level where eager layout actually hurts.
 
 - **`TranscriptMarkdownView` renders `Text(verbatim:)` deliberately.**
   Markdown rendering was disabled during a perf investigation;

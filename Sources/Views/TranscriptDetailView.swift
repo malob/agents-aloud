@@ -2,36 +2,46 @@ import SwiftUI
 
 // Chat-style auto-pin-to-bottom — READ BEFORE "SIMPLIFYING".
 //
-// If you're reaching for `.defaultScrollAnchor(.bottom)`,
-// `.defaultScrollAnchor(.bottom, for: .sizeChanges)`, or
-// `.scrollPosition(id:anchor:)` to shrink this view: those APIs do not
-// work with LazyVStack. Known Apple bug, reported on the Developer
-// Forums in 2023 (thread 741406) and still broken in macOS 26. Symptoms:
-// (a) view renders blank when content > screen height until the user
-// scrolls a bit, (b) no auto-pin when new messages arrive. Multiple
-// attempts to use those APIs here were reverted after observation.
+// History: this view used to wrap a `LazyVStack` with substantial
+// workaround machinery because LazyVStack's height estimation
+// reliably broke `.defaultScrollAnchor(.bottom)` and
+// `.scrollPosition(id:anchor:)` (Apple Developer Forums thread
+// 741406, still open in macOS 26). After capping the visible
+// transcript window at 50 messages
+// (`TranscriptDisplayLimits.messageCap`), eager `VStack` is well
+// within budget and lets the standard SwiftUI anchor APIs work.
+// This eliminated a class of "lands one or two messages short of
+// the true bottom" bugs that the LazyVStack workaround couldn't
+// fully suppress.
 //
-// The pattern below is the community-verified workaround (see e.g.
-// https://medium.com/@itsuki.enjoy/swiftui-2-5-reliable-ways-to-automatically-scroll-to-the-bottom-of-scrollview-1581711e957c):
-//
-//   1. `ScrollViewReader` + `proxy.scrollTo(id, anchor: .bottom)` —
-//      the only path that reliably lands at the bottom with LazyVStack.
-//   2. Listen to `contentSize` changes (not `messages.last?.id`); this
-//      catches initial layout, cell materialization, new-message
-//      append, and (future) streaming-edit growth under one signal.
-//   3. `userSetAtBottom` gates the auto-pin. It is sampled ONLY when
-//      `ScrollPhase` transitions to `.idle` FROM a user-initiated phase
-//      (`.tracking` / `.decelerating` / `.interacting`). Updating it
-//      from `.animating` transitions (programmatic scrolls) or from
-//      content-growth-driven idle transitions would latch it to false
-//      and silently break auto-pin. That trap was seen in the logs.
+// What's still here:
+//   1. `.defaultScrollAnchor(.bottom)` for initial-mount anchoring.
+//      ContentView wraps this view in `.id(session.id)` so the
+//      view (and its @State / ScrollView) is rebuilt on every
+//      session switch, which means initial-mount runs on every
+//      click — landing at bottom every time.
+//   2. `userSetAtBottom` gate on a `proxy.scrollTo` driven by
+//      `onScrollGeometryChange(contentSize)`. Pins to the latest
+//      message when new content arrives (live-read append, async
+//      cold load completing), but only if the user hasn't
+//      deliberately scrolled away from the bottom.
+//   3. `userSetAtBottom` is sampled ONLY when `ScrollPhase`
+//      transitions to `.idle` FROM a user-initiated phase
+//      (`.tracking` / `.decelerating` / `.interacting`). Updating
+//      from `.animating` (programmatic scrolls) or from
+//      content-growth-driven idle transitions would latch it to
+//      false and silently break auto-pin. That trap was seen in
+//      the logs.
 //   4. The 250px threshold for "at bottom" is empirical: with
-//      `.scrollEdgeEffectStyle(.soft, for: [.top, .bottom])` the scroll
-//      physics reserve ~165px of scroll extent for the blur edge, so the
-//      user's visual "bottom" lands at `remaining ≈ 165`, not 0.
+//      `.scrollEdgeEffectStyle(.soft, for: [.top, .bottom])` the
+//      scroll physics reserve ~165px of scroll extent for the
+//      blur edge, so the user's visual "bottom" lands at
+//      `remaining ≈ 165`, not 0.
 //
-// If this view ever feels over-engineered, the reason is that SwiftUI's
-// simpler declarative primitives for chat UIs are currently broken.
+// If you're tempted to switch back to LazyVStack: don't, unless
+// you're also raising the 50-message cap to a level where eager
+// layout would actually hurt. Lazy comes back with the bugs
+// described above.
 struct TranscriptDetailView: View {
     let model: AppModel
     let session: ClaudeSessionSummary
@@ -54,7 +64,12 @@ struct TranscriptDetailView: View {
         ZStack {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
+                    // Eager VStack rather than LazyVStack — see file
+                    // header. The 50-message cap means we're rendering
+                    // at most 50 cells, which is well within
+                    // eager-layout budget and lets the standard
+                    // anchor APIs work reliably.
+                    VStack(alignment: .leading, spacing: 0) {
                         ForEach(transcriptMessages) { message in
                             MessageRowView(
                                 message: message,
@@ -76,19 +91,18 @@ struct TranscriptDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .background(.clear)
-                // Initial anchor only. Without this, sessions with
-                // variable-height messages (big code blocks, XML dumps)
-                // land mid-transcript on first render because LazyVStack's
-                // estimated cell heights diverge from actuals — summing
-                // estimates gives a contentSize smaller than reality, so
-                // `proxy.scrollTo(lastID, anchor: .bottom)` lands one or
-                // two messages short of the true bottom. `.defaultScrollAnchor(.bottom)`
-                // sidesteps this by letting SwiftUI compute the initial
-                // offset against the true laid-out content. We deliberately
-                // don't use `.defaultScrollAnchor(.bottom, for: .sizeChanges)`
-                // because the manual machinery below handles new-message
-                // auto-scroll and needs userSetAtBottom gating to respect
-                // scroll-up; the sizeChanges anchor fights that.
+                // Initial-mount anchor. Combined with the `.id(session.id)`
+                // wrapper in ContentView, this fires on every session
+                // switch (since each switch produces a fresh ScrollView)
+                // and lands us at the bottom of whatever cached or
+                // freshly-loaded content the new session has.
+                //
+                // Deliberately NOT `.defaultScrollAnchor(.bottom, for: .sizeChanges)` —
+                // that would yank the user back to the bottom on every
+                // new-message arrival even when they've scrolled up to
+                // read older content. The manual onScrollGeometryChange
+                // machinery below handles new-content pinning with the
+                // userSetAtBottom gate.
                 .defaultScrollAnchor(.bottom)
                 .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
                 .onScrollGeometryChange(for: CGSize.self, of: { $0.contentSize }) { _, _ in
@@ -123,27 +137,6 @@ struct TranscriptDetailView: View {
                             PerfLog.mark("Scroll userSetAtBottom=\(userSetAtBottom)")
                         }
                     }
-                }
-                .onChange(of: session.id, initial: false) { _, _ in
-                    // Session switch: reset the scroll-up gate and explicitly
-                    // anchor to the latest message. TranscriptDetailView is
-                    // reused across sessions (the @State here is per-instance,
-                    // not per-session), and .defaultScrollAnchor only fires on
-                    // initial ScrollView mount — without these resets, clicking
-                    // session B after scrolling up in session A inherits A's
-                    // contentOffset AND A's userSetAtBottom=false, so B's
-                    // transcript loads silently mid-scroll instead of at
-                    // bottom. Cached messages for the new session are already
-                    // populated synchronously by AppModel via
-                    // .loading(messages: cached), so the scrollTo lands on the
-                    // right ID; the contentSize watcher above handles the
-                    // async-fresh-load case once the await completes.
-                    userSetAtBottom = true
-                    liveIsAtBottom = true
-                    if let lastID = transcriptMessages.last?.id {
-                        proxy.scrollTo(lastID, anchor: .bottom)
-                    }
-                    PerfLog.mark("Scroll session changed sessionID=\(session.id)")
                 }
             }
 
