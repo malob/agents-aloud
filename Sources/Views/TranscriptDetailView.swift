@@ -124,6 +124,27 @@ struct TranscriptDetailView: View {
                         }
                     }
                 }
+                .onChange(of: session.id, initial: false) { _, _ in
+                    // Session switch: reset the scroll-up gate and explicitly
+                    // anchor to the latest message. TranscriptDetailView is
+                    // reused across sessions (the @State here is per-instance,
+                    // not per-session), and .defaultScrollAnchor only fires on
+                    // initial ScrollView mount — without these resets, clicking
+                    // session B after scrolling up in session A inherits A's
+                    // contentOffset AND A's userSetAtBottom=false, so B's
+                    // transcript loads silently mid-scroll instead of at
+                    // bottom. Cached messages for the new session are already
+                    // populated synchronously by AppModel via
+                    // .loading(messages: cached), so the scrollTo lands on the
+                    // right ID; the contentSize watcher above handles the
+                    // async-fresh-load case once the await completes.
+                    userSetAtBottom = true
+                    liveIsAtBottom = true
+                    if let lastID = transcriptMessages.last?.id {
+                        proxy.scrollTo(lastID, anchor: .bottom)
+                    }
+                    PerfLog.mark("Scroll session changed sessionID=\(session.id)")
+                }
             }
 
             // Only show the loading spinner during a true cold load

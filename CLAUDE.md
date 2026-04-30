@@ -139,16 +139,29 @@ Sources/
   appended content. The existing test
   `loadTranscriptIncorporatesAppendedJSONLLines` will catch regressions.
 
-- **Scroll-to-bottom:** `.defaultScrollAnchor(.bottom)` on the
-  ScrollView lands correctly at initial load for sessions with
-  wildly-variable message heights (the old manual `proxy.scrollTo`
-  path landed mid-content because LazyVStack reports
-  sum-of-estimated-heights, not actuals). Paired with manual
-  machinery — `onScrollGeometryChange` + `userSetAtBottom` gate — for
-  new-message auto-pin that respects "user scrolled up, don't yank."
-  Both mechanisms are needed; removing either breaks a different
-  case. See [TranscriptDetailView.swift](Sources/Views/TranscriptDetailView.swift)
-  header comment.
+- **Scroll-to-bottom:** three layered mechanisms in
+  `TranscriptDetailView`, each addressing a different case —
+  removing any one breaks something subtle:
+  1. `.defaultScrollAnchor(.bottom)` on the ScrollView lands
+     correctly at initial mount for sessions with wildly-variable
+     message heights. (The old manual `proxy.scrollTo` path landed
+     mid-content because LazyVStack reports sum-of-estimated-heights,
+     not actuals.) Only fires on first mount, not on data change.
+  2. `onScrollGeometryChange` watching `contentSize` + a
+     `userSetAtBottom` gate sampled in `onScrollPhaseChange` →
+     auto-pin to new messages while respecting "user scrolled up,
+     don't yank."
+  3. `.onChange(of: session.id)` resets `userSetAtBottom` and
+     explicitly scrolls to the latest message on session switch.
+     `TranscriptDetailView` is reused across sessions (only the
+     `session` parameter changes), so without this reset, clicking
+     from a scrolled-up session A into session B inherits A's
+     contentOffset AND `userSetAtBottom=false`, landing B
+     mid-scroll. `.defaultScrollAnchor` doesn't help because it
+     only fires on initial mount.
+  See [TranscriptDetailView.swift](Sources/Views/TranscriptDetailView.swift)
+  header comment for the LazyVStack-bug context driving the whole
+  shape.
 
 - **`TranscriptMarkdownView` renders `Text(verbatim:)` deliberately.**
   Markdown rendering was disabled during a perf investigation;
