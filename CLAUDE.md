@@ -57,6 +57,53 @@ Sources/
   rewrite the prefix. Comparing the last ~128 cached bytes against
   what's now on disk guards the fast path; mismatch → full reparse.
 
+- **Transcripts hold a 50-message rolling window, never the full JSONL.**
+  Cold loads tail-read in widening chunks (256 KB initial, doubles on
+  miss) until they have 50 user/assistant messages — the whole file is
+  never parsed regardless of session length. Claude's incremental-
+  append fast path trims the merged list back to the cap on each
+  append; Codex doesn't have an incremental path but caches by mtime
+  so re-clicks are sub-ms. There is intentionally no "load earlier"
+  affordance — the app's job is reading current messages aloud, not
+  historical scrollback. Don't lift the cap "because we have the
+  bytes" without re-running the cold-load timing on a long session.
+  See: [Sources/Models/TranscriptDisplayLimits.swift](Sources/Models/TranscriptDisplayLimits.swift),
+  [Sources/Support/TranscriptTailReader.swift](Sources/Support/TranscriptTailReader.swift)
+
+- **The "Loading transcript…" overlay is gated on
+  `transcriptMessages.isEmpty`, not just `isLoadingTranscript`.**
+  `TranscriptState.loading` carries prior messages through
+  deliberately so the screen doesn't flash empty during watcher
+  ticks; the ForEach above the overlay is already re-rendering them.
+  An unconditional spinner used to flash over already-visible content
+  on every refresh — perceptible especially on Codex sessions where
+  the parse cost is non-trivial (5-20 lines per visible message). The
+  cold-load case still works because `transcriptMessages` is empty
+  until the await completes.
+  See: [Sources/Views/TranscriptDetailView.swift](Sources/Views/TranscriptDetailView.swift)
+
+- **Custom multicolor `.symbolset` assets cannot be rendered through
+  SwiftUI Picker bridges on macOS.** Both `.pickerStyle(.segmented)`
+  and `.pickerStyle(.palette)` route through AppKit, which template-
+  tints the image, flattens the multicolor palette to a single fill,
+  and re-interprets path winding (the Codex hex outline renders
+  filled, not hollow). The sidebar source filter is a hand-rolled
+  HStack of plain Buttons specifically because of this. Don't
+  re-spike to a Picker without a fresh OS-level test confirming
+  the bridge has been fixed.
+  See: [Sources/Views/SidebarView.swift](Sources/Views/SidebarView.swift)
+
+- **SwiftPM doesn't run `actool`; `build_and_run.sh` does.** The
+  `.process("Resources")` declaration in `Package.swift` ships the
+  `.xcassets` source files into the SPM-emitted resource bundle but
+  never compiles them. The staged-app build wrapper invokes
+  `xcrun actool` against the resource bundle to produce `Assets.car`.
+  Stripping that step ships an app that can't find its custom SF
+  Symbols at runtime — the symbolset PNGs are there, but
+  `Image("claude", bundle: …)` returns nil because there's no
+  compiled catalog to look them up in.
+  See: [script/build_and_run.sh](script/build_and_run.sh)
+
 - **`URL.resourceValues` is cached on the URL instance.** After the
   `ClaudeSessionSummary.transcriptURL: URL` refactor we had to add
   `removeAllCachedResourceValues()` before re-reading mtime/fileSize,
