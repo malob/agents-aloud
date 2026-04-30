@@ -139,32 +139,56 @@ Sources/
   appended content. The existing test
   `loadTranscriptIncorporatesAppendedJSONLLines` will catch regressions.
 
-- **Scroll-to-bottom uses eager VStack, not LazyVStack.** The 50-
-  message cap (TranscriptDisplayLimits) keeps eager layout cheap and
-  lets SwiftUI's standard anchor APIs work. With LazyVStack,
-  `.defaultScrollAnchor(.bottom)` and `proxy.scrollTo(id, anchor:
-  .bottom)` both reliably landed "one or two messages short of the
-  true bottom" because cell-height estimates diverged from actuals
-  (Apple Forums thread 741406, still open). Switching to VStack made
-  the bug class go away.
+- **Scroll-to-bottom is a four-part pragmatic shim around SwiftUI's
+  poor chat-UI scroll story.** The framework simply does not have a
+  reliable "stick to bottom while content settles" primitive, and
+  multiple iterations have all leaked at different seams. Current
+  layered mechanisms in `TranscriptDetailView` (none of them
+  optional — each catches a different real failure mode):
 
-  Three mechanisms are layered in `TranscriptDetailView`:
-  1. `.defaultScrollAnchor(.bottom)` lands at bottom on initial
-     ScrollView mount.
-  2. `onScrollGeometryChange(contentSize)` + `userSetAtBottom` gate
-     (sampled in `onScrollPhaseChange` only on user-initiated phase
-     transitions) → auto-pin to the latest message when new content
-     arrives, but only when the user is at the bottom.
-  3. `.id(session.id)` on `TranscriptDetailView` in
-     [ContentView.swift](Sources/Views/ContentView.swift) tears down
-     and rebuilds the whole view on session switch, which resets
-     @State and gives mechanism 1 a fresh mount to fire on. Without
-     this `.id`, switching from a scrolled-up session A to session B
-     would inherit A's contentOffset and `userSetAtBottom=false`,
-     landing B mid-scroll.
+  1. **Eager VStack**, not LazyVStack. The 50-message cap
+     (`TranscriptDisplayLimits`) keeps eager layout cheap. With
+     LazyVStack, `.defaultScrollAnchor(.bottom)` and
+     `proxy.scrollTo(id, anchor: .bottom)` reliably landed "one or
+     two messages short of the true bottom" because cell-height
+     estimates diverged from actuals (Apple Forums thread 741406,
+     still open). Don't switch back unless raising the cap.
+  2. **`.defaultScrollAnchor(.bottom)`** on the ScrollView lands at
+     bottom on initial mount.
+  3. **`.id(session.id)` on `TranscriptDetailView` in ContentView**
+     rebuilds the whole view on session switch. Resets @State and
+     gives mechanism 2 a fresh mount to fire on.
+  4. **Generation-counter pin task** (`bottomPinGeneration` /
+     `bottomPinTargetID`). `requestBottomPin()` is called from
+     `.onAppear`, `transcriptMessages.last?.id` change, and
+     `onScrollGeometryChange(contentSize)` change. Each call bumps
+     the generation; `.task(id: bottomPinGeneration)` cancels the
+     prior task and runs three no-animation `proxy.scrollTo`
+     passes (after a `Task.yield()`, then 20 ms, then 120 ms) to
+     catch row-height re-measurement that happens after the
+     initial layout settles. Each pass re-checks both
+     `userSetAtBottom` AND `transcriptMessages.last?.id ==
+     targetID` so stale tasks can't fight a newer pin or yank a
+     user who has scrolled away.
 
-  Don't switch back to LazyVStack unless you're also raising the
-  cap to a level where eager layout actually hurts.
+  The 20 ms / 120 ms intervals are empirical and ugly — they
+  account for `Text(verbatim:)` rows finalizing height a frame or
+  two after the parent layout claims to be done. A cleaner
+  alternative worth spiking later: `.scrollPosition(id:anchor:)`
+  binding against a dedicated bottom-sentinel view, which becomes
+  viable now that we're on VStack.
+
+  `userSetAtBottom` is sampled ONLY when `ScrollPhase` transitions
+  to `.idle` from a user-initiated phase
+  (`.tracking` / `.decelerating` / `.interacting`). Updating it
+  from `.animating` (programmatic scrolls) or content-growth-
+  driven idle transitions would latch it false and break auto-pin
+  silently — that trap was seen in the logs.
+
+  The 250 px "at bottom" threshold is empirical: with
+  `.scrollEdgeEffectStyle(.soft, for: [.top, .bottom])` the scroll
+  physics reserve ~165 px for the blur edge, so the user's visual
+  bottom lands at `remaining ≈ 165`, not 0.
 
 - **`TranscriptMarkdownView` renders `Text(verbatim:)` deliberately.**
   Markdown rendering was disabled during a perf investigation;

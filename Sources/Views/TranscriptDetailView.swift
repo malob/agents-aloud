@@ -47,6 +47,8 @@ struct TranscriptDetailView: View {
     let session: ClaudeSessionSummary
     @State private var userSetAtBottom = true
     @State private var liveIsAtBottom = true
+    @State private var bottomPinGeneration = 0
+    @State private var bottomPinTargetID: TranscriptMessage.ID?
 
     private var transcriptMessages: [TranscriptMessage] {
         model.transcriptState.messages(for: session.id)
@@ -105,15 +107,38 @@ struct TranscriptDetailView: View {
                 // userSetAtBottom gate.
                 .defaultScrollAnchor(.bottom)
                 .scrollEdgeEffectStyle(.soft, for: [.top, .bottom])
+                .onAppear {
+                    requestBottomPin()
+                }
+                .onChange(of: transcriptMessages.last?.id) { _, _ in
+                    requestBottomPin()
+                }
+                .task(id: bottomPinGeneration) {
+                    guard let targetID = bottomPinTargetID else { return }
+
+                    // Let SwiftUI finish the layout pass that triggered
+                    // this pin request before asking for the final row.
+                    await Task.yield()
+                    guard !Task.isCancelled else { return }
+                    scrollToBottomIfStillPinned(proxy: proxy, targetID: targetID)
+
+                    // Text rows can settle a frame or two later after
+                    // wrapping against the final container width. These
+                    // no-animation corrections turn the "old bottom" into
+                    // the actual bottom without fighting a user who has
+                    // deliberately scrolled away.
+                    for delay in [20, 120] {
+                        try? await Task.sleep(for: .milliseconds(delay))
+                        guard !Task.isCancelled else { return }
+                        scrollToBottomIfStillPinned(proxy: proxy, targetID: targetID)
+                    }
+                }
                 .onScrollGeometryChange(for: CGSize.self, of: { $0.contentSize }) { _, _ in
                     // Any content size change — initial render, cells materializing,
                     // new message appended, existing message growing — re-pin to
                     // the last message, but only if the user hasn't deliberately
                     // scrolled away from the bottom.
-                    guard userSetAtBottom else { return }
-                    if let lastID = transcriptMessages.last?.id {
-                        proxy.scrollTo(lastID, anchor: .bottom)
-                    }
+                    requestBottomPin()
                 }
                 .onScrollGeometryChange(for: Bool.self, of: { geo in
                     // ~165px of the natural scroll extent is reserved by
@@ -175,5 +200,19 @@ struct TranscriptDetailView: View {
         .navigationTitle(session.summary)
         .navigationSubtitle(session.projectPath)
     }
-}
 
+    private func requestBottomPin() {
+        guard userSetAtBottom, let lastID = transcriptMessages.last?.id else { return }
+        bottomPinTargetID = lastID
+        bottomPinGeneration += 1
+    }
+
+    private func scrollToBottomIfStillPinned(proxy: ScrollViewProxy, targetID: TranscriptMessage.ID) {
+        guard userSetAtBottom, transcriptMessages.last?.id == targetID else { return }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            proxy.scrollTo(targetID, anchor: .bottom)
+        }
+    }
+}
