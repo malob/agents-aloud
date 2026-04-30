@@ -119,6 +119,16 @@ final class CodexThreadDatabase: Sendable {
         // versions we've seen. Filtering on it killed the sidebar.
         // Live with the chance that a few empty-content sessions
         // appear; the user can click past them.
+        //
+        // Three subagent filters layered together because Codex Desktop
+        // encodes "this is a sub-agent rollout, hide it from the user"
+        // in three different shapes:
+        //   - agent_nickname / agent_role columns (legacy guardian rows)
+        //   - source as JSON object: `{"subagent":{"other":"guardian"}}`
+        //   - source as JSON object: `{"subagent":"memory_consolidation"}`
+        // The CASE / json_valid guard keeps plain-string sources like
+        // `vscode` (not valid JSON) from short-circuiting the predicate.
+        // Don't drop any of these — see CodexThreadDatabaseTests.
         let sql = """
         SELECT id,
                rollout_path,
