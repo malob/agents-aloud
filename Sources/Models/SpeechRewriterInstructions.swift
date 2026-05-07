@@ -33,12 +33,40 @@ import Foundation
 //    and labelled drafts — not just the markdown `>` shape —
 //    without making the rewriter model what a listener wants
 //    (a level of abstraction past the actual decision).
+//  - Without the identifier-splitting line, the macOS `say` engine
+//    spells long camelCase / snake_case identifiers letter by
+//    letter. Short ones (e.g. `userId`) usually read fine, but
+//    `processedTranscriptMessageBuffer`-class names get spelled
+//    one character at a time. Splitting on case/underscore
+//    boundaries keeps the words intact while giving `say` natural
+//    word breaks.
+//  - Without the angle-bracket strip, the macOS `say` engine
+//    frequently truncates mid-sentence when it encounters `<` or
+//    `>` — most common around HTML/XML tags or generic type
+//    parameters. ElevenLabs handles them fine, but stripping
+//    costs nothing there and avoids the macOS regression.
+//  - Without the voice-preservation preamble, the rewriter (itself
+//    another LLM instance) defaults to translator/summary mode:
+//    paraphrasing the reply or shifting it into third-person ("the
+//    assistant said…", "the response covers…"). Symptom is subtle
+//    in writing but jarring in audio. The preamble names the input
+//    as another AI's first-person reply and the task as medium
+//    translation, not content paraphrase. Paired with swapping
+//    "Describe code" → "Read code" so no body rule pulls back
+//    toward outside-observer voice.
 //
-// Keep all three rules. They add ~500 chars to the prompt and the
+// Keep all the rules. They add ~1000 chars to the prompt and the
 // latency impact is within API-side noise.
 enum SpeechRewriterInstructions {
     static let defaultText = """
-    Rewrite the input as plain spoken English suitable for text-to-speech.
+    The input is another AI model's reply to a user. Your task is to \
+    translate that reply from its written form — markdown, code \
+    blocks, structured formatting — into spoken English that a \
+    text-to-speech engine can read aloud naturally. You are \
+    translating the medium, not the message: the same speaker, the \
+    same voice, the same content, just spoken instead of written. \
+    Don't summarize, paraphrase, narrate, or describe the reply from \
+    outside.
 
     Strip all markdown (headings, bold, italic, code fences, table pipes, \
     bullet and numbered list markers).
@@ -54,6 +82,15 @@ enum SpeechRewriterInstructions {
     example "the AppConfig Swift file," "the regenerate-fixtures \
     script," "the benchmarks CSV." Never use full paths.
 
+    NEVER include angle brackets (`<` or `>`) in the output. They \
+    serve no purpose in spoken text and some text-to-speech engines \
+    truncate or stall when they encounter them. Rephrase comparisons \
+    in plain English ("x < y" → "x less than y"); for tag-like \
+    content (HTML, XML, generic type parameters) drop the brackets \
+    and read the inner content directly: "<task-notification>" \
+    becomes "task notification," "Array<String>" becomes "array of \
+    strings."
+
     Some passages must be preserved verbatim because the words \
     themselves are the content — drafts of messages, proposed \
     phrasings, exact quotes, anything where the specific wording is \
@@ -68,8 +105,16 @@ enum SpeechRewriterInstructions {
     A short lead-in like "the draft reads:" is fine before a \
     verbatim section.
 
-    Describe code in natural English, preserving every identifier name \
-    exactly as written.
+    Read code in natural English, preserving every identifier \
+    exactly as named. For multi-word identifiers in any case style — \
+    camelCase, snake_case, PascalCase, kebab-case — split on word \
+    boundaries with spaces so the words read naturally: \
+    `processedTranscriptMessageBuffer` becomes "processed transcript \
+    message buffer," `MAX_RETRY_COUNT` becomes "max retry count," \
+    `user-id-token` becomes "user id token." Single-word identifiers \
+    stay as-is. Some text-to-speech engines spell long unsplit \
+    identifiers letter by letter; the splitting keeps the named \
+    entity intact for the listener.
 
     Preserve every piece of information — do not summarize or drop \
     detail. Do not add preamble, commentary, or framing. Return only \
