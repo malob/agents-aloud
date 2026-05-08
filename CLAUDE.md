@@ -63,15 +63,23 @@ Sources/
   See: [ClaudeStorageService.swift](Sources/Services/ClaudeStorageService.swift)
   top-of-file comment.
 
-- **Codex sessions are indexed via SQLite, not by walking the JSONL
-  filesystem.** `~/.codex/state_5.sqlite`'s `threads` table is the
-  authoritative session list; we open it read-only with the
-  `?mode=ro&immutable=1` URI form because plain read-only opens
-  intermittently fail with `SQLITE_CANTOPEN` while Codex's writers
-  hold WAL/SHM file locks. Walking `~/.codex/sessions/` directly was
-  the v0 implementation but it doesn't have project metadata, custom
-  titles, or archive state — the SQLite version is required for
-  parity with what `codex` itself shows.
+- **Codex sessions are indexed via SQLite, snapshotted before every
+  read.** `~/.codex/state_5.sqlite`'s `threads` table is the
+  authoritative session list; titles and archive state live ONLY
+  there (the rollout JSONL has no title field), so we can't fall back
+  to walking the filesystem for sidebar parity with `codex` itself.
+  We can't read the live DB directly either — plain
+  `SQLITE_OPEN_READONLY` fails with `SQLITE_CANTOPEN` because SQLite
+  needs to write the -shm file for WAL lock coordination and Codex's
+  writers hold those locks; `?mode=ro&immutable=1` succeeds but
+  silently misses every write still in the -wal (observed: a 3.8 MB
+  WAL containing hours of unflushed activity, causing renamed
+  sessions to display the original first user prompt and stale
+  updated_at to drop sessions out of the `since:` cutoff entirely).
+  Each loadThreads call therefore copies main + -wal + -shm into a
+  per-call temp dir under `FileManager.default.temporaryDirectory`
+  and reads the copy with full WAL semantics. APFS clones the files
+  via copy-on-write, so the cost is metadata-only.
   See: [CodexThreadDatabase.swift](Sources/Services/CodexThreadDatabase.swift),
   [CodexStorageService.swift](Sources/Services/CodexStorageService.swift)
 

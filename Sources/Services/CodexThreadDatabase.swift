@@ -24,12 +24,14 @@ import SQLite3
 // `SQLite3` module. No third-party dependency, no subprocess —
 // just an in-process function call.
 //
-// Concurrent access: we open with SQLITE_OPEN_READONLY, which lets
-// us coexist with the live Codex CLI writing to the same DB (it
-// uses WAL mode per the .sqlite-wal/.sqlite-shm files alongside).
+// Concurrent access: we don't read the live DB directly. Each
+// loadThreads call snapshots the .sqlite + .sqlite-wal + .sqlite-shm
+// files into a per-call temp directory and reads from the copy. See
+// the comment block inside loadThreads for the why — neither
+// SQLITE_OPEN_READONLY nor `?immutable=1` against the live DB gives
+// us a correct read while Codex is actively writing.
 // SQLITE_OPEN_NOMUTEX is fine because each call opens its own
 // short-lived connection — no shared SQLite handle to protect.
-// Concurrent SQLite readers are safe by design.
 //
 // Plain class (not actor) because there's no per-instance mutable
 // state worth serializing; the only stored property is the path,
@@ -77,25 +79,62 @@ final class CodexThreadDatabase: Sendable {
             throw DBError.databaseUnavailable(path)
         }
 
-        // Open the live DB with `?mode=ro&immutable=1` URI semantics.
+        // Snapshot the live SQLite files (main + WAL + SHM) into a
+        // private temp directory and read the copy. Two failure modes
+        // ruled out the simpler approaches:
         //
-        // Plain SQLITE_OPEN_READONLY doesn't work for WAL-mode
-        // databases — SQLite still needs write access to the
-        // -shm/-wal files for lock coordination, and our read-only
-        // flag forbids that, producing SQLITE_CANTOPEN at prepare
-        // time. Reproduces from the CLI too: `sqlite3 -readonly`
-        // fails identically. The fix is `?immutable=1`, which tells
-        // SQLite to skip WAL machinery and read only the main file
-        // directly. Officially intended for read-only media but
-        // works fine for "I want to peek at a DB another process is
-        // writing." See https://www.sqlite.org/uri.html.
+        //   - Plain SQLITE_OPEN_READONLY against the live DB fails
+        //     with SQLITE_CANTOPEN at prepare time because SQLite
+        //     needs to write to -shm for WAL lock coordination, and
+        //     Codex's writers hold locks on it. Reproduces from the
+        //     CLI: `sqlite3 -readonly` fails identically.
+        //   - `?mode=ro&immutable=1` against the live DB succeeds
+        //     (tells SQLite to skip the WAL machinery entirely) but
+        //     misses every write still sitting in the -wal file. In
+        //     practice this lag is hours, not seconds: observed a
+        //     3.8 MB -wal containing the user's last several hours of
+        //     activity (renamed titles, current updated_at) while the
+        //     main DB file's last checkpoint was 3+ hours stale —
+        //     causing those sessions to show with old titles and
+        //     wrong sort positions in the sidebar. Worse, the stale
+        //     `updated_at` can drop sessions out of the `since:`
+        //     window cutoff entirely, making them disappear.
         //
-        // Tradeoff: we see only checkpointed data. Recent rows still
-        // in the WAL (and not yet folded into the main file) won't
-        // appear. Codex checkpoints regularly, so the lag is
-        // typically seconds; new sessions show up on the next
-        // refresh cycle anyway.
-        let uri = "file:\(path.path)?mode=ro&immutable=1"
+        // Snapshot-and-read sidesteps both: the copy isn't held by
+        // anyone else, so we open it normally; copying the -wal/-shm
+        // alongside the main file means SQLite reads everything
+        // through the WAL exactly as Codex itself would. APFS clones
+        // the files via copy-on-write, so the per-call disk cost is a
+        // few inode operations, not megabytes. A torn WAL frame at
+        // the tail (mid-Codex-write during the copy) is gracefully
+        // handled — SQLite reads frames in order and stops at the
+        // first invalid one. Worst case we miss the very latest
+        // write; next refresh tick picks it up.
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-CodexDB-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let snapshotDB = tempDir.appendingPathComponent("state.sqlite", isDirectory: false)
+        let snapshotWAL = snapshotDB.path + "-wal"
+        let snapshotSHM = snapshotDB.path + "-shm"
+        let liveWAL = path.path + "-wal"
+        let liveSHM = path.path + "-shm"
+
+        let fm = FileManager.default
+        try fm.copyItem(atPath: path.path, toPath: snapshotDB.path)
+        if fm.fileExists(atPath: liveWAL) {
+            try fm.copyItem(atPath: liveWAL, toPath: snapshotWAL)
+        }
+        if fm.fileExists(atPath: liveSHM) {
+            try fm.copyItem(atPath: liveSHM, toPath: snapshotSHM)
+        }
+
+        // Open the snapshot read-only. No immutable=1 — we want full
+        // WAL semantics so writes Codex left in -wal are visible. The
+        // snapshot is private to this process, so the
+        // SQLITE_CANTOPEN-on-shm failure mode doesn't apply.
+        let uri = "file:\(snapshotDB.path)?mode=ro"
 
         var db: OpaquePointer?
         let openFlags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_URI
@@ -108,7 +147,7 @@ final class CodexThreadDatabase: Sendable {
 
         // Extended result codes give diagnostic-friendly errors
         // (SQLITE_CANTOPEN_NOTEMPDIR, etc.) if something does go
-        // wrong on prepare/step despite immutable=1.
+        // wrong on prepare/step.
         sqlite3_extended_result_codes(db, 1)
 
         try validateSchemaVersion(db: db)
