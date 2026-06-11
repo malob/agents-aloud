@@ -1,66 +1,92 @@
 import AVFoundation
+import CoreMedia
 import Foundation
 import OSLog
 
-// Streaming PCM audio player built on AVAudioEngine + AVAudioPlayerNode.
-// Consumes chunks of 16-bit little-endian PCM from an AsyncThrowingStream
-// (as delivered by ElevenLabsClient.streamSynthesize) and schedules each
-// chunk on the player node as an AVAudioPCMBuffer.
+// Streaming PCM audio player built on AVSampleBufferAudioRenderer +
+// AVSampleBufferRenderSynchronizer. Consumes chunks of 16-bit
+// little-endian PCM from an AsyncThrowingStream (as delivered by
+// ElevenLabsClient.streamSynthesize), wraps each chunk in a
+// CMSampleBuffer stamped with a running sample-count timestamp, and
+// lets the renderer play them at the synchronizer's rate.
 //
-// Why hand-roll: we need pause/resume. AVAudioEngine + AVAudioPlayerNode
-// support that natively; wrapping them in a streaming-friendly shell
-// was the simplest path.
+// Why this stack (history): v1 used AVAudioEngine + AVAudioPlayerNode
+// with an AVAudioUnitTimePitch stage for rate control. That unit is a
+// phase-vocoder stretcher; at 2x+ rates speech takes on the family's
+// signature "phasiness" — hollow / tinny / phone-line coloration from
+// harmonics losing phase lock — and maxing its overlap parameter only
+// reduced it. The renderer stack exposes
+// AVAudioTimePitchAlgorithm.timeDomain, Apple's voice-optimized
+// WSOLA-family stretcher (the kind podcast apps use), which keeps a
+// single voice's harmonics phase-locked at speed. Don't swap back to
+// an engine graph without re-listening at 2.3x.
 //
-// The graph routes through an AVAudioUnitTimePitch stage
-// (player → mixer → timePitch → output) so playback rate is decoupled
-// from generation rate. ElevenLabs' voice_settings.speed only accepts
-// 0.7–1.2 — far below the WPM slider's ceiling — but TTS generation
-// streams faster than realtime, so stretching TIME at playback (with
-// pitch preserved; same mechanism as 2× in Podcasts) delivers the
-// full slider range regardless of the API cap. See init() for why the
-// stage sits after the mixer.
+// Rate semantics: synchronizer.rate IS the playback-speed multiplier;
+// the .timeDomain algorithm pitch-corrects. Rate is fixed per
+// utterance at play() time, matching how voice/rate resolve per item.
 //
-// Usage pattern from the driver:
-//   let player = StreamingAudioPlayer()
-//   try player.play(stream: ..., sampleRate: ElevenLabsClient.pcmSampleRate,
-//                   rate: 2.0, onFinish: { ... }, onError: { error in ... })
-//   player.pause() / player.resume() / player.stop()
+// Clock-start subtlety (load-bearing): the synchronizer's timebase
+// runs in real time regardless of whether the renderer has data.
+// Starting it inside play() would let the network's time-to-first-
+// byte (~300-500ms) advance the clock past the first buffers'
+// timestamps and clip the start of every utterance. The timebase
+// therefore starts only when the FIRST chunk is enqueued. Mid-stream
+// underruns (delivery slower than consumption) would similarly drop
+// late audio; TTS generation outpaces even 2-3x playback in practice,
+// so late buffers are logged rather than buffered. If that warning
+// ever shows up in Console, the fix is a jitter buffer: pause the
+// timebase until the queue catches up.
 //
 // Callbacks are invoked on the main actor. After onFinish or onError
 // fires the player returns to idle; you can call play() again.
 @MainActor
 final class StreamingAudioPlayer {
-    // Clamp bounds for the playback-rate multiplier. The unit itself
-    // accepts 1/32–32, but speech below 0.5× drags unintelligibly and
-    // above 4× turns to mush even with pitch correction — values
-    // outside this range are always a caller bug, not a preference.
+    // Clamp bounds for the playback-rate multiplier. Speech below
+    // 0.5x drags unintelligibly and above 4x turns to mush even with
+    // pitch correction — values outside this range are always a
+    // caller bug, not a preference.
     nonisolated static let minimumPlaybackRate = 0.5
     nonisolated static let maximumPlaybackRate = 4.0
 
-    private let engine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
-    private let timePitch = AVAudioUnitTimePitch()
+    private let renderer = AVSampleBufferAudioRenderer()
+    private let synchronizer = AVSampleBufferRenderSynchronizer()
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "StreamingAudioPlayer")
+    private var rendererStatusObservation: NSKeyValueObservation?
 
-    // Mutable bookkeeping for one playback session. Bundled into a class
-    // so we can mutate scheduledBufferCount/streamEnded from callbacks
-    // without having to unpack the enum's associated value, and so late
-    // callbacks from a superseded session can compare identity (`===`) or
-    // the monotonic `id` rather than tracking a parallel sessionID field.
+    // Mutable bookkeeping for one playback session. Bundled into a
+    // class so callbacks can compare identity via the monotonic `id`;
+    // late callbacks from a superseded session see a different id (or
+    // idle state) and no-op.
     private final class Session {
         let id: Int
+        let sampleRate: Double
+        let playbackRate: Double
+        let formatDescription: CMAudioFormatDescription
         var consumeTask: Task<Void, Never>?
-        var scheduledBufferCount = 0
         var streamEnded = false
+        // Whether the synchronizer's timebase has been started for
+        // this session. See the clock-start subtlety in the header.
+        var clockStarted = false
+        // Running count of enqueued PCM frames — doubles as the next
+        // buffer's presentation timestamp and, once the stream ends,
+        // the end-of-media time.
+        var enqueuedSamples: Int64 = 0
+        var boundaryObserver: Any?
         let onFinish: @MainActor () -> Void
         let onError: @MainActor (Error) -> Void
 
         init(
             id: Int,
+            sampleRate: Double,
+            playbackRate: Double,
+            formatDescription: CMAudioFormatDescription,
             onFinish: @escaping @MainActor () -> Void,
             onError: @escaping @MainActor (Error) -> Void
         ) {
             self.id = id
+            self.sampleRate = sampleRate
+            self.playbackRate = playbackRate
+            self.formatDescription = formatDescription
             self.onFinish = onFinish
             self.onError = onError
         }
@@ -103,51 +129,36 @@ final class StreamingAudioPlayer {
 
     enum PlayerError: LocalizedError, Equatable {
         case unsupportedFormat(sampleRate: Double)
-        case engineStartFailed(description: String)
+        case rendererFailed
 
         var errorDescription: String? {
             switch self {
             case let .unsupportedFormat(sampleRate):
                 return "Unsupported audio format (sample rate \(sampleRate))."
-            case let .engineStartFailed(description):
-                return "Audio engine failed to start: \(description)"
+            case .rendererFailed:
+                return "Audio renderer failed."
             }
         }
     }
 
     init() {
-        engine.attach(playerNode)
-        engine.attach(timePitch)
-        // The time-pitch stage sits AFTER the mixer
-        // (player → mixer → timePitch → output), not between player and
-        // mixer: effect audio units only accept standard float formats,
-        // and our scheduled buffers are raw interleaved Int16 — wiring
-        // player → timePitch directly throws
-        // kAudioUnitErr_FormatNotSupported as an NSException. The mixer
-        // does the int→float conversion for free, and timePitch then
-        // stretches the mixed signal on its way to the output. Only the
-        // player feeds the mixer, so stretching "everything" is
-        // equivalent to stretching the one utterance.
-        engine.connect(engine.mainMixerNode, to: timePitch, format: nil)
-        engine.connect(timePitch, to: engine.outputNode, format: nil)
-        // Max out STFT frame overlap (range 3–32, default 8). The unit
-        // is a phase-vocoder stretcher, whose signature artifact at
-        // 2x+ rates is "phasiness" — hollow / tinny / phone-line
-        // coloration from harmonics losing phase lock. More overlap
-        // means finer phase tracking and audibly less of it; the CPU
-        // cost is irrelevant for one mono speech stream. If this still
-        // isn't good enough, the next step is AVSampleBufferAudioRenderer
-        // with AVAudioTimePitchAlgorithm.timeDomain — a voice-optimized
-        // time-domain stretcher that avoids phasiness entirely.
-        timePitch.overlap = 32
+        renderer.audioTimePitchAlgorithm = .timeDomain
+        synchronizer.addRenderer(renderer)
+        // PCM essentially can't fail to decode, but surface a failed
+        // renderer rather than hanging silently with no finish/error.
+        rendererStatusObservation = renderer.observe(\.status, options: [.new]) { [weak self] renderer, _ in
+            guard renderer.status == .failed else { return }
+            let error = renderer.error
+            Task { @MainActor [weak self] in
+                self?.handleRendererFailure(error)
+            }
+        }
     }
 
-    // Throws synchronously on format/engine setup failure; otherwise
-    // returns immediately and delivers completion via onFinish / onError.
+    // Throws synchronously on format setup failure; otherwise returns
+    // immediately and delivers completion via onFinish / onError.
     // `rate` is a playback-speed multiplier (1.0 = as generated),
-    // applied via the time-pitch stage so pitch is preserved. Fixed
-    // for the duration of one utterance — matching how voice/rate are
-    // resolved per-item at speak() time.
+    // applied via the synchronizer with pitch preserved.
     func play(
         stream: AsyncThrowingStream<Data, Error>,
         sampleRate: Double,
@@ -157,26 +168,19 @@ final class StreamingAudioPlayer {
     ) throws {
         teardownWithoutCallback()
 
-        guard let format = AVAudioFormat(
-            commonFormat: .pcmFormatInt16,
-            sampleRate: sampleRate,
-            channels: 1,
-            interleaved: true
-        ) else {
+        guard let formatDescription = Self.makePCMFormatDescription(sampleRate: sampleRate) else {
             throw PlayerError.unsupportedFormat(sampleRate: sampleRate)
         }
 
-        timePitch.rate = Float(min(max(rate, Self.minimumPlaybackRate), Self.maximumPlaybackRate))
-        engine.connect(playerNode, to: engine.mainMixerNode, format: format)
-        do {
-            try engine.start()
-        } catch {
-            throw PlayerError.engineStartFailed(description: error.localizedDescription)
-        }
-        playerNode.play()
-
         nextSessionID &+= 1
-        let session = Session(id: nextSessionID, onFinish: onFinish, onError: onError)
+        let session = Session(
+            id: nextSessionID,
+            sampleRate: sampleRate,
+            playbackRate: min(max(rate, Self.minimumPlaybackRate), Self.maximumPlaybackRate),
+            formatDescription: formatDescription,
+            onFinish: onFinish,
+            onError: onError
+        )
         state = .playing(session)
 
         let sessionID = session.id
@@ -184,7 +188,7 @@ final class StreamingAudioPlayer {
             do {
                 for try await chunk in stream {
                     if Task.isCancelled { return }
-                    self?.schedule(chunk: chunk, format: format, sessionID: sessionID)
+                    self?.enqueue(chunk: chunk, sessionID: sessionID)
                 }
                 self?.markStreamEnded(sessionID: sessionID)
             } catch {
@@ -195,14 +199,21 @@ final class StreamingAudioPlayer {
 
     func pause() {
         guard case let .playing(session) = state else { return }
-        playerNode.pause()
+        synchronizer.rate = 0
         state = .paused(session)
     }
 
     func resume() {
         guard case let .paused(session) = state else { return }
-        playerNode.play()
         state = .playing(session)
+        if session.clockStarted {
+            synchronizer.rate = Float(session.playbackRate)
+        } else {
+            // Paused through the entire pre-first-byte window (or the
+            // whole stream arrived while paused): start now if there's
+            // anything to play.
+            maybeStartClock(session)
+        }
     }
 
     // Neither onFinish nor onError fires after stop().
@@ -210,43 +221,90 @@ final class StreamingAudioPlayer {
         teardownWithoutCallback()
     }
 
-    // MARK: -
+    // MARK: - Stream consumption
 
-    private func schedule(chunk: Data, format: AVAudioFormat, sessionID: Int) {
+    private func enqueue(chunk: Data, sessionID: Int) {
         guard let session = state.session, session.id == sessionID else { return }
-        guard let buffer = Self.makeBuffer(from: chunk, format: format) else { return }
-        session.scheduledBufferCount += 1
-        // The completion handler runs off the main actor on AVFoundation's
-        // audio thread; hop back to @MainActor to mutate state.
-        //
-        // .dataPlayedBack, NOT the legacy scheduleBuffer(_:completionHandler:):
-        // the legacy form fires when the buffer has been CONSUMED by the
-        // render pipeline, which for the final buffer is up to a couple
-        // hundred ms before the audio is audible at the output. Finishing
-        // on consumption tears the engine down (and starts the next queued
-        // utterance) while the tail of the last word is still in flight —
-        // audibly clipping the end of every ElevenLabs utterance.
-        playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            Task { @MainActor in
-                self?.bufferCompleted(sessionID: sessionID)
+        let frameCount = chunk.count / MemoryLayout<Int16>.size
+        guard frameCount > 0 else { return }
+
+        guard let sampleBuffer = Self.makeSampleBuffer(
+            from: chunk,
+            frameCount: frameCount,
+            format: session.formatDescription,
+            presentationSamples: session.enqueuedSamples,
+            sampleRate: session.sampleRate
+        ) else {
+            logger.error("Dropping audio chunk: CMSampleBuffer creation failed")
+            return
+        }
+
+        if session.clockStarted {
+            let pts = CMTime(value: session.enqueuedSamples, timescale: CMTimeScale(session.sampleRate))
+            if synchronizer.currentTime() > pts {
+                // See the underrun note in the header — late audio is
+                // clipped by the running clock. Loud so a real-world
+                // occurrence prompts the jitter-buffer fix.
+                logger.warning("Audio chunk arrived behind the playback clock; start of chunk may be clipped")
             }
         }
+
+        renderer.enqueue(sampleBuffer)
+        session.enqueuedSamples += Int64(frameCount)
+        maybeStartClock(session)
     }
 
-    private func bufferCompleted(sessionID: Int) {
-        guard let session = state.session, session.id == sessionID else { return }
-        session.scheduledBufferCount -= 1
-        if session.streamEnded && session.scheduledBufferCount <= 0 {
-            finishAndCallback()
-        }
+    // Start the timebase once the first audio exists, and only while
+    // actually in the playing state (the user may have paused during
+    // the pre-first-byte window).
+    private func maybeStartClock(_ session: Session) {
+        guard case let .playing(current) = state, current.id == session.id else { return }
+        guard !session.clockStarted, session.enqueuedSamples > 0 else { return }
+        session.clockStarted = true
+        synchronizer.setRate(Float(session.playbackRate), time: .zero)
     }
 
     private func markStreamEnded(sessionID: Int) {
         guard let session = state.session, session.id == sessionID else { return }
         session.streamEnded = true
-        if session.scheduledBufferCount <= 0 {
+
+        guard session.enqueuedSamples > 0 else {
+            // Stream produced no audio at all — finish immediately.
             finishAndCallback()
+            return
         }
+
+        let end = CMTime(value: session.enqueuedSamples, timescale: CMTimeScale(session.sampleRate))
+        if session.clockStarted, synchronizer.currentTime() >= end {
+            finishAndCallback()
+            return
+        }
+
+        // Fires when PLAYBACK reaches the end of the enqueued media —
+        // boundary observers run on media time, so rate changes and
+        // pauses are accounted for automatically.
+        let id = session.id
+        session.boundaryObserver = synchronizer.addBoundaryTimeObserver(
+            forTimes: [NSValue(time: end)],
+            queue: .main
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.boundaryReached(sessionID: id)
+            }
+        }
+
+        // The clock may have crossed `end` between the check above and
+        // the observer landing; a boundary in the past never fires.
+        // boundaryReached / finishAndCallback are idempotent via the
+        // session-identity guard, so the double-call case is safe.
+        if session.clockStarted, synchronizer.currentTime() >= end {
+            boundaryReached(sessionID: id)
+        }
+    }
+
+    private func boundaryReached(sessionID: Int) {
+        guard let session = state.session, session.id == sessionID else { return }
+        finishAndCallback()
     }
 
     private func reportError(_ error: Error, sessionID: Int) {
@@ -256,6 +314,11 @@ final class StreamingAudioPlayer {
         callback(error)
     }
 
+    private func handleRendererFailure(_ error: Error?) {
+        guard let session = state.session else { return }
+        reportError(error ?? PlayerError.rendererFailed, sessionID: session.id)
+    }
+
     private func finishAndCallback() {
         guard let session = state.session else { return }
         let callback = session.onFinish
@@ -263,44 +326,101 @@ final class StreamingAudioPlayer {
         callback()
     }
 
-    // Shared teardown path. Goes to .idle and cancels the stream-consumer
-    // task; any late audio-thread callbacks that capture the old session's
-    // id will see a different session.id (or idle state) in state.session
-    // and no-op.
+    // Shared teardown path. Goes to .idle, cancels the stream-consumer
+    // task, removes the boundary observer, and flushes the renderer;
+    // any late callbacks that captured the old session's id see a
+    // different id (or idle state) in state.session and no-op.
     private func teardownWithoutCallback() {
         if let session = state.session {
             session.consumeTask?.cancel()
+            if let observer = session.boundaryObserver {
+                synchronizer.removeTimeObserver(observer)
+                session.boundaryObserver = nil
+            }
         }
-        if playerNode.isPlaying || !state.isIdle {
-            playerNode.stop()
-        }
-        if engine.isRunning {
-            engine.stop()
-        }
+        synchronizer.rate = 0
+        renderer.flush()
         state = .idle
     }
 
-    private static func makeBuffer(from data: Data, format: AVAudioFormat) -> AVAudioPCMBuffer? {
-        let sampleBytes = MemoryLayout<Int16>.size
-        let frameCount = AVAudioFrameCount(data.count / sampleBytes)
-        guard frameCount > 0 else { return nil }
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+    // MARK: - CoreMedia plumbing
+
+    nonisolated private static func makePCMFormatDescription(sampleRate: Double) -> CMAudioFormatDescription? {
+        var asbd = AudioStreamBasicDescription(
+            mSampleRate: sampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 2,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 2,
+            mChannelsPerFrame: 1,
+            mBitsPerChannel: 16,
+            mReserved: 0
+        )
+        var formatDescription: CMAudioFormatDescription?
+        let status = CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &asbd,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &formatDescription
+        )
+        return status == noErr ? formatDescription : nil
+    }
+
+    nonisolated private static func makeSampleBuffer(
+        from data: Data,
+        frameCount: Int,
+        format: CMAudioFormatDescription,
+        presentationSamples: Int64,
+        sampleRate: Double
+    ) -> CMSampleBuffer? {
+        // frameCount * 2 can be one byte short of data.count for an
+        // odd-length chunk; the trailing byte is dropped, same as the
+        // old AVAudioPCMBuffer path. Chunk boundaries are arbitrary
+        // byte counts but the client emits fixed 4096-byte chunks, so
+        // this is theoretical.
+        let byteCount = frameCount * MemoryLayout<Int16>.size
+
+        var blockBuffer: CMBlockBuffer?
+        guard CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: byteCount,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: byteCount,
+            flags: 0,
+            blockBufferOut: &blockBuffer
+        ) == kCMBlockBufferNoErr, let blockBuffer else {
             return nil
         }
-        // Copy first, then publish frameLength. If either pointer is nil
-        // (int16ChannelData can be nil for e.g. non-interleaved formats or
-        // zero-frame buffers), return nil so the caller drops the chunk
-        // rather than schedule a buffer full of uninitialized memory.
-        let copied = data.withUnsafeBytes { raw -> Bool in
-            guard let src = raw.baseAddress?.assumingMemoryBound(to: Int16.self),
-                  let dst = buffer.int16ChannelData?.pointee else {
-                return false
-            }
-            dst.update(from: src, count: Int(frameCount))
-            return true
+
+        let copyStatus = data.withUnsafeBytes { raw -> OSStatus in
+            guard let base = raw.baseAddress else { return -1 }
+            return CMBlockBufferReplaceDataBytes(
+                with: base,
+                blockBuffer: blockBuffer,
+                offsetIntoDestination: 0,
+                dataLength: byteCount
+            )
         }
-        guard copied else { return nil }
-        buffer.frameLength = frameCount
-        return buffer
+        guard copyStatus == kCMBlockBufferNoErr else { return nil }
+
+        var sampleBuffer: CMSampleBuffer?
+        let status = CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: blockBuffer,
+            formatDescription: format,
+            sampleCount: CMItemCount(frameCount),
+            presentationTimeStamp: CMTime(value: presentationSamples, timescale: CMTimeScale(sampleRate)),
+            packetDescriptions: nil,
+            sampleBufferOut: &sampleBuffer
+        )
+        return status == noErr ? sampleBuffer : nil
     }
 }

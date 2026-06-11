@@ -25,13 +25,6 @@ This is a lightweight holding pen for non-urgent issues that are real enough to 
   - If it doesn't (visible regression): revert is just deleting the `.markdown` case branch — no plumbing to undo.
   - Estimated time: 20-30 min including manual testing on a heavy session.
 
-- **Replace the time-pitch playback stage with `AVSampleBufferAudioRenderer` + `AVAudioTimePitchAlgorithm.timeDomain`.**
-  - Context: `StreamingAudioPlayer` stretches ElevenLabs playback through `AVAudioUnitTimePitch` (a phase-vocoder stretcher). Its signature artifact at 2×+ is phasiness — hollow/tinny "phone line" coloration. We've maxed the unit's `overlap` (32), which reduces it; Apple's voice-optimized time-domain stretcher (the WSOLA family podcast apps use, immune to phasiness on single-voice speech) is only reachable via `AVSampleBufferAudioRenderer.audioTimePitchAlgorithm = .timeDomain` with rate on `AVSampleBufferRenderSynchronizer`.
-  - Spike: rebuild `StreamingAudioPlayer` on the renderer — feed PCM chunks as `CMSampleBuffer`s, pause/resume via synchronizer rate, finish via `CMTime`-based observation. Preserve the session-identity guards and "no callbacks after stop()" semantics the current tests pin.
-  - Success criteria: existing `StreamingAudioPlayerTests` pass unchanged; 2.3× speech audibly cleaner than the overlap-32 vocoder by ear.
-  - If it disappoints: Signalsmith Stretch (MIT, C++ interop) is the open-source quality benchmark.
-  - Estimated time: half a day including the semantics-parity testing.
-
 - **Local TTS backend (researched 2026-06-11; see commit history for the time-stretch groundwork).**
   - Best current option: Qwen3-TTS (Apache 2.0, Jan 2026) — 0.6B/1.7B, voice design from text descriptions, 3 s cloning, streaming. MLX numbers on M4-class: 1.7B ≈ 1.6× realtime generation, ~60 ms TTFB, 3.5 GB resident (4-bit); 0.6B ≈ 2× faster at ~2 GB. Kokoro-82M remains the speed floor (~350 MB, flatter prosody). At 400 wpm playback (2.35×), the 0.6B comfortably outruns consumption; the 1.7B relies on buffer-ahead.
   - Integration paths: (a) `mlx-audio` Python sidecar (MIT, 7k+ stars, active; HTTP server; also serves Kokoro/MOSS for ear-testing) — recommended first; (b) `swift-qwen3-tts` SwiftPM package (native MLX Swift, streaming API that feeds straight into `StreamingAudioPlayer`) — blocked on the repo having NO license file as of 2026-06; ask the author or port from mlx-audio ourselves before shipping anything.

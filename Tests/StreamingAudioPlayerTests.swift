@@ -39,12 +39,9 @@ struct StreamingAudioPlayerTests {
     @Test
     @MainActor
     func playsToCompletionAtAcceleratedRate() async throws {
-        // Exercises the time-pitch stage in the graph: if the
-        // mixer → timePitch → output wiring is wrong, the engine fails
-        // to start (or throws an NSException at connect time, as the
-        // rejected player → timePitch Int16 wiring did) or the final
-        // buffer's playedBack callback never fires and this test times
-        // out instead of finishing.
+        // Exercises the rate path end to end: if the synchronizer
+        // never starts, or the boundary observer lands wrong, the
+        // finish callback never fires and this test times out.
         let player = StreamingAudioPlayer()
         let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
         continuation.yield(silencePCM(milliseconds: 200))
@@ -65,6 +62,40 @@ struct StreamingAudioPlayerTests {
         }
 
         #expect(player.isIdle)
+    }
+
+    @Test
+    @MainActor
+    func acceleratedRateShortensWallClockPlayback() async throws {
+        // Two seconds of audio at rate 2.0 should finish in roughly
+        // one second of wall clock. The bounds discriminate the two
+        // failure modes with wide margins even under parallel-suite
+        // scheduling jitter: "rate silently not applied" takes ≥2s
+        // (upper bound 1.7s), "finished without actually playing"
+        // returns near-instantly (lower bound 0.7s).
+        let player = StreamingAudioPlayer()
+        let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
+        continuation.yield(silencePCM(milliseconds: 2_000))
+        continuation.finish()
+
+        let start = ContinuousClock.now
+        try await withCheckedThrowingContinuation { (cc: CheckedContinuation<Void, Error>) in
+            do {
+                try player.play(
+                    stream: stream,
+                    sampleRate: 44_100,
+                    rate: 2.0,
+                    onFinish: { cc.resume() },
+                    onError: { cc.resume(throwing: $0) }
+                )
+            } catch {
+                cc.resume(throwing: error)
+            }
+        }
+        let elapsed = ContinuousClock.now - start
+
+        #expect(elapsed < .seconds(1.7))
+        #expect(elapsed > .seconds(0.7))
     }
 
     @Test

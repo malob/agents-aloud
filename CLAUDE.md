@@ -241,16 +241,35 @@ Sources/
   `voice_settings.speed` only accepts 0.7–1.2 (verified against the
   current API schema + help center, 2026-06; anything outside is a
   400), which capped audible speed at ~1.2× and made the backend
-  useless at the top of the slider. Playback now routes through an
-  `AVAudioUnitTimePitch` stage in StreamingAudioPlayer
-  (player → timePitch → mixer) with
+  useless at the top of the slider. The slider maps to
   `rate = wpm / 175` (175 wpm ≈ ElevenLabs voices' natural pace, so
-  slider position ≈ audible wpm, matching `say -r` semantics).
-  Generation streams faster than realtime, so accelerated playback
-  doesn't starve mid-utterance. Don't reintroduce a generation-side
-  speed mapping: squeezing prosody at generation sounds worse than
-  stretching at playback, and the API range can't cover the slider
-  anyway.
+  slider position ≈ audible wpm, matching `say -r` semantics),
+  applied by StreamingAudioPlayer at playback. Generation streams
+  faster than realtime, so accelerated playback doesn't starve
+  mid-utterance. Don't reintroduce a generation-side speed mapping:
+  squeezing prosody at generation sounds worse than stretching at
+  playback, and the API range can't cover the slider anyway.
+
+- **StreamingAudioPlayer is AVSampleBufferAudioRenderer +
+  `AVAudioTimePitchAlgorithm.timeDomain`, not an AVAudioEngine
+  graph.** Two prior iterations are knowingly retired:
+  `AVAudioUnitTimePitch` is a phase-vocoder stretcher whose
+  signature artifact at 2×+ made speech hollow / tinny / phone-line
+  ("phasiness") even with its overlap parameter maxed at 32 — and
+  effect AUs reject raw Int16 connection formats anyway (NSException
+  at connect time). The renderer stack exposes Apple's
+  voice-optimized time-domain (WSOLA-family) stretcher, which avoids
+  phasiness on single-voice speech. Two load-bearing details: the
+  synchronizer's timebase starts on the FIRST enqueued chunk, not in
+  play() — the clock runs in real time, so starting it before the
+  network's first byte would clip the start of every utterance by
+  the TTFB — and completion is a boundary-time observer at the
+  end-of-media time, which is media-time based and therefore
+  inherently "played back, not consumed" as well as rate- and
+  pause-aware. If 2.3× speech still disappoints by ear, the
+  escalation path is Signalsmith Stretch (MIT, C++ interop) inside
+  the same player surface.
+  See: [StreamingAudioPlayer.swift](Sources/Services/StreamingAudioPlayer.swift)
 
 - **Apple Dev signing also enables stable Keychain ACLs** — re-entering
   the API key once after switching from adhoc to Apple Dev is
