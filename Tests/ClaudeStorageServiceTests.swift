@@ -95,6 +95,56 @@ struct ClaudeStorageServiceTests {
     }
 
     @Test
+    func escapeEditAcrossRefreshesRemovesTheAbortedPrompt() async throws {
+        // The interruption marker's effect reaches BACKWARD: the
+        // prompt it cancels is usually already in the cached window
+        // from an earlier refresh, where an append-only merge can't
+        // remove it. The incremental path must detect the marker in
+        // the appended tail and fall back to a full tail-load.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
+
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        try initialTranscript.write(to: transcriptURL, atomically: true, encoding: .utf8)
+        defer {
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        let service = ClaudeStorageService(projectsRoot: projectsRoot)
+        let sessions = try await service.loadSessions()
+        let session = try #require(sessions.first)
+
+        func append(_ text: String) throws {
+            let handle = try FileHandle(forWritingTo: transcriptURL)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(text.utf8))
+            try handle.close()
+        }
+
+        // The user sends a prompt — it lands in the cached window via
+        // the incremental path.
+        try await Task.sleep(for: .milliseconds(50))
+        try append(#"{"type":"user","uuid":"user-aborted","timestamp":"2026-04-17T17:00:02Z","sessionId":"session-1","message":{"role":"user","content":"Draft with a mistake."}}"# + "\n")
+        let midMessages = try await service.loadTranscript(for: session, filterToFinalOnly: false)
+        #expect(midMessages.map(\.id) == ["user-1", "assistant-1", "user-aborted"])
+
+        // Escape-edit: marker + edited resend arrive in the next
+        // appended tail. The aborted prompt must disappear.
+        try await Task.sleep(for: .milliseconds(50))
+        try append(
+            #"{"type":"user","uuid":"marker-1","timestamp":"2026-04-17T17:00:08Z","sessionId":"session-1","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"# + "\n"
+            + #"{"type":"user","uuid":"user-edited","timestamp":"2026-04-17T17:00:09Z","sessionId":"session-1","message":{"role":"user","content":"Draft, corrected."}}"# + "\n"
+        )
+
+        let finalMessages = try await service.loadTranscript(for: session, filterToFinalOnly: false)
+        #expect(finalMessages.map(\.id) == ["user-1", "assistant-1", "user-edited"])
+    }
+
+    @Test
     func loadTranscriptFallsBackToFullParseWhenPrefixMutated() async throws {
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory

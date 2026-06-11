@@ -17,8 +17,32 @@ enum ClaudeTranscriptParser {
 
             for lineSlice in rawTranscript.split(whereSeparator: \.isNewline) {
                 guard let data = String(lineSlice).data(using: .utf8),
-                      let entry = try? decoder.decode(TranscriptLine.self, from: data),
-                      let message = makeTranscriptMessage(from: entry, using: dateParsers) else {
+                      let entry = try? decoder.decode(TranscriptLine.self, from: data) else {
+                    droppedLineCount += 1
+                    continue
+                }
+
+                // Escape-to-edit-and-resend is recorded LINEARLY in the
+                // JSONL (verified against a live session, 2026-06): the
+                // aborted prompt stays in the file, followed by a
+                // "[Request interrupted by user]" user entry, followed
+                // by the edited resend. The marker is what the real CLI
+                // keys on to hide the original. If the message directly
+                // before the marker is a user prompt, it's the aborted
+                // one — drop it. If an assistant reply landed in
+                // between, the user interrupted mid-RESPONSE: that was
+                // a real turn and everything stays. (The marker itself
+                // is never displayed; the same rule also covers the
+                // "...for tool use" marker variant, where the
+                // in-between assistant message keeps the turn intact.)
+                if Self.isInterruptionMarker(entry) {
+                    if messages.last?.role == .user {
+                        messages.removeLast()
+                    }
+                    continue
+                }
+
+                guard let message = makeTranscriptMessage(from: entry, using: dateParsers) else {
                     droppedLineCount += 1
                     continue
                 }
@@ -180,6 +204,23 @@ enum ClaudeTranscriptParser {
         default:
             return nil
         }
+    }
+
+    // The marker Claude Code appends when the user escapes a turn —
+    // either to edit-and-resend (no assistant output yet) or to stop a
+    // response in flight. Matched as a prefix so the "...for tool use"
+    // variant is covered too. Both content shapes are checked because
+    // the marker has appeared as a plain string and as a single text
+    // item across CLI versions.
+    static let interruptionMarkerPrefix = "[Request interrupted by user"
+
+    private static func isInterruptionMarker(_ entry: TranscriptLine) -> Bool {
+        guard entry.type == "user",
+              entry.message?.role == "user",
+              let text = entry.message?.content.plainText else {
+            return false
+        }
+        return text.hasPrefix(interruptionMarkerPrefix)
     }
 
     private static func normalized(_ value: String?) -> String? {

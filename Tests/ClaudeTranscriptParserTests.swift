@@ -232,4 +232,40 @@ struct ClaudeTranscriptParserTests {
 
         #expect(summary != nil)
     }
+
+    @Test
+    func escapeEditDropsTheAbortedPromptAndTheMarker() {
+        // Escape-to-edit-and-resend is recorded linearly: the aborted
+        // prompt stays in the JSONL, followed by a
+        // "[Request interrupted by user]" entry, followed by the
+        // edited resend. Only the resend should display.
+        let rawTranscript = """
+        {"type":"user","uuid":"user-original","timestamp":"2026-06-11T20:08:52Z","sessionId":"s","message":{"role":"user","content":"First draft with a typo."}}
+        {"type":"user","uuid":"marker-1","timestamp":"2026-06-11T20:08:58Z","sessionId":"s","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}
+        {"type":"user","uuid":"user-edited","timestamp":"2026-06-11T20:08:59Z","sessionId":"s","message":{"role":"user","content":"First draft, fixed."}}
+        {"type":"assistant","uuid":"assistant-1","timestamp":"2026-06-11T20:09:05Z","sessionId":"s","message":{"role":"assistant","content":[{"type":"text","text":"Reply to the fixed draft."}]}}
+        """
+
+        let messages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
+
+        #expect(messages.map(\.id) == ["user-edited", "assistant-1"])
+    }
+
+    @Test
+    func midResponseInterruptionKeepsTheRealTurn() {
+        // Escaping while the model is RESPONDING also writes the
+        // marker, but the aborted prompt produced real assistant
+        // output — that turn happened and must stay. Only the marker
+        // itself is hidden.
+        let rawTranscript = """
+        {"type":"user","uuid":"user-1","timestamp":"2026-06-11T20:00:00Z","sessionId":"s","message":{"role":"user","content":"Long question."}}
+        {"type":"assistant","uuid":"assistant-partial","timestamp":"2026-06-11T20:00:05Z","sessionId":"s","message":{"role":"assistant","content":[{"type":"text","text":"Partial answer before the escape."}]}}
+        {"type":"user","uuid":"marker-1","timestamp":"2026-06-11T20:00:08Z","sessionId":"s","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}
+        {"type":"user","uuid":"user-2","timestamp":"2026-06-11T20:00:15Z","sessionId":"s","message":{"role":"user","content":"New direction."}}
+        """
+
+        let messages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
+
+        #expect(messages.map(\.id) == ["user-1", "assistant-partial", "user-2"])
+    }
 }

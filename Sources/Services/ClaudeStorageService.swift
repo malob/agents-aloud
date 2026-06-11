@@ -405,7 +405,8 @@ actor ClaudeStorageService {
                        transcriptURL,
                        fromOffset: cached.parsedEndOffset,
                        upTo: fileSize
-                   ) {
+                   ),
+                   !appended.containsInterruptionMarker {
                     // Roll the visible window forward: append the new
                     // messages, filter if needed, then trim back to the
                     // display cap. Drops the oldest messages from the
@@ -509,7 +510,7 @@ actor ClaudeStorageService {
         _ url: URL,
         fromOffset offset: Int,
         upTo limit: Int
-    ) throws -> (messages: [TranscriptMessage], endOffset: Int) {
+    ) throws -> (messages: [TranscriptMessage], endOffset: Int, containsInterruptionMarker: Bool) {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         try handle.seek(toOffset: UInt64(offset))
@@ -519,12 +520,20 @@ actor ClaudeStorageService {
               let lastNewline = data.lastIndex(of: 0x0A) else {
             // Nothing readable, or only a partial line so far — consume
             // nothing; the next refresh resumes from the same offset.
-            return ([], offset)
+            return ([], offset, false)
         }
         guard let tail = String(data: Data(data[...lastNewline]), encoding: .utf8) else {
-            return ([], offset)
+            return ([], offset, false)
         }
-        return (ClaudeTranscriptParser.parseTranscript(tail), offset + lastNewline + 1)
+        // Escape-to-edit appends an interruption marker whose effect
+        // reaches BACKWARD: the aborted prompt it cancels is usually
+        // already in the cached window, where an append-only merge
+        // can't remove it. The caller falls back to a full tail-load
+        // when the marker shows up. Raw-text check (the parser hides
+        // the marker from its output); a user literally typing the
+        // marker text just costs one harmless full reload.
+        let containsMarker = tail.contains(ClaudeTranscriptParser.interruptionMarkerPrefix)
+        return (ClaudeTranscriptParser.parseTranscript(tail), offset + lastNewline + 1, containsMarker)
     }
 
     // Read up to the last `Self.tailSignatureLength` bytes of the file,
