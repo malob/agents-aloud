@@ -270,29 +270,42 @@ actor ClaudeStorageService {
                 // modified content we had already parsed → fall back to a full
                 // re-parse. See ClaudeStorageServiceTests for the forced
                 // failure mode.
-                if fileSize > cached.fileSize,
-                   let currentSignature = try? readTailSignature(transcriptURL, upTo: cached.fileSize),
+                // All offsets here are line-snapped: `parsedEndOffset`
+                // always sits just after a '\n', and tailMessages only
+                // consumes up to the last complete line it sees. That's
+                // what keeps this path correct while Claude is mid-append:
+                // a long JSONL line is written in several syscalls, and a
+                // refresh can land between them. Resuming from a raw stat
+                // size instead would either re-parse bytes twice (duplicate
+                // messages) or resume mid-line (the straddling message
+                // silently dropped forever).
+                if fileSize > cached.parsedEndOffset,
+                   let currentSignature = try? readTailSignature(transcriptURL, upTo: cached.parsedEndOffset),
                    currentSignature == cached.tailSignature,
-                   let appended = try? tailMessages(transcriptURL, fromOffset: cached.fileSize) {
+                   let appended = try? tailMessages(
+                       transcriptURL,
+                       fromOffset: cached.parsedEndOffset,
+                       upTo: fileSize
+                   ) {
                     // Roll the visible window forward: append the new
                     // messages, filter if needed, then trim back to the
                     // display cap. Drops the oldest messages from the
                     // cached list when a long-running session keeps
                     // growing past the cap.
                     let appendedFiltered = filterToFinalOnly
-                        ? appended.filter { !$0.isIntermediate }
-                        : appended
+                        ? appended.messages.filter { !$0.isIntermediate }
+                        : appended.messages
                     let merged = mergeInTimestampOrder(cached.messages, appendedFiltered)
                     let capped = Array(merged.suffix(messageCap))
-                    let newSignature = (try? readTailSignature(transcriptURL, upTo: fileSize)) ?? Data()
+                    let newSignature = (try? readTailSignature(transcriptURL, upTo: appended.endOffset)) ?? Data()
                     transcriptCache[cacheKey] = CachedTranscript(
                         modifiedAt: modifiedAt,
-                        fileSize: fileSize,
+                        parsedEndOffset: appended.endOffset,
                         tailSignature: newSignature,
                         messages: capped,
                         filterToFinalOnly: filterToFinalOnly
                     )
-                    PerfLog.mark("Storage.loadTranscript incremental appended=\(appended.count) capped=\(capped.count) filterFinalOnly=\(filterToFinalOnly)")
+                    PerfLog.mark("Storage.loadTranscript incremental appended=\(appended.messages.count) capped=\(capped.count) filterFinalOnly=\(filterToFinalOnly)")
                     return capped
                 }
             }
@@ -302,22 +315,22 @@ actor ClaudeStorageService {
             // display cap. Long sessions parse a fixed-size tail (~256 KB)
             // instead of the whole multi-MB JSONL, which is the dominant
             // cold-load win for chatty sessions.
-            let cappedMessages = try PerfLog.time("Storage.loadTranscript.tailLoad") {
+            let tailLoad = try PerfLog.time("Storage.loadTranscript.tailLoad") {
                 try loadTranscriptTail(
                     url: transcriptURL,
                     targetCount: messageCap,
                     filterToFinalOnly: filterToFinalOnly
                 )
             }
-            let signature = (try? readTailSignature(transcriptURL, upTo: fileSize)) ?? Data()
+            let signature = (try? readTailSignature(transcriptURL, upTo: tailLoad.endOffset)) ?? Data()
             transcriptCache[cacheKey] = CachedTranscript(
                 modifiedAt: modifiedAt,
-                fileSize: fileSize,
+                parsedEndOffset: tailLoad.endOffset,
                 tailSignature: signature,
-                messages: cappedMessages,
+                messages: tailLoad.messages,
                 filterToFinalOnly: filterToFinalOnly
             )
-            return cappedMessages
+            return tailLoad.messages
         }
     }
 
@@ -333,12 +346,12 @@ actor ClaudeStorageService {
         url: URL,
         targetCount: Int,
         filterToFinalOnly: Bool
-    ) throws -> [TranscriptMessage] {
+    ) throws -> (messages: [TranscriptMessage], endOffset: Int) {
         var windowSize = Self.initialTailWindowBytes
         while true {
             let window = try TranscriptTailReader.readTrailingWindow(url: url, windowSize: windowSize)
             if window.data.isEmpty {
-                if window.coversWholeFile { return [] }
+                if window.coversWholeFile { return ([], window.endOffset) }
                 // Single record longer than the window — widen.
                 windowSize = max(windowSize * 2, windowSize + Self.initialTailWindowBytes)
                 continue
@@ -347,7 +360,7 @@ actor ClaudeStorageService {
                 // Should not happen given the line-boundary trim, but if
                 // the file contains invalid UTF-8 in the middle of the
                 // window, widen and retry.
-                if window.coversWholeFile { return [] }
+                if window.coversWholeFile { return ([], window.endOffset) }
                 windowSize *= 2
                 continue
             }
@@ -356,7 +369,7 @@ actor ClaudeStorageService {
                 ? allMessages.filter { !$0.isIntermediate }
                 : allMessages
             if filtered.count >= targetCount || window.coversWholeFile {
-                return Array(filtered.suffix(targetCount))
+                return (Array(filtered.suffix(targetCount)), window.endOffset)
             }
             windowSize *= 2
         }
@@ -364,22 +377,35 @@ actor ClaudeStorageService {
 
     private static let initialTailWindowBytes = 256 * 1024
 
-    // Read bytes from `offset` to end of file, decode as UTF-8, parse as JSONL.
-    // Returns the messages found in that tail (already timestamp-sorted by the
-    // parser). Assumes `offset` is on a clean line boundary — which it is when
-    // we cache the file's full byte length after a previous read, because
-    // JSONL writers always emit a trailing `\n` per line. If an incomplete
-    // write ever leaves the file mid-line, the decode or decode-per-line will
-    // drop the partial line; the next refresh catches it once fully written.
-    private func tailMessages(_ url: URL, fromOffset offset: Int) throws -> [TranscriptMessage] {
+    // Read bytes [offset, limit), trim back to the last complete line, decode
+    // as UTF-8, parse as JSONL. Returns the parsed messages plus the absolute
+    // offset just past the last consumed newline — the caller stores that as
+    // the resume point, so a line that straddles two reads (Claude mid-append)
+    // is parsed exactly once, when it's complete. `offset` is always on a
+    // clean line boundary because every stored resume point is itself
+    // newline-snapped. Bounding the read at `limit` (the stat'd size) keeps
+    // the parse window consistent with the size recorded alongside it even
+    // when the file grows during the read.
+    private func tailMessages(
+        _ url: URL,
+        fromOffset offset: Int,
+        upTo limit: Int
+    ) throws -> (messages: [TranscriptMessage], endOffset: Int) {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         try handle.seek(toOffset: UInt64(offset))
-        guard let data = try handle.readToEnd(), !data.isEmpty,
-              let tail = String(data: data, encoding: .utf8) else {
-            return []
+        guard limit > offset,
+              let data = try handle.read(upToCount: limit - offset),
+              !data.isEmpty,
+              let lastNewline = data.lastIndex(of: 0x0A) else {
+            // Nothing readable, or only a partial line so far — consume
+            // nothing; the next refresh resumes from the same offset.
+            return ([], offset)
         }
-        return ClaudeTranscriptParser.parseTranscript(tail)
+        guard let tail = String(data: Data(data[...lastNewline]), encoding: .utf8) else {
+            return ([], offset)
+        }
+        return (ClaudeTranscriptParser.parseTranscript(tail), offset + lastNewline + 1)
     }
 
     // Read up to the last `Self.tailSignatureLength` bytes of the file,
@@ -511,7 +537,11 @@ private struct CachedSessionSummary {
 
 private struct CachedTranscript {
     let modifiedAt: Date
-    let fileSize: Int
+    // Absolute byte offset just past the last '\n' we parsed — NOT the
+    // raw stat'd file size. Always newline-snapped so the incremental
+    // path can resume mid-append without duplicating or dropping the
+    // line in flight.
+    let parsedEndOffset: Int
     let tailSignature: Data
     let messages: [TranscriptMessage]
     // Mode this entry was produced under. The tail-loader widens

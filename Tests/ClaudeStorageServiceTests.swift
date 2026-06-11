@@ -42,6 +42,59 @@ struct ClaudeStorageServiceTests {
     }
 
     @Test
+    func loadTranscriptParsesLineStraddlingTwoRefreshesExactlyOnce() async throws {
+        // Claude writes long JSONL lines in several syscalls, so a
+        // watcher-triggered refresh can observe the file mid-line. The
+        // incremental path must neither drop the straddling line (the
+        // old failure: the cached resume offset landed mid-line, so
+        // the fragment never decoded as JSON and the message was lost
+        // until a full reparse) nor parse any line twice (duplicate
+        // message IDs in the cached window).
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
+
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        try initialTranscript.write(to: transcriptURL, atomically: true, encoding: .utf8)
+        defer {
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        let service = ClaudeStorageService(projectsRoot: projectsRoot)
+        let sessions = try await service.loadSessions()
+        let session = try #require(sessions.first)
+
+        let initialMessages = try await service.loadTranscript(for: session, filterToFinalOnly: false)
+        #expect(initialMessages.map(\.id) == ["user-1", "assistant-1"])
+
+        func append(_ text: String) throws {
+            let handle = try FileHandle(forWritingTo: transcriptURL)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(text.utf8))
+            try handle.close()
+        }
+
+        // First half of the next record, no trailing newline — the
+        // state a refresh sees mid-append.
+        let splitIndex = appendedLine.index(appendedLine.startIndex, offsetBy: 60)
+        try await Task.sleep(for: .milliseconds(50))  // ensure mtime advances
+        try append(String(appendedLine[..<splitIndex]))
+
+        let midMessages = try await service.loadTranscript(for: session, filterToFinalOnly: false)
+        #expect(midMessages.map(\.id) == ["user-1", "assistant-1"])
+
+        // Complete the straddling line and add one more full record.
+        try await Task.sleep(for: .milliseconds(50))
+        try append(String(appendedLine[splitIndex...]) + secondAppendedLine)
+
+        let finalMessages = try await service.loadTranscript(for: session, filterToFinalOnly: false)
+        #expect(finalMessages.map(\.id) == ["user-1", "assistant-1", "user-2", "user-3"])
+    }
+
+    @Test
     func loadTranscriptFallsBackToFullParseWhenPrefixMutated() async throws {
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
@@ -419,5 +472,9 @@ struct ClaudeStorageServiceTests {
 
     private var appendedLine: String {
         #"{"type":"user","uuid":"user-2","timestamp":"2026-04-17T17:00:02Z","sessionId":"session-1","message":{"role":"user","content":"Follow-up prompt."}}"# + "\n"
+    }
+
+    private var secondAppendedLine: String {
+        #"{"type":"user","uuid":"user-3","timestamp":"2026-04-17T17:00:03Z","sessionId":"session-1","message":{"role":"user","content":"Another follow-up."}}"# + "\n"
     }
 }
