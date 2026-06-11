@@ -52,11 +52,14 @@ private enum TestDatabaseError: Error {
     case setupFailed(String)
 }
 
-// Minimal Codex state DB containing a single ordinary thread, so a
-// test can make the Codex source produce a sidebar session without
-// any rollout JSONL on disk. Schema mirrors the fixture in
+// Minimal Codex state DB containing ordinary threads, so a test can
+// make the Codex source produce sidebar sessions without any rollout
+// JSONL on disk. Schema mirrors the fixture in
 // CodexThreadDatabaseTests (migration 22).
-private func makeSingleThreadCodexDatabase(at url: URL, updatedAt: Date) throws {
+private func makeCodexStateDatabase(
+    at url: URL,
+    threads: [(id: String, updatedAt: Date)]
+) throws {
     var db: OpaquePointer?
     guard sqlite3_open(url.path, &db) == SQLITE_OK, let db else {
         sqlite3_close_v2(db)
@@ -64,7 +67,24 @@ private func makeSingleThreadCodexDatabase(at url: URL, updatedAt: Date) throws 
     }
     defer { sqlite3_close_v2(db) }
 
-    let updatedSeconds = Int64(updatedAt.timeIntervalSince1970)
+    let rows = threads.map { thread -> String in
+        let updatedSeconds = Int64(thread.updatedAt.timeIntervalSince1970)
+        return """
+        (
+            '\(thread.id)',
+            '/tmp/rollout-\(thread.id).jsonl',
+            '/tmp/project',
+            'Codex thread \(thread.id)',
+            'Build the thing',
+            \(updatedSeconds),
+            \(updatedSeconds * 1000),
+            0,
+            NULL,
+            NULL,
+            'vscode'
+        )
+        """
+    }
     let sql = """
     CREATE TABLE _sqlx_migrations (version INTEGER NOT NULL PRIMARY KEY);
     INSERT INTO _sqlx_migrations (version) VALUES (22);
@@ -86,19 +106,7 @@ private func makeSingleThreadCodexDatabase(at url: URL, updatedAt: Date) throws 
     INSERT INTO threads (
         id, rollout_path, cwd, title, first_user_message,
         updated_at, updated_at_ms, archived, agent_nickname, agent_role, source
-    ) VALUES (
-        'codex-thread-1',
-        '/tmp/rollout-test.jsonl',
-        '/tmp/project',
-        'Codex thread',
-        'Build the thing',
-        \(updatedSeconds),
-        \(updatedSeconds * 1000),
-        0,
-        NULL,
-        NULL,
-        'vscode'
-    );
+    ) VALUES \(rows.joined(separator: ",\n"));
     """
     var errorMessage: UnsafeMutablePointer<CChar>?
     guard sqlite3_exec(db, sql, nil, nil, &errorMessage) == SQLITE_OK else {
@@ -313,7 +321,7 @@ struct AppModelTests {
         // should show it, and the Claude failure stays log-only.
         let projectsRoot = temporaryRoot.appendingPathComponent("missing-projects", isDirectory: true)
         let codexDBPath = temporaryRoot.appendingPathComponent("codex-state.sqlite", isDirectory: false)
-        try makeSingleThreadCodexDatabase(at: codexDBPath, updatedAt: Date())
+        try makeCodexStateDatabase(at: codexDBPath, threads: [(id: "codex-thread-1", updatedAt: Date())])
         let missingCodexRoot = temporaryRoot.appendingPathComponent("missing-codex-sessions", isDirectory: true)
         let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
@@ -340,6 +348,125 @@ struct AppModelTests {
         #expect(model.sessions.map(\.id) == ["codex-thread-1"])
         #expect(model.sessions.first?.source == .codex)
         #expect(model.errorMessage == nil)
+    }
+
+    // MARK: - Unified sidebar floor
+
+    @Test
+    @MainActor
+    func unifiedFloorTrimsStaleSourcePaddingWhenWindowIsFull() async throws {
+        // Five fresh Codex sessions fill the 24h window; Claude has
+        // only a stale session. Per-source padding still hands that
+        // stale session to the merge as a candidate, but the unified
+        // floor must trim it — the sidebar already has enough fresh
+        // content. This is the "five ancient Codex sessions at the
+        // bottom of the sidebar" bug, with the sources swapped.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        let staleClaudeURL = projectDirectory.appendingPathComponent("stale-claude.jsonl", isDirectory: false)
+        try fourMessageTranscript
+            .replacingOccurrences(of: "session-1", with: "stale-claude")
+            .write(to: staleClaudeURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes(
+            [.modificationDate: Date().addingTimeInterval(-10 * 24 * 60 * 60)],
+            ofItemAtPath: staleClaudeURL.path
+        )
+
+        let codexDBPath = temporaryRoot.appendingPathComponent("codex-state.sqlite", isDirectory: false)
+        let freshCodexIDs = (1...5).map { "codex-fresh-\($0)" }
+        try makeCodexStateDatabase(
+            at: codexDBPath,
+            threads: freshCodexIDs.enumerated().map { offset, id in
+                // Stagger by a minute so the sort order is deterministic.
+                (id: id, updatedAt: Date().addingTimeInterval(TimeInterval(-60 * offset)))
+            }
+        )
+        let missingCodexRoot = temporaryRoot.appendingPathComponent("missing-codex-sessions", isDirectory: true)
+
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            codexStorageService: CodexStorageService(
+                sessionsRoot: missingCodexRoot,
+                archivedSessionsRoot: missingCodexRoot,
+                threadDatabase: CodexThreadDatabase(path: codexDBPath)
+            ),
+            speechController: SpeechController(),
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+        )
+
+        await model.start()
+
+        #expect(model.sessions.map(\.id) == freshCodexIDs)
+        #expect(model.sessions.allSatisfy { $0.source == .codex })
+    }
+
+    @Test
+    @MainActor
+    func unifiedFloorPadsWithMostRecentStaleSessionsWhenWindowIsSparse() async throws {
+        // One fresh Claude session, one stale Claude session, one
+        // stale Codex thread. The window alone (1) is under the
+        // floor, so the stale sessions should pad the sidebar —
+        // newest first, across sources.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        for (name, age) in [("fresh-claude", TimeInterval(0)), ("stale-claude", 10 * 24 * 60 * 60)] {
+            let url = projectDirectory.appendingPathComponent("\(name).jsonl", isDirectory: false)
+            try fourMessageTranscript
+                .replacingOccurrences(of: "session-1", with: name)
+                .write(to: url, atomically: true, encoding: .utf8)
+            try fileManager.setAttributes(
+                [.modificationDate: Date().addingTimeInterval(-age)],
+                ofItemAtPath: url.path
+            )
+        }
+
+        let codexDBPath = temporaryRoot.appendingPathComponent("codex-state.sqlite", isDirectory: false)
+        try makeCodexStateDatabase(
+            at: codexDBPath,
+            threads: [(id: "stale-codex", updatedAt: Date().addingTimeInterval(-5 * 24 * 60 * 60))]
+        )
+        let missingCodexRoot = temporaryRoot.appendingPathComponent("missing-codex-sessions", isDirectory: true)
+
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            codexStorageService: CodexStorageService(
+                sessionsRoot: missingCodexRoot,
+                archivedSessionsRoot: missingCodexRoot,
+                threadDatabase: CodexThreadDatabase(path: codexDBPath)
+            ),
+            speechController: SpeechController(),
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+        )
+
+        await model.start()
+
+        #expect(model.sessions.map(\.id) == ["fresh-claude", "stale-codex", "stale-claude"])
     }
 
     // MARK: - playMessagesFromHere

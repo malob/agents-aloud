@@ -30,6 +30,14 @@ final class AppModel {
     // recent work — anything older you can still dig up, but we don't try to
     // keep weeks of history in the main view.
     private static let sessionLookback: TimeInterval = 24 * 60 * 60  // 24 hours
+    // Sidebar floor: if the lookback window holds fewer than this many
+    // sessions ACROSS BOTH SOURCES, pad with the most recent older ones
+    // so the sidebar never looks empty. The floor is a property of the
+    // unified list — each source also pads per-source (that guarantees
+    // enough candidates reach the merge), but applying the floor only
+    // per-source let a quiet source drag its 5 most recent stale
+    // sessions into a sidebar already full of fresh ones.
+    private static let minimumSessionCount = 5
 
     private let storageService: ClaudeStorageService
     private let codexStorageService: CodexStorageService
@@ -696,8 +704,14 @@ final class AppModel {
         // populated sidebar beats a banner on every poll tick. It
         // becomes user-facing only when the sidebar would otherwise be
         // empty, with nothing on screen to explain why.
-        async let claudeTask = storageService.loadSessions(since: since)
-        async let codexTask = codexStorageService.loadSessions(since: since)
+        async let claudeTask = storageService.loadSessions(
+            since: since,
+            minimumCount: Self.minimumSessionCount
+        )
+        async let codexTask = codexStorageService.loadSessions(
+            since: since,
+            minimumCount: Self.minimumSessionCount
+        )
 
         var aggregated: [SessionSummary] = []
         var failures: [(source: TranscriptSource, error: Error)] = []
@@ -725,10 +739,16 @@ final class AppModel {
 
         // Merge sort by mtime descending — gives the unified
         // "what was I working on lately" view that's the whole
-        // point of the unified feed.
-        let loadedSessions = aggregated.sorted {
+        // point of the unified feed. In-window sessions sort ahead
+        // of any out-of-window padding the sources supplied, so the
+        // floor below reduces to a prefix.
+        let sortedCandidates = aggregated.sorted {
             ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast)
         }
+        let inWindow = sortedCandidates.filter { ($0.modifiedAt ?? .distantPast) >= since }
+        let loadedSessions = inWindow.count >= Self.minimumSessionCount
+            ? inWindow
+            : Array(sortedCandidates.prefix(Self.minimumSessionCount))
 
         if sessionsState != .loaded(loadedSessions) {
             sessionsState = .loaded(loadedSessions)
