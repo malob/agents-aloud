@@ -66,7 +66,7 @@ struct ElevenLabsClientTests {
     // MARK: - streamSynthesize request shape (regression lock for commit d2ca469)
 
     @Test
-    func streamSynthesizeRequestUsesPCM24000QueryParamAndCorrectBody() async throws {
+    func streamSynthesizeRequestUsesPCM48000QueryParamAndCorrectBody() async throws {
         nonisolated(unsafe) var capturedRequest: URLRequest?
         StubURLProtocol.handler = { request in
             capturedRequest = request
@@ -90,7 +90,7 @@ struct ElevenLabsClientTests {
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
 
         #expect(url.path == "/v1/text-to-speech/v1/stream")
-        #expect(components.queryItems?.first(where: { $0.name == "output_format" })?.value == "pcm_24000")
+        #expect(components.queryItems?.first(where: { $0.name == "output_format" })?.value == "pcm_48000")
         #expect(request.httpMethod == "POST")
         #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
         #expect(request.value(forHTTPHeaderField: "Accept") == "application/octet-stream")

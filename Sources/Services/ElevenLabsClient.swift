@@ -24,16 +24,20 @@ protocol ElevenLabsClientType: Sendable {
 // HTTP client for ElevenLabs TTS. PCM-only output because that's what
 // StreamingAudioPlayer consumes directly.
 //
-// We use `pcm_24000` (24kHz, 16-bit mono) rather than 44.1kHz because
-// 44.1kHz PCM is gated behind Pro+ tiers on ElevenLabs; 24kHz is
-// available on Free/Starter/Creator and is more than sufficient for
-// speech (human voice tops out ~8kHz, and 24kHz sampling gives us
-// 12kHz Nyquist headroom — standard for voice-assistant TTS).
+// We use `pcm_48000` (48kHz, 16-bit mono) — full-band audio, Nyquist
+// comfortably past anything a voice produces. Surprising tier quirk,
+// verified empirically against the live API (2026-06, pay-as-you-go
+// account): `pcm_44100` is rejected with "Pro tier and above" while
+// `pcm_48000` succeeds. Don't "fix" this to 44.1kHz for roundness —
+// it's the one that's gated. The app shipped on `pcm_24000` (the
+// safe-everywhere format) before this was discovered; if a 403
+// `output_format_not_allowed` ever shows up for a lower-tier user,
+// fall back to pcm_24000.
 // See: https://help.elevenlabs.io/hc/en-us/articles/15754340124305
 struct ElevenLabsClient: ElevenLabsClientType {
     static let defaultBaseURL = URL(string: "https://api.elevenlabs.io")!
-    static let pcmOutputFormat = "pcm_24000"
-    static let pcmSampleRate: Double = 24_000
+    static let pcmOutputFormat = "pcm_48000"
+    static let pcmSampleRate: Double = 48_000
     static let defaultChunkSize = 4096
     static let requestTimeout: TimeInterval = 30
 

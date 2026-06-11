@@ -230,11 +230,14 @@ Sources/
   on `content`. Don't "fix" the verbatim render without re-running
   the perf check.
 
-- **ElevenLabs output format is `pcm_24000`, not `pcm_44100`.**
-  44.1kHz PCM is gated behind Pro+ tiers; 24kHz is available on
-  Free/Starter/Creator and is more than sufficient for speech
-  (Nyquist at 12kHz has plenty of headroom for a human voice topping
-  out ~8kHz).
+- **ElevenLabs output format is `pcm_48000` — and the tier gating is
+  weirder than it looks.** Verified empirically against the live API
+  (2026-06, pay-as-you-go account): `pcm_44100` is rejected with
+  "Pro tier and above" while `pcm_48000` succeeds. Don't "fix" the
+  format to 44.1kHz for roundness — it's the one that's gated. If a
+  403 `output_format_not_allowed` ever surfaces for a lower-tier
+  user, the fallback is `pcm_24000` (available on every tier; the
+  app shipped on it before the 48k discovery).
 
 - **ElevenLabs speed: generation is pinned to 1.0; the WPM slider is
   applied as on-device playback time-stretch.**
