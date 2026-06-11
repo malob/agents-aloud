@@ -14,7 +14,65 @@ struct CodexThreadDatabaseTests {
         let dbURL = temporaryRoot.appendingPathComponent("state_5.sqlite", isDirectory: false)
         try makeCodexStateDatabase(at: dbURL)
 
-        let rows = try CodexThreadDatabase(path: dbURL).loadThreads(since: .distantPast)
+        let rows = try CodexThreadDatabase(path: dbURL).loadThreads()
+
+        #expect(rows.map(\.id) == ["normal"])
+    }
+
+    // Regression: Codex leaves the DB in WAL journal mode. When it
+    // exits cleanly, SQLite checkpoints and DELETES the -wal/-shm
+    // sidecars, leaving a bare main file whose header still says WAL.
+    // A read-only connection cannot open that file (it would need to
+    // create the -shm index, which needs write access), so the
+    // snapshot must be opened read-write or every load fails with
+    // SQLITE_CANTOPEN and the sidebar drops to the filesystem walk.
+    @Test
+    func loadThreadsOpensCheckpointedWALDatabaseWithoutSidecars() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-CodexThreadDatabaseTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let dbURL = temporaryRoot.appendingPathComponent("state_5.sqlite", isDirectory: false)
+        try makeCodexStateDatabase(at: dbURL)
+
+        // Closing the fixture's connection checkpoints the WAL into
+        // the main file, but Apple's system SQLite persists the (now
+        // drained) sidecar files on close, unlike Codex's bundled
+        // SQLite which deletes them. Remove them explicitly to
+        // reproduce the state a cleanly-exited Codex leaves behind:
+        // a bare main file whose header still says WAL.
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-wal")
+        try? FileManager.default.removeItem(atPath: dbURL.path + "-shm")
+        #expect(!FileManager.default.fileExists(atPath: dbURL.path + "-wal"))
+
+        let rows = try CodexThreadDatabase(path: dbURL).loadThreads()
+
+        #expect(rows.map(\.id) == ["normal"])
+    }
+
+    // The other half of the snapshot contract: while a writer holds
+    // the DB open, committed rows live in the -wal file (the main
+    // file may not even contain the schema yet). The snapshot must
+    // copy the sidecars and read through them, or it sees a stale /
+    // empty database. This pins the original WAL-staleness fix.
+    @Test
+    func loadThreadsSeesRowsStillInWALWhileWriterIsOpen() throws {
+        let temporaryRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-CodexThreadDatabaseTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let dbURL = temporaryRoot.appendingPathComponent("state_5.sqlite", isDirectory: false)
+        let writer = try openCodexStateDatabase(at: dbURL)
+        defer { sqlite3_close_v2(writer) }
+        try populateCodexStateDatabase(writer)
+
+        // With the writer still open, nothing has been checkpointed:
+        // the schema and rows are only reachable through the -wal.
+        #expect(FileManager.default.fileExists(atPath: dbURL.path + "-wal"))
+
+        let rows = try CodexThreadDatabase(path: dbURL).loadThreads()
 
         #expect(rows.map(\.id) == ["normal"])
     }
@@ -26,16 +84,26 @@ private enum TestSQLiteError: Error {
 }
 
 private func makeCodexStateDatabase(at url: URL) throws {
+    let db = try openCodexStateDatabase(at: url)
+    defer { sqlite3_close_v2(db) }
+    try populateCodexStateDatabase(db)
+}
+
+private func openCodexStateDatabase(at url: URL) throws -> OpaquePointer {
     var db: OpaquePointer?
     let openResult = sqlite3_open(url.path, &db)
     guard openResult == SQLITE_OK, let db else {
         defer { sqlite3_close_v2(db) }
         throw TestSQLiteError.openFailed(sqliteMessage(db))
     }
-    defer { sqlite3_close_v2(db) }
+    return db
+}
 
+private func populateCodexStateDatabase(_ db: OpaquePointer) throws {
     try exec(
         """
+        PRAGMA journal_mode=WAL;
+
         CREATE TABLE _sqlx_migrations (version INTEGER NOT NULL PRIMARY KEY);
         INSERT INTO _sqlx_migrations (version) VALUES (22);
 

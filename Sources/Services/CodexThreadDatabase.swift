@@ -72,9 +72,13 @@ final class CodexThreadDatabase: Sendable {
         self.path = path
     }
 
-    // The single query we run. Returns up to 50 most-recent
-    // non-archived non-sub-agent threads modified after `since`.
-    func loadThreads(since: Date) throws -> [Row] {
+    // The single query we run. Returns the 50 most-recent non-archived
+    // non-sub-agent threads, newest first. No date cutoff here — the
+    // caller (CodexStorageService) applies the recency window and the
+    // minimum-count floor, the same policy split as the Claude side,
+    // so the sidebar can pad from older sessions when recent ones are
+    // sparse. 50 is comfortably more than any padding need.
+    func loadThreads() throws -> [Row] {
         guard FileManager.default.fileExists(atPath: path.path) else {
             throw DBError.databaseUnavailable(path)
         }
@@ -123,22 +127,33 @@ final class CodexThreadDatabase: Sendable {
 
         let fm = FileManager.default
         try fm.copyItem(atPath: path.path, toPath: snapshotDB.path)
+        // Sidecar copies use try? — Codex can checkpoint and delete
+        // -wal/-shm between the fileExists check and the copy. Losing
+        // that race just means the snapshot reads the pre-checkpoint
+        // main file: at most one 5s tick of staleness, self-corrected
+        // on the next refresh. Failing the whole load (and dropping to
+        // the title-less filesystem walk) would be strictly worse.
         if fm.fileExists(atPath: liveWAL) {
-            try fm.copyItem(atPath: liveWAL, toPath: snapshotWAL)
+            try? fm.copyItem(atPath: liveWAL, toPath: snapshotWAL)
         }
         if fm.fileExists(atPath: liveSHM) {
-            try fm.copyItem(atPath: liveSHM, toPath: snapshotSHM)
+            try? fm.copyItem(atPath: liveSHM, toPath: snapshotSHM)
         }
 
-        // Open the snapshot read-only. No immutable=1 — we want full
-        // WAL semantics so writes Codex left in -wal are visible. The
-        // snapshot is private to this process, so the
-        // SQLITE_CANTOPEN-on-shm failure mode doesn't apply.
-        let uri = "file:\(snapshotDB.path)?mode=ro"
-
+        // Open the snapshot READ-WRITE, not read-only. The main file's
+        // header says journal_mode=WAL, and SQLite refuses to open a
+        // WAL database on a read-only connection unless a valid -shm
+        // file already exists — the connection must otherwise build /
+        // recover the shm index, which needs write access. When Codex
+        // exits cleanly it checkpoints and deletes -wal/-shm, so the
+        // snapshot is just the bare main file and a read-only open
+        // fails with SQLITE_CANTOPEN at the first statement (observed
+        // as "Could not read _sqlx_migrations: code=14"). The snapshot
+        // is private to this call's temp dir, so letting SQLite write
+        // its shm/recovery state there is harmless.
         var db: OpaquePointer?
-        let openFlags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX | SQLITE_OPEN_URI
-        let openResult = sqlite3_open_v2(uri, &db, openFlags, nil)
+        let openFlags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX
+        let openResult = sqlite3_open_v2(snapshotDB.path, &db, openFlags, nil)
         guard openResult == SQLITE_OK, let db else {
             sqlite3_close_v2(db)
             throw DBError.sqlError("sqlite3_open_v2 failed: \(openResult) (\(sqlite3StatusMessage(db: db)))")
@@ -183,7 +198,6 @@ final class CodexThreadDatabase: Sendable {
                 WHEN json_valid(source) THEN json_extract(source, '$.subagent') IS NULL
                 ELSE 1
               END
-          AND COALESCE(updated_at_ms, updated_at * 1000) >= ?
         ORDER BY updated_ms DESC
         LIMIT 50;
         """
@@ -195,14 +209,6 @@ final class CodexThreadDatabase: Sendable {
             throw DBError.sqlError("sqlite3_prepare_v2 failed: \(prepareResult) (\(sqlite3StatusMessage(db: db)))")
         }
         defer { sqlite3_finalize(stmt) }
-
-        // Bind the cutoff. SQLite stores `updated_at_ms` in
-        // milliseconds-since-epoch; our `since` is a Foundation Date.
-        let cutoffMs = Int64(since.timeIntervalSince1970 * 1000)
-        let bindResult = sqlite3_bind_int64(stmt, 1, cutoffMs)
-        guard bindResult == SQLITE_OK else {
-            throw DBError.sqlError("sqlite3_bind_int64 failed: \(bindResult)")
-        }
 
         var rows: [Row] = []
         while true {

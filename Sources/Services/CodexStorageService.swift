@@ -91,11 +91,17 @@ actor CodexStorageService {
             // Try the SQLite fast path first. Codex maintains
             // ~/.codex/state_5.sqlite as the authoritative index of
             // all threads — one query gets us everything we need
-            // for the sidebar, no JSONL parsing required.
+            // for the sidebar, no JSONL parsing required. The DB
+            // returns the newest 50 threads; the window + floor
+            // policy is applied here so both paths behave the same.
             do {
-                let rows = try threadDatabase.loadThreads(since: since)
+                let rows = try threadDatabase.loadThreads()
                 logger.info("Codex DB returned \(rows.count, privacy: .public) thread rows")
-                return rows.map(Self.summary(from:))
+                return Self.applyRecencyWindow(
+                    rows.map(Self.summary(from:)),
+                    since: since,
+                    minimumCount: minimumCount
+                )
             } catch {
                 // DB missing, schema too old, or any other read
                 // failure ⇒ fall back to the original filesystem
@@ -108,6 +114,24 @@ actor CodexStorageService {
                 return try _loadSessionsFromFilesystem(since: since, minimumCount: minimumCount)
             }
         }
+    }
+
+    // Same recency policy as the Claude side's walk-until-enough:
+    // everything inside the window always qualifies; older sessions
+    // only pad the result up to `minimumCount` when the window alone
+    // falls short. Assumes `summaries` is sorted newest-first (the DB
+    // query orders by updated_ms DESC), so `prefix` takes the most
+    // recent older sessions as padding.
+    private nonisolated static func applyRecencyWindow(
+        _ summaries: [SessionSummary],
+        since: Date,
+        minimumCount: Int
+    ) -> [SessionSummary] {
+        let inWindow = summaries.filter { ($0.modifiedAt ?? .distantPast) >= since }
+        if inWindow.count >= minimumCount {
+            return inWindow
+        }
+        return Array(summaries.prefix(minimumCount))
     }
 
     private nonisolated static func summary(from row: CodexThreadDatabase.Row) -> SessionSummary {

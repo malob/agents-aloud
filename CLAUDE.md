@@ -79,7 +79,14 @@ Sources/
   Each loadThreads call therefore copies main + -wal + -shm into a
   per-call temp dir under `FileManager.default.temporaryDirectory`
   and reads the copy with full WAL semantics. APFS clones the files
-  via copy-on-write, so the cost is metadata-only.
+  via copy-on-write, so the cost is metadata-only. The snapshot is
+  opened READ-WRITE, not read-only: SQLite refuses to open a
+  WAL-mode database on a read-only connection unless a valid -shm
+  already exists, and a cleanly-exited Codex checkpoints and deletes
+  the sidecars — a read-only open of the bare snapshot then fails
+  with SQLITE_CANTOPEN at the first statement (this bug shipped:
+  every poll tick fell back to the title-less filesystem walk
+  whenever Codex wasn't running).
   See: [CodexThreadDatabase.swift](Sources/Services/CodexThreadDatabase.swift),
   [CodexStorageService.swift](Sources/Services/CodexStorageService.swift)
 
