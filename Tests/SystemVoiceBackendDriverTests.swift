@@ -162,6 +162,35 @@ struct SystemVoiceBackendDriverTests {
 
     @Test
     @MainActor
+    func stopWhilePausedActuallyTerminatesTheProcess() async throws {
+        // A SIGSTOPped process keeps SIGTERM pending without acting on
+        // it until it's continued — so stop() after pause() must chase
+        // the SIGTERM with SIGCONT, or the paused `say` survives as a
+        // suspended zombie that outlives the app. The script's TERM
+        // trap writes a marker file only when the signal is actually
+        // delivered; without the SIGCONT it never runs.
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-term-marker-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+
+        let driver = shellScriptDriver(
+            "trap 'touch \(marker.path); exit 0' TERM; cat > /dev/null; sleep 10"
+        )
+        let recorder = EventRecorder()
+
+        try driver.start(request: request(), eventHandler: recorder.handler)
+        try await Task.sleep(for: .milliseconds(150))
+
+        driver.pause()
+        driver.stop()
+
+        try await waitUntil(timeout: .seconds(3)) {
+            FileManager.default.fileExists(atPath: marker.path)
+        }
+    }
+
+    @Test
+    @MainActor
     func pauseAndResumeEmitMatchingEvents() async throws {
         let driver = shellScriptDriver("cat > /dev/null; sleep 10; exit 0")
         let recorder = EventRecorder()

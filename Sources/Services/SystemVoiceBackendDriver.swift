@@ -90,6 +90,14 @@ final class SystemVoiceBackendDriver: SpeechBackendDriver {
 
             if process.isRunning {
                 process.terminate()
+                // pause() suspends the process with SIGSTOP, and a
+                // stopped process holds SIGTERM pending without acting
+                // on it — so terminating a paused utterance would
+                // otherwise leave a suspended `say` alive indefinitely
+                // (it even outlives the app). SIGCONT after SIGTERM
+                // delivers the pending signal immediately; for a
+                // process that isn't stopped it's a no-op.
+                kill(process.processIdentifier, SIGCONT)
             }
         }
     }
