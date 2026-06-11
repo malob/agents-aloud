@@ -638,14 +638,27 @@ final class AppModel {
 
         if isEnabled {
             guard liveReadSessionID != selectedSessionID else { return }
-            // Seed the known-assistant set for the new session so we
-            // don't re-read history — only messages that arrive AFTER
-            // this toggle should auto-enqueue.
-            knownAssistantMessageIDsBySession[selectedSessionID] = Set(
-                transcriptMessages
-                    .filter(\.isAssistant)
-                    .map(\.id)
-            )
+            // Seed the known-assistant set from what the user can SEE,
+            // so only messages that arrive AFTER this toggle
+            // auto-enqueue. But if the session's first cold load is
+            // still in flight (nothing visible yet), DON'T seed: an
+            // explicit empty set means "everything in the next refresh
+            // is new," and the load would land with up to a window of
+            // history that all gets spoken. Left unseeded, the
+            // refresh-commit path initializes the known-set from the
+            // loaded transcript without enqueueing (its previousIDs is
+            // nil), and a genuinely empty session still speaks its
+            // first reply — the empty load commits an empty known-set,
+            // making the next arrival new relative to it.
+            let isColdLoading = transcriptState.isLoading(for: selectedSessionID)
+                && transcriptMessages.isEmpty
+            if !isColdLoading {
+                knownAssistantMessageIDsBySession[selectedSessionID] = Set(
+                    transcriptMessages
+                        .filter(\.isAssistant)
+                        .map(\.id)
+                )
+            }
             liveReadSessionID = selectedSessionID
         } else if liveReadSessionID == selectedSessionID {
             let disabledSessionID = selectedSessionID

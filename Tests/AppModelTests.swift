@@ -212,6 +212,7 @@ private let fourMessageTranscript = """
 {"type":"assistant","uuid":"assistant-1","timestamp":"2026-04-17T17:00:01Z","sessionId":"session-1","message":{"role":"assistant","content":[{"type":"text","text":"Reply one."}]}}
 {"type":"user","uuid":"user-2","timestamp":"2026-04-17T17:00:02Z","sessionId":"session-1","message":{"role":"user","content":"Second question."}}
 {"type":"assistant","uuid":"assistant-2","timestamp":"2026-04-17T17:00:03Z","sessionId":"session-1","message":{"role":"assistant","content":[{"type":"text","text":"Reply two."}]}}
+
 """
 
 struct AppModelTests {
@@ -547,7 +548,72 @@ struct AppModelTests {
         #expect(fixture.fakeDriver.startedRequests.count == 1)
     }
 
-    // MARK: - Live Speak on empty session
+    // MARK: - Live Speak seeding
+
+    @Test
+    @MainActor
+    func liveSpeakEnabledDuringColdLoadDoesNotReplayHistory() async throws {
+        // Select a never-loaded session and toggle Live Speak before
+        // the first transcript load lands. The toggle must not seed an
+        // explicit empty known-set — that would make the entire loaded
+        // history look "new" and speak up to a full window of old
+        // messages. New arrivals after the load should still speak.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        try fourMessageTranscript.write(to: transcriptURL, atomically: true, encoding: .utf8)
+
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        let watcher = FakeTranscriptFileWatcher()
+        let fakeDriver = FakeSpeechBackendDriver(
+            availableVoices: [SpeechVoiceOption(id: "system.voice", name: "System", language: "en-US")]
+        )
+        let controller = SpeechController(systemVoiceDriver: fakeDriver)
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            codexStorageService: sandboxedCodexStorageService(),
+            speechController: controller,
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: watcher,
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+        )
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        await model.start()
+        let firstSession = try #require(model.sessions.first)
+
+        // Toggle Live Speak synchronously after selecting, before the
+        // selection's load task has had a chance to run — the cold-load
+        // race window.
+        model.selectedSessionID = firstSession.id
+        model.setLiveReadEnabled(true)
+
+        try await waitUntil { model.transcriptState.messages(for: firstSession.id).count == 4 }
+
+        // The two historical assistant messages must not have entered
+        // the speech pipeline.
+        #expect(controller.currentMessageID == nil)
+        #expect(controller.queue.isEmpty)
+
+        // A genuinely new arrival should still speak.
+        let assistantLine = "{\"type\":\"assistant\",\"uuid\":\"assistant-3\",\"timestamp\":\"2026-04-17T17:00:04Z\",\"sessionId\":\"session-1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Reply three.\"}]}}\n"
+        let handle = try FileHandle(forWritingTo: transcriptURL)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data(assistantLine.utf8))
+        try handle.close()
+
+        watcher.emitChange()
+
+        try await waitUntil { controller.currentMessageID == "assistant-3" }
+    }
 
     @Test
     @MainActor
@@ -567,6 +633,7 @@ struct AppModelTests {
         // Start with a session that has only a user prompt, no assistant reply.
         let initialContent = """
         {"type":"user","uuid":"user-1","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-1","cwd":"/Users/malo/Code/demo-project","message":{"role":"user","content":"Start question."}}
+
         """
         try initialContent.write(to: transcriptURL, atomically: true, encoding: .utf8)
 
@@ -600,7 +667,7 @@ struct AppModelTests {
         model.setLiveReadEnabled(true)
 
         // Append the first assistant reply to the session.
-        let assistantLine = "\n{\"type\":\"assistant\",\"uuid\":\"assistant-1\",\"timestamp\":\"2026-04-17T17:00:01Z\",\"sessionId\":\"session-1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"First reply.\"}]}}"
+        let assistantLine = "{\"type\":\"assistant\",\"uuid\":\"assistant-1\",\"timestamp\":\"2026-04-17T17:00:01Z\",\"sessionId\":\"session-1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"First reply.\"}]}}\n"
         let handle = try FileHandle(forWritingTo: transcriptURL)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data(assistantLine.utf8))
@@ -879,9 +946,11 @@ struct AppModelTests {
         let sessionB = projectDirectory.appendingPathComponent("session-b.jsonl", isDirectory: false)
         try """
         {"type":"user","uuid":"u-a","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-a","cwd":"/x","message":{"role":"user","content":"A's prompt."}}
+
         """.write(to: sessionA, atomically: true, encoding: .utf8)
         try """
         {"type":"user","uuid":"u-b","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-b","cwd":"/x","message":{"role":"user","content":"B's prompt."}}
+
         """.write(to: sessionB, atomically: true, encoding: .utf8)
 
         let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
@@ -923,7 +992,7 @@ struct AppModelTests {
 
         // Append an assistant message to A's file. liveReadWatcher is
         // the one watching it now (selected != live).
-        let newAssistantLine = "\n{\"type\":\"assistant\",\"uuid\":\"a-reply-1\",\"timestamp\":\"2026-04-17T17:00:02Z\",\"sessionId\":\"session-a\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"A's background reply.\"}]}}"
+        let newAssistantLine = "{\"type\":\"assistant\",\"uuid\":\"a-reply-1\",\"timestamp\":\"2026-04-17T17:00:02Z\",\"sessionId\":\"session-a\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"A's background reply.\"}]}}\n"
         let handle = try FileHandle(forWritingTo: sessionA)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data(newAssistantLine.utf8))
@@ -1090,6 +1159,7 @@ struct AppModelTests {
 
         let initialContent = """
         {"type":"user","uuid":"user-1","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-1","cwd":"/Users/malo/Code/demo-project","message":{"role":"user","content":"Start question."}}
+
         """
         try initialContent.write(to: transcriptURL, atomically: true, encoding: .utf8)
 
@@ -1124,7 +1194,7 @@ struct AppModelTests {
 
         // Append the first assistant reply — live-read should pick it up
         // and call the processor.
-        let assistantLine = "\n{\"type\":\"assistant\",\"uuid\":\"assistant-1\",\"timestamp\":\"2026-04-17T17:00:01Z\",\"sessionId\":\"session-1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"First reply.\"}]}}"
+        let assistantLine = "{\"type\":\"assistant\",\"uuid\":\"assistant-1\",\"timestamp\":\"2026-04-17T17:00:01Z\",\"sessionId\":\"session-1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"First reply.\"}]}}\n"
         let handle = try FileHandle(forWritingTo: transcriptURL)
         try handle.seekToEnd()
         try handle.write(contentsOf: Data(assistantLine.utf8))
@@ -1271,6 +1341,7 @@ struct AppModelTests {
         """
         {"type":"user","uuid":"user-1","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-1","cwd":"/Users/malo/Code/demo-project","message":{"role":"user","content":"Please review this branch."}}
         {"type":"assistant","uuid":"assistant-1","timestamp":"2026-04-17T17:00:01Z","sessionId":"session-1","message":{"role":"assistant","content":[{"type":"text","text":"Happy to."}]}}
+
         """
     }
 }
