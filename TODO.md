@@ -25,6 +25,19 @@ This is a lightweight holding pen for non-urgent issues that are real enough to 
   - If it doesn't (visible regression): revert is just deleting the `.markdown` case branch — no plumbing to undo.
   - Estimated time: 20-30 min including manual testing on a heavy session.
 
+- **Replace the time-pitch playback stage with `AVSampleBufferAudioRenderer` + `AVAudioTimePitchAlgorithm.timeDomain`.**
+  - Context: `StreamingAudioPlayer` stretches ElevenLabs playback through `AVAudioUnitTimePitch` (a phase-vocoder stretcher). Its signature artifact at 2×+ is phasiness — hollow/tinny "phone line" coloration. We've maxed the unit's `overlap` (32), which reduces it; Apple's voice-optimized time-domain stretcher (the WSOLA family podcast apps use, immune to phasiness on single-voice speech) is only reachable via `AVSampleBufferAudioRenderer.audioTimePitchAlgorithm = .timeDomain` with rate on `AVSampleBufferRenderSynchronizer`.
+  - Spike: rebuild `StreamingAudioPlayer` on the renderer — feed PCM chunks as `CMSampleBuffer`s, pause/resume via synchronizer rate, finish via `CMTime`-based observation. Preserve the session-identity guards and "no callbacks after stop()" semantics the current tests pin.
+  - Success criteria: existing `StreamingAudioPlayerTests` pass unchanged; 2.3× speech audibly cleaner than the overlap-32 vocoder by ear.
+  - If it disappoints: Signalsmith Stretch (MIT, C++ interop) is the open-source quality benchmark.
+  - Estimated time: half a day including the semantics-parity testing.
+
+- **Local TTS backend (researched 2026-06-11; see commit history for the time-stretch groundwork).**
+  - Best current option: Qwen3-TTS (Apache 2.0, Jan 2026) — 0.6B/1.7B, voice design from text descriptions, 3 s cloning, streaming. MLX numbers on M4-class: 1.7B ≈ 1.6× realtime generation, ~60 ms TTFB, 3.5 GB resident (4-bit); 0.6B ≈ 2× faster at ~2 GB. Kokoro-82M remains the speed floor (~350 MB, flatter prosody). At 400 wpm playback (2.35×), the 0.6B comfortably outruns consumption; the 1.7B relies on buffer-ahead.
+  - Integration paths: (a) `mlx-audio` Python sidecar (MIT, 7k+ stars, active; HTTP server; also serves Kokoro/MOSS for ear-testing) — recommended first; (b) `swift-qwen3-tts` SwiftPM package (native MLX Swift, streaming API that feeds straight into `StreamingAudioPlayer`) — blocked on the repo having NO license file as of 2026-06; ask the author or port from mlx-audio ourselves before shipping anything.
+  - Architecture: third `SpeechBackend` case + driver conforming to `SpeechBackendDriver`, lazy model load (~2-4 GB resident only while backend active), voice list = built-in speakers + saved voice designs.
+  - First step when picked up: ear-test Qwen3-0.6B vs 1.7B vs Kokoro via the mlx-audio server before writing any Swift.
+
 - **Replace `TranscriptDetailView`'s queued bottom-pin with a `.scrollPosition(id:anchor:)` + bottom-sentinel approach.**
   - Context: the view currently scrolls to the latest message via a generation-counter `Task` that runs `proxy.scrollTo` three times (Task.yield + 20 ms + 120 ms) to catch row-height re-measurement after the parent layout claims to be done. Works reliably under Codex's computer-use testing but the magic-number delays are ugly.
   - Spike: add a `Color.clear.frame(height: 1).id("bottom")` sentinel at the end of the VStack, bind `@State var scrollAnchorID: String? = "bottom"` via `.scrollPosition(id: $scrollAnchorID, anchor: .bottom)`, drive auto-pin off the same `userSetAtBottom` gate. The `.scrollPosition` binding-based API was previously avoided because it was broken with LazyVStack — now that we're on eager VStack (commit `fc89db9`, after the 50-message cap), it's worth retrying.
