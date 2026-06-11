@@ -14,17 +14,6 @@ This is a lightweight holding pen for non-urgent issues that are real enough to 
 
 - Revisit the sidebar toolbar issue only if it becomes more noticeable or if a broader AppKit/window-chrome pass happens anyway.
 
-- **Re-enable markdown rendering in `TranscriptMarkdownView`.**
-  - Context: currently renders `Text(verbatim: content.text)` for all messages. Markdown rendering was disabled during a perf investigation when transcripts were unbounded and LazyVStack re-materialized cells on scroll, both of which made eager markdown parsing a hot path. Both conditions are gone: the 50-message cap (`TranscriptDisplayLimits`) bounds the worst case to ~50 cells, and we're on eager VStack so cells render once at mount with no on-scroll re-parse.
-  - Plumbing already in place: `TranscriptMessage.Content` (Sources/Models/TranscriptMessage.swift) classifies each message at parse time into `.literal` / `.plainText` / `.markdown` with a heuristic detector that handles Claude's XML-ish system prompts as `.literal` so they render verbatim. `TranscriptMarkdownView` already takes a `Content` value, not a raw string. The `Textual` dependency is declared in `Package.swift` but no source file imports it yet, kept ready for this restoration.
-  - Spike: branch the `body` of `TranscriptMarkdownView` on `content`:
-    - `.literal`, `.plainText` → current `Text(verbatim:)` path.
-    - `.markdown` → either `Text(AttributedString(markdown: text))` (Apple built-in, basic styling) or a `Textual` view (richer: code blocks, tables, etc.). Try Textual first since the dep is already there for that reason.
-  - Success criteria: long Claude/Codex sessions with code blocks and tables render markdown correctly without scroll stutter or visible per-cell parsing delay. Compare cold-load timing (`PerfLog` "Storage.loadTranscript" + initial render) before and after; eyeball scroll smoothness on a session with several code blocks.
-  - If it works: ship it. The CLAUDE.md `TranscriptMarkdownView` load-bearing entry can simplify to "renders markdown via the `Content` classification" instead of warning against re-enabling.
-  - If it doesn't (visible regression): revert is just deleting the `.markdown` case branch — no plumbing to undo.
-  - Estimated time: 20-30 min including manual testing on a heavy session.
-
 - **Local TTS backend (researched 2026-06-11; see commit history for the time-stretch groundwork).**
   - Best current option: Qwen3-TTS (Apache 2.0, Jan 2026) — 0.6B/1.7B, voice design from text descriptions, 3 s cloning, streaming. MLX numbers on M4-class: 1.7B ≈ 1.6× realtime generation, ~60 ms TTFB, 3.5 GB resident (4-bit); 0.6B ≈ 2× faster at ~2 GB. Kokoro-82M remains the speed floor (~350 MB, flatter prosody). At 400 wpm playback (2.35×), the 0.6B comfortably outruns consumption; the 1.7B relies on buffer-ahead.
   - Integration paths: (a) `mlx-audio` Python sidecar (MIT, 7k+ stars, active; HTTP server; also serves Kokoro/MOSS for ear-testing) — recommended first; (b) `swift-qwen3-tts` SwiftPM package (native MLX Swift, streaming API that feeds straight into `StreamingAudioPlayer`) — blocked on the repo having NO license file as of 2026-06; ask the author or port from mlx-audio ourselves before shipping anything.

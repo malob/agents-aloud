@@ -256,12 +256,16 @@ Sources/
   physics reserve ~165 px for the blur edge, so the user's visual
   bottom lands at `remaining ≈ 165`, not 0.
 
-- **`TranscriptMarkdownView` renders `Text(verbatim:)` deliberately.**
-  Markdown rendering was disabled during a perf investigation;
-  `TranscriptMessage.Content` classification + the `Textual`
-  dependency are kept wired so restoring it is a matter of branching
-  on `content`. Don't "fix" the verbatim render without re-running
-  the perf check.
+- **`TranscriptMarkdownView` renders markdown via the parse-time
+  `Content` classification** (restored 2026-06-11 after the original
+  perf concern — unbounded transcripts + LazyVStack re-parsing on
+  scroll — was retired by the message cap and eager VStack).
+  `.literal` (Claude's XML-ish envelopes) and `.plainText` stay
+  `Text(verbatim:)`; `.markdown` renders through Textual's
+  `StructuredText`. Collapsed rows height-cap + clip the markdown
+  instead of using `lineLimit` — StructuredText sets `.lineLimit(nil)`
+  internally because an environment line limit applies PER text
+  fragment (a three-paragraph doc would show 3× the lines).
 
 - **ElevenLabs output format is `pcm_48000` — and the tier gating is
   weirder than it looks.** Verified empirically against the live API
