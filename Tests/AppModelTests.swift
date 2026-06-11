@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import ClaudeCodeVoice
 
@@ -45,6 +46,66 @@ private func sandboxedCodexStorageService() -> CodexStorageService {
         archivedSessionsRoot: nonexistent,
         threadDatabase: CodexThreadDatabase(path: nonexistentDB)
     )
+}
+
+private enum TestDatabaseError: Error {
+    case setupFailed(String)
+}
+
+// Minimal Codex state DB containing a single ordinary thread, so a
+// test can make the Codex source produce a sidebar session without
+// any rollout JSONL on disk. Schema mirrors the fixture in
+// CodexThreadDatabaseTests (migration 22).
+private func makeSingleThreadCodexDatabase(at url: URL, updatedAt: Date) throws {
+    var db: OpaquePointer?
+    guard sqlite3_open(url.path, &db) == SQLITE_OK, let db else {
+        sqlite3_close_v2(db)
+        throw TestDatabaseError.setupFailed("sqlite3_open failed for \(url.path)")
+    }
+    defer { sqlite3_close_v2(db) }
+
+    let updatedSeconds = Int64(updatedAt.timeIntervalSince1970)
+    let sql = """
+    CREATE TABLE _sqlx_migrations (version INTEGER NOT NULL PRIMARY KEY);
+    INSERT INTO _sqlx_migrations (version) VALUES (22);
+
+    CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        rollout_path TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        title TEXT NOT NULL,
+        first_user_message TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        updated_at_ms INTEGER,
+        archived INTEGER NOT NULL DEFAULT 0,
+        agent_nickname TEXT,
+        agent_role TEXT,
+        source TEXT NOT NULL
+    );
+
+    INSERT INTO threads (
+        id, rollout_path, cwd, title, first_user_message,
+        updated_at, updated_at_ms, archived, agent_nickname, agent_role, source
+    ) VALUES (
+        'codex-thread-1',
+        '/tmp/rollout-test.jsonl',
+        '/tmp/project',
+        'Codex thread',
+        'Build the thing',
+        \(updatedSeconds),
+        \(updatedSeconds * 1000),
+        0,
+        NULL,
+        NULL,
+        'vscode'
+    );
+    """
+    var errorMessage: UnsafeMutablePointer<CChar>?
+    guard sqlite3_exec(db, sql, nil, nil, &errorMessage) == SQLITE_OK else {
+        let message = errorMessage.map { String(cString: $0) } ?? "sqlite3_exec failed"
+        sqlite3_free(errorMessage)
+        throw TestDatabaseError.setupFailed(message)
+    }
 }
 
 @MainActor
@@ -201,6 +262,83 @@ struct AppModelTests {
 
         #expect(model.transcriptState.messages(for: selectedSessionID) == originalMessages)
         #expect(model.transcriptState.errorMessage(for: selectedSessionID)?.contains("Unable to load transcript") == true)
+        #expect(model.errorMessage == nil)
+    }
+
+    // MARK: - Session load failures
+
+    @Test
+    @MainActor
+    func sessionLoadFailureWithEmptySidebarReportsFailingSource() async throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        // Never created — ClaudeStorageService throws on the missing
+        // directory, and the sandboxed Codex service returns [].
+        let projectsRoot = temporaryRoot.appendingPathComponent("missing-projects", isDirectory: true)
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            codexStorageService: sandboxedCodexStorageService(),
+            speechController: SpeechController(),
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+        )
+
+        await model.start()
+
+        #expect(model.sessions.isEmpty)
+        let message = try #require(model.errorMessage)
+        #expect(message.contains("Unable to load sessions"))
+        #expect(message.contains("Claude:"))
+    }
+
+    @Test
+    @MainActor
+    func singleSourceFailureKeepsSurvivingSourcesSessions() async throws {
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
+        // Claude's projects root is never created → that source throws.
+        // Codex serves one thread from its state DB → the sidebar
+        // should show it, and the Claude failure stays log-only.
+        let projectsRoot = temporaryRoot.appendingPathComponent("missing-projects", isDirectory: true)
+        let codexDBPath = temporaryRoot.appendingPathComponent("codex-state.sqlite", isDirectory: false)
+        try makeSingleThreadCodexDatabase(at: codexDBPath, updatedAt: Date())
+        let missingCodexRoot = temporaryRoot.appendingPathComponent("missing-codex-sessions", isDirectory: true)
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            codexStorageService: CodexStorageService(
+                sessionsRoot: missingCodexRoot,
+                archivedSessionsRoot: missingCodexRoot,
+                threadDatabase: CodexThreadDatabase(path: codexDBPath)
+            ),
+            speechController: SpeechController(),
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+        )
+
+        await model.start()
+
+        #expect(model.sessions.map(\.id) == ["codex-thread-1"])
+        #expect(model.sessions.first?.source == .codex)
         #expect(model.errorMessage == nil)
     }
 

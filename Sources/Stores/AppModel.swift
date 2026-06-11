@@ -690,77 +690,67 @@ final class AppModel {
     private func refreshSessions() async {
         let existingSessions = sessionsState.sessions
 
+        let since = Date().addingTimeInterval(-Self.sessionLookback)
+        // Load both sources in parallel. A single-source failure stays
+        // log-only while the other source still produces sessions — a
+        // populated sidebar beats a banner on every poll tick. It
+        // becomes user-facing only when the sidebar would otherwise be
+        // empty, with nothing on screen to explain why.
+        async let claudeTask = storageService.loadSessions(since: since)
+        async let codexTask = codexStorageService.loadSessions(since: since)
+
+        var aggregated: [SessionSummary] = []
+        var failures: [(source: TranscriptSource, error: Error)] = []
+
         do {
-            let since = Date().addingTimeInterval(-Self.sessionLookback)
-            // Load both sources in parallel. If one source fails (e.g.
-            // Codex isn't installed and the directory is missing — but
-            // the Codex service handles that case as []) we still want
-            // sessions from the surviving source. We intentionally do
-            // NOT throw on a single-source failure unless both throw.
-            async let claudeTask = storageService.loadSessions(since: since)
-            async let codexTask = codexStorageService.loadSessions(since: since)
-
-            var aggregated: [SessionSummary] = []
-            var aggregatedError: Error?
-
-            do {
-                aggregated.append(contentsOf: try await claudeTask)
-            } catch {
-                aggregatedError = error
-                logger.error("Claude storage load failed: \(error.localizedDescription, privacy: .public)")
-            }
-
-            do {
-                aggregated.append(contentsOf: try await codexTask)
-            } catch {
-                // Single-source failure: log but keep going. Banner
-                // only when BOTH sources failed.
-                if aggregatedError == nil {
-                    logger.error("Codex storage load failed: \(error.localizedDescription, privacy: .public)")
-                } else {
-                    aggregatedError = error
-                }
-            }
-
-            // If both sources errored, surface like the old single-
-            // source behavior. Otherwise, present what we have.
-            if aggregated.isEmpty, let err = aggregatedError {
-                throw err
-            }
-
-            // Merge sort by mtime descending — gives the unified
-            // "what was I working on lately" view that's the whole
-            // point of the unified feed.
-            let loadedSessions = aggregated.sorted {
-                ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast)
-            }
-
-            if sessionsState != .loaded(loadedSessions) {
-                sessionsState = .loaded(loadedSessions)
-            }
-            let currentSessionIDs = Set(loadedSessions.map(\.id))
-            transcriptMessagesBySession = transcriptMessagesBySession.filter { currentSessionIDs.contains($0.key) }
-            knownAssistantMessageIDsBySession = knownAssistantMessageIDsBySession.filter { currentSessionIDs.contains($0.key) }
-
-            // If the Live Speak session disappeared from the sidebar
-            // (deleted, aged out of the lookback window), clear it.
-            if let liveReadSessionID, !currentSessionIDs.contains(liveReadSessionID) {
-                self.liveReadSessionID = nil
-            }
-
-            if let selectedSessionID, loadedSessions.contains(where: { $0.id == selectedSessionID }) {
-                updateSelectedTranscriptObservation()
-                reconcileLiveReadWatcher()
-                return
-            }
-
-            // didSet on selectedSessionID handles transcriptState + watcher cleanup.
-            selectedSessionID = nil
+            aggregated.append(contentsOf: try await claudeTask)
         } catch {
-            let newErrorMessage = sessionLoadErrorMessage(for: error)
-            sessionsState = .failed(existingSessions, message: newErrorMessage)
-            errorMessage = newErrorMessage
+            failures.append((.claude, error))
+            logger.error("Claude storage load failed: \(error.localizedDescription, privacy: .public)")
         }
+
+        do {
+            aggregated.append(contentsOf: try await codexTask)
+        } catch {
+            failures.append((.codex, error))
+            logger.error("Codex storage load failed: \(error.localizedDescription, privacy: .public)")
+        }
+
+        if aggregated.isEmpty, !failures.isEmpty {
+            let message = sessionLoadErrorMessage(failures: failures)
+            sessionsState = .failed(existingSessions, message: message)
+            errorMessage = message
+            return
+        }
+
+        // Merge sort by mtime descending — gives the unified
+        // "what was I working on lately" view that's the whole
+        // point of the unified feed.
+        let loadedSessions = aggregated.sorted {
+            ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast)
+        }
+
+        if sessionsState != .loaded(loadedSessions) {
+            sessionsState = .loaded(loadedSessions)
+        }
+        let currentSessionIDs = Set(loadedSessions.map(\.id))
+        transcriptMessagesBySession = transcriptMessagesBySession.filter { currentSessionIDs.contains($0.key) }
+        knownAssistantMessageIDsBySession = knownAssistantMessageIDsBySession.filter { currentSessionIDs.contains($0.key) }
+
+        // If the Live Speak session disappeared from the sidebar
+        // (deleted, aged out of the lookback window), clear it.
+        if let liveReadSessionID, !currentSessionIDs.contains(liveReadSessionID) {
+            self.liveReadSessionID = nil
+        }
+
+        if let selectedSessionID, loadedSessions.contains(where: { $0.id == selectedSessionID }) {
+            updateSelectedTranscriptObservation()
+            reconcileLiveReadWatcher()
+            return
+        }
+
+        // didSet on selectedSessionID handles transcriptState + watcher cleanup.
+        selectedSessionID = nil
     }
 
     // Refresh a session's transcript state. Live Speak eligibility is
@@ -1026,7 +1016,12 @@ final class AppModel {
         "Unable to load transcript: \(error.localizedDescription)"
     }
 
-    private func sessionLoadErrorMessage(for error: Error) -> String {
-        "Unable to load Claude sessions: \(error.localizedDescription)"
+    private func sessionLoadErrorMessage(
+        failures: [(source: TranscriptSource, error: Error)]
+    ) -> String {
+        let details = failures
+            .map { "\($0.source.displayName): \($0.error.localizedDescription)" }
+            .joined(separator: "; ")
+        return "Unable to load sessions — \(details)"
     }
 }
