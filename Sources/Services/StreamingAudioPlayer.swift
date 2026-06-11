@@ -172,7 +172,15 @@ final class StreamingAudioPlayer {
         session.scheduledBufferCount += 1
         // The completion handler runs off the main actor on AVFoundation's
         // audio thread; hop back to @MainActor to mutate state.
-        playerNode.scheduleBuffer(buffer) { [weak self] in
+        //
+        // .dataPlayedBack, NOT the legacy scheduleBuffer(_:completionHandler:):
+        // the legacy form fires when the buffer has been CONSUMED by the
+        // render pipeline, which for the final buffer is up to a couple
+        // hundred ms before the audio is audible at the output. Finishing
+        // on consumption tears the engine down (and starts the next queued
+        // utterance) while the tail of the last word is still in flight —
+        // audibly clipping the end of every ElevenLabs utterance.
+        playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
             Task { @MainActor in
                 self?.bufferCompleted(sessionID: sessionID)
             }
