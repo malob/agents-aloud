@@ -200,12 +200,19 @@ private struct SessionRowView: View {
                 Spacer(minLength: 8)
 
                 if let modifiedAt = session.modifiedAt {
-                    Text(Self.compactRelative(from: modifiedAt))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .layoutPriority(1)
-                        .help(modifiedAt.formatted(date: .abbreviated, time: .shortened))
+                    // TimelineView so the label ticks while the app idles.
+                    // Rows only re-render when sessionsState actually
+                    // changes (refreshSessions skips equal writes), so a
+                    // bare Text computed at render time would freeze —
+                    // "12s" sat unchanged until some other state moved.
+                    TimelineView(.periodic(from: .now, by: 30)) { context in
+                        Text(Self.compactRelative(from: modifiedAt, now: context.date))
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                    .help(modifiedAt.formatted(date: .abbreviated, time: .shortened))
                 }
 
                 if isLiveSpeakSession {
