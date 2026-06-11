@@ -108,7 +108,7 @@ struct MessageRowView: View, Equatable {
                 Spacer(minLength: 8)
 
                 if message.isAssistant {
-                    statusAffordance
+                    statusPill
                 }
             }
 
@@ -200,18 +200,6 @@ struct MessageRowView: View, Equatable {
         }
     }
 
-    // The right-corner affordance. Idle rows render a plain Speak
-    // Every row state — idle, rewriting, speaking, queued, and the
-    // Option-hover "Speak from Here" override — renders through the
-    // same glass-capsule pill. Keeping a single surface prevents the
-    // 1–2px height shift that used to happen when a row transitioned
-    // between "plain Speak label" and "capsule pill," and matches the
-    // mental model: the pill IS the click target on every row.
-    @ViewBuilder
-    private var statusAffordance: some View {
-        statusPill
-    }
-
     // Possible pill display modes. The same row status can render as
     // any of these depending on mouse / modifier state, but the
     // LAYOUT is always sized by .normal so the capsule doesn't change
@@ -232,10 +220,17 @@ struct MessageRowView: View, Equatable {
         return .normal
     }
 
-    // Glass-capsule pill used for all non-idle row states. The pill
-    // renders TWO label stacks: the normal-mode label is always
-    // laid out (sized phantom); the active-mode label renders on
-    // top. This stabilizes pill width against hover — without it
+    // The right-corner affordance. Every row state — idle, rewriting,
+    // speaking, queued, and the Option-hover "Speak from Here"
+    // override — renders through this same glass-capsule pill.
+    // Keeping a single surface prevents the 1–2px height shift that
+    // used to happen when a row transitioned between "plain Speak
+    // label" and "capsule pill," and matches the mental model: the
+    // pill IS the click target on every row.
+    //
+    // The pill renders TWO label stacks: the normal-mode label is
+    // always laid out (sized phantom); the active-mode label renders
+    // on top. This stabilizes pill width against hover — without it
     // the capsule shrank when the label flipped to the shorter
     // cancel text, the cursor fell outside the new bounds, and
     // hover oscillated.
