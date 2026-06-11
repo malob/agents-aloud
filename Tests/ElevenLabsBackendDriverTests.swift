@@ -113,7 +113,7 @@ struct ElevenLabsBackendDriverTests {
 
     @Test
     @MainActor
-    func startEmitsDidStartAndCallsClientWithMappedSpeed() throws {
+    func startEmitsDidStartAndCallsClientWithNaturalSpeed() throws {
         let client = FakeElevenLabsClient()
         let driver = ElevenLabsBackendDriver(client: client)
         let recorder = EventRecorder()
@@ -123,7 +123,7 @@ struct ElevenLabsBackendDriverTests {
             messageID: "m",
             text: "hello",
             voiceIdentifier: "v1",
-            wordsPerMinute: 300  // middle of slider -> 0.95 ElevenLabs speed per the linear mapping
+            wordsPerMinute: 300
         )
 
         try driver.start(request: request, eventHandler: recorder.handler)
@@ -133,8 +133,9 @@ struct ElevenLabsBackendDriverTests {
         #expect(client.synthesizeCalls[0].voiceID == "v1")
         #expect(client.synthesizeCalls[0].text == "hello")
         #expect(client.synthesizeCalls[0].modelID == ElevenLabsBackendDriver.defaultModelID)
-        // 0.4 maps to 0.95 per the documented linear mapping
-        #expect(abs(client.synthesizeCalls[0].speed - 0.95) < 0.001)
+        // Generation is always requested at natural pace; the WPM
+        // slider is applied as on-device playback time-stretch.
+        #expect(abs(client.synthesizeCalls[0].speed - 1.0) < 0.001)
 
         driver.stop()
     }
@@ -236,15 +237,14 @@ struct ElevenLabsBackendDriverTests {
     }
 
     @Test
-    func wordsPerMinuteMappingIsLinearAndClamped() {
-        // At 100 wpm (slider min) -> 0.7 (ElevenLabs slowest allowed)
-        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(wordsPerMinute: 100) - 0.7) < 0.001)
-        // 300 wpm (middle of slider) -> 0.95
-        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(wordsPerMinute: 300) - 0.95) < 0.001)
-        // 500 wpm (slider max) -> 1.2 (ElevenLabs fastest allowed)
-        #expect(abs(ElevenLabsBackendDriver.mapRateToSpeed(wordsPerMinute: 500) - 1.2) < 0.001)
-        // Out-of-range clamps
-        #expect(ElevenLabsBackendDriver.mapRateToSpeed(wordsPerMinute: 50) == 0.7)
-        #expect(ElevenLabsBackendDriver.mapRateToSpeed(wordsPerMinute: 1000) == 1.2)
+    func wordsPerMinuteMapsLinearlyToPlaybackRate() {
+        // 175 wpm ≈ ElevenLabs voices' natural pace -> 1.0× playback.
+        #expect(abs(ElevenLabsBackendDriver.playbackRate(wordsPerMinute: 175) - 1.0) < 0.001)
+        // 350 wpm -> double speed.
+        #expect(abs(ElevenLabsBackendDriver.playbackRate(wordsPerMinute: 350) - 2.0) < 0.001)
+        // Slider extremes stay inside the player's clamp range
+        // (0.5–4.0), so the audible rate tracks the slider everywhere.
+        #expect(ElevenLabsBackendDriver.playbackRate(wordsPerMinute: 100) > StreamingAudioPlayer.minimumPlaybackRate)
+        #expect(ElevenLabsBackendDriver.playbackRate(wordsPerMinute: 500) < StreamingAudioPlayer.maximumPlaybackRate)
     }
 }

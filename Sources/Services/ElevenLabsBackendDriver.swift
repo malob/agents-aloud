@@ -115,11 +115,10 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
 
         active = Active(request: request, eventHandler: eventHandler)
 
-        let speed = Self.mapRateToSpeed(wordsPerMinute: request.wordsPerMinute)
         let stream = client.streamSynthesize(
             voiceID: voiceID,
             text: request.text,
-            speed: speed,
+            speed: Self.naturalGenerationSpeed,
             modelID: modelID
         )
 
@@ -127,6 +126,7 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
             try player.play(
                 stream: stream,
                 sampleRate: ElevenLabsClient.pcmSampleRate,
+                rate: Self.playbackRate(wordsPerMinute: request.wordsPerMinute),
                 onFinish: { [weak self] in
                     self?.handleFinish(for: request.playbackID)
                 },
@@ -175,20 +175,23 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
         handler(.didFail(playbackID, description: error.localizedDescription))
     }
 
-    // Map words-per-minute (the unit SystemVoice uses, exposed by the
-    // Settings slider) onto ElevenLabs' 0.7-1.2 `speed` parameter. The
-    // API rejects anything outside [0.7, 1.2] with a 400. Linear:
-    // 100 wpm -> 0.7 (slowest allowed), 300 wpm -> 0.95 (just under
-    // ElevenLabs default 1.0), 500 wpm -> 1.2 (max).
-    //
-    // Note: ElevenLabs caps at 1.2x — meaningfully slower than what
-    // SystemVoice can do at the high end of our slider (e.g. 450 wpm
-    // on `say`). Users will dial each backend's slider position to
-    // taste; we keep the unit consistent so it's the same control,
-    // not so the audible cadence is identical across backends.
-    nonisolated static func mapRateToSpeed(wordsPerMinute: Int) -> Double {
-        let t = (Double(wordsPerMinute) - 100) / (500 - 100)
-        return max(0.7, min(1.2, 0.7 + t * 0.5))
+    // Generation speed is pinned to ElevenLabs' natural pace; the WPM
+    // slider is honored at PLAYBACK time by StreamingAudioPlayer's
+    // time-pitch stage instead. voice_settings.speed only accepts
+    // 0.7–1.2 (anything outside is a 400), which capped audible speed
+    // at ~1.2× — far below the slider's ceiling and useless for fast
+    // listeners. Squeezing prosody at generation time also degrades
+    // delivery; stretching at playback keeps the performance natural
+    // and works across the whole range.
+    nonisolated static let naturalGenerationSpeed = 1.0
+
+    // Convert the slider's words-per-minute into a playback-rate
+    // multiplier. 175 wpm approximates ElevenLabs voices' natural pace
+    // at speed 1.0, so slider position ≈ audible wpm — the same unit
+    // semantics as `say -r` on the SystemVoice backend. The player
+    // clamps the result to its supported range.
+    nonisolated static func playbackRate(wordsPerMinute: Int) -> Double {
+        Double(wordsPerMinute) / 175.0
     }
 }
 

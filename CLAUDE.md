@@ -236,13 +236,21 @@ Sources/
   (Nyquist at 12kHz has plenty of headroom for a human voice topping
   out ~8kHz).
 
-- **ElevenLabs `voice_settings.speed` accepts only 0.7–1.2.** Our
-  WPM slider (100–500 wpm) is mapped linearly into that range by
-  `ElevenLabsBackendDriver.mapRateToSpeed`. Anything outside returns
-  400. ElevenLabs caps at 1.2× — meaningfully slower than what
-  SystemVoice can do at the top of the slider — so the same WPM
-  position is the same UI control across backends but not audibly
-  identical playback.
+- **ElevenLabs speed: generation is pinned to 1.0; the WPM slider is
+  applied as on-device playback time-stretch.**
+  `voice_settings.speed` only accepts 0.7–1.2 (verified against the
+  current API schema + help center, 2026-06; anything outside is a
+  400), which capped audible speed at ~1.2× and made the backend
+  useless at the top of the slider. Playback now routes through an
+  `AVAudioUnitTimePitch` stage in StreamingAudioPlayer
+  (player → timePitch → mixer) with
+  `rate = wpm / 175` (175 wpm ≈ ElevenLabs voices' natural pace, so
+  slider position ≈ audible wpm, matching `say -r` semantics).
+  Generation streams faster than realtime, so accelerated playback
+  doesn't starve mid-utterance. Don't reintroduce a generation-side
+  speed mapping: squeezing prosody at generation sounds worse than
+  stretching at playback, and the API range can't cover the slider
+  anyway.
 
 - **Apple Dev signing also enables stable Keychain ACLs** — re-entering
   the API key once after switching from adhoc to Apple Dev is

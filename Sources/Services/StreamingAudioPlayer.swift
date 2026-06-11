@@ -11,18 +11,35 @@ import OSLog
 // support that natively; wrapping them in a streaming-friendly shell
 // was the simplest path.
 //
+// The graph routes through an AVAudioUnitTimePitch stage
+// (player → mixer → timePitch → output) so playback rate is decoupled
+// from generation rate. ElevenLabs' voice_settings.speed only accepts
+// 0.7–1.2 — far below the WPM slider's ceiling — but TTS generation
+// streams faster than realtime, so stretching TIME at playback (with
+// pitch preserved; same mechanism as 2× in Podcasts) delivers the
+// full slider range regardless of the API cap. See init() for why the
+// stage sits after the mixer.
+//
 // Usage pattern from the driver:
 //   let player = StreamingAudioPlayer()
 //   try player.play(stream: ..., sampleRate: ElevenLabsClient.pcmSampleRate,
-//                   onFinish: { ... }, onError: { error in ... })
+//                   rate: 2.0, onFinish: { ... }, onError: { error in ... })
 //   player.pause() / player.resume() / player.stop()
 //
 // Callbacks are invoked on the main actor. After onFinish or onError
 // fires the player returns to idle; you can call play() again.
 @MainActor
 final class StreamingAudioPlayer {
+    // Clamp bounds for the playback-rate multiplier. The unit itself
+    // accepts 1/32–32, but speech below 0.5× drags unintelligibly and
+    // above 4× turns to mush even with pitch correction — values
+    // outside this range are always a caller bug, not a preference.
+    nonisolated static let minimumPlaybackRate = 0.5
+    nonisolated static let maximumPlaybackRate = 4.0
+
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    private let timePitch = AVAudioUnitTimePitch()
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "StreamingAudioPlayer")
 
     // Mutable bookkeeping for one playback session. Bundled into a class
@@ -100,13 +117,31 @@ final class StreamingAudioPlayer {
 
     init() {
         engine.attach(playerNode)
+        engine.attach(timePitch)
+        // The time-pitch stage sits AFTER the mixer
+        // (player → mixer → timePitch → output), not between player and
+        // mixer: effect audio units only accept standard float formats,
+        // and our scheduled buffers are raw interleaved Int16 — wiring
+        // player → timePitch directly throws
+        // kAudioUnitErr_FormatNotSupported as an NSException. The mixer
+        // does the int→float conversion for free, and timePitch then
+        // stretches the mixed signal on its way to the output. Only the
+        // player feeds the mixer, so stretching "everything" is
+        // equivalent to stretching the one utterance.
+        engine.connect(engine.mainMixerNode, to: timePitch, format: nil)
+        engine.connect(timePitch, to: engine.outputNode, format: nil)
     }
 
     // Throws synchronously on format/engine setup failure; otherwise
     // returns immediately and delivers completion via onFinish / onError.
+    // `rate` is a playback-speed multiplier (1.0 = as generated),
+    // applied via the time-pitch stage so pitch is preserved. Fixed
+    // for the duration of one utterance — matching how voice/rate are
+    // resolved per-item at speak() time.
     func play(
         stream: AsyncThrowingStream<Data, Error>,
         sampleRate: Double,
+        rate: Double = 1.0,
         onFinish: @escaping @MainActor () -> Void,
         onError: @escaping @MainActor (Error) -> Void
     ) throws {
@@ -121,6 +156,7 @@ final class StreamingAudioPlayer {
             throw PlayerError.unsupportedFormat(sampleRate: sampleRate)
         }
 
+        timePitch.rate = Float(min(max(rate, Self.minimumPlaybackRate), Self.maximumPlaybackRate))
         engine.connect(playerNode, to: engine.mainMixerNode, format: format)
         do {
             try engine.start()

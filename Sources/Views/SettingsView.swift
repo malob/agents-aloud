@@ -228,7 +228,7 @@ struct SettingsView: View {
             }
 
             if model.preferredSpeechBackend == .elevenLabs {
-                Text("ElevenLabs caps speed at 1.2× — settings above the upper third may sound similar.")
+                Text("ElevenLabs speech is generated at its natural pace and time-stretched on your Mac, so the full range applies.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

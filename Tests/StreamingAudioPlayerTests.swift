@@ -38,6 +38,37 @@ struct StreamingAudioPlayerTests {
 
     @Test
     @MainActor
+    func playsToCompletionAtAcceleratedRate() async throws {
+        // Exercises the time-pitch stage in the graph: if the
+        // mixer → timePitch → output wiring is wrong, the engine fails
+        // to start (or throws an NSException at connect time, as the
+        // rejected player → timePitch Int16 wiring did) or the final
+        // buffer's playedBack callback never fires and this test times
+        // out instead of finishing.
+        let player = StreamingAudioPlayer()
+        let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
+        continuation.yield(silencePCM(milliseconds: 200))
+        continuation.finish()
+
+        try await withCheckedThrowingContinuation { (cc: CheckedContinuation<Void, Error>) in
+            do {
+                try player.play(
+                    stream: stream,
+                    sampleRate: 44_100,
+                    rate: 2.0,
+                    onFinish: { cc.resume() },
+                    onError: { cc.resume(throwing: $0) }
+                )
+            } catch {
+                cc.resume(throwing: error)
+            }
+        }
+
+        #expect(player.isIdle)
+    }
+
+    @Test
+    @MainActor
     func stopBeforeFinishSuppressesCallbacks() async throws {
         let player = StreamingAudioPlayer()
         let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream()
