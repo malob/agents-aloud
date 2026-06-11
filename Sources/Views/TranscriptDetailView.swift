@@ -44,7 +44,7 @@ import SwiftUI
 // described above.
 struct TranscriptDetailView: View {
     let model: AppModel
-    let session: ClaudeSessionSummary
+    let session: SessionSummary
     @State private var userSetAtBottom = true
     @State private var liveIsAtBottom = true
     @State private var bottomPinGeneration = 0

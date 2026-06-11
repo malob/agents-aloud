@@ -86,7 +86,7 @@ actor CodexStorageService {
     func loadSessions(
         since: Date = .distantPast,
         minimumCount: Int = 5
-    ) throws -> [ClaudeSessionSummary] {
+    ) throws -> [SessionSummary] {
         try PerfLog.time("CodexStorage.loadSessions") {
             // Try the SQLite fast path first. Codex maintains
             // ~/.codex/state_5.sqlite as the authoritative index of
@@ -110,8 +110,8 @@ actor CodexStorageService {
         }
     }
 
-    private nonisolated static func summary(from row: CodexThreadDatabase.Row) -> ClaudeSessionSummary {
-        ClaudeSessionSummary(
+    private nonisolated static func summary(from row: CodexThreadDatabase.Row) -> SessionSummary {
+        SessionSummary(
             source: .codex,
             id: row.id,
             summary: deriveTitle(row: row),
@@ -140,7 +140,7 @@ actor CodexStorageService {
         return name.isEmpty ? "Untitled session" : "Session in \(name)"
     }
 
-    private func _loadSessionsFromFilesystem(since: Date, minimumCount: Int) throws -> [ClaudeSessionSummary] {
+    private func _loadSessionsFromFilesystem(since: Date, minimumCount: Int) throws -> [SessionSummary] {
         var allCandidates: [URL] = []
         if fileManager.fileExists(atPath: sessionsRoot.path) {
             allCandidates.append(contentsOf: try enumerateRolloutFiles(under: sessionsRoot))
@@ -157,7 +157,7 @@ actor CodexStorageService {
             }
             .sorted { $0.1 > $1.1 }
 
-        var summaries: [ClaudeSessionSummary] = []
+        var summaries: [SessionSummary] = []
         for (url, mtime) in sorted {
             // Walk-until-enough policy mirroring Claude: include
             // everything within window, then keep walking older
@@ -180,7 +180,7 @@ actor CodexStorageService {
                 continue
             }
 
-            summaries.append(ClaudeSessionSummary(
+            summaries.append(SessionSummary(
                 source: .codex,
                 id: summary.sessionID,
                 summary: summary.derivedTitle,
@@ -195,7 +195,7 @@ actor CodexStorageService {
     }
 
     func loadTranscript(
-        for session: ClaudeSessionSummary,
+        for session: SessionSummary,
         filterToFinalOnly: Bool
     ) throws -> [TranscriptMessage] {
         try PerfLog.time("CodexStorage.loadTranscript") {

@@ -7,11 +7,11 @@ enum TranscriptState: Equatable {
     // read error would otherwise wipe the visible transcript to empty, then
     // repopulate when the retry succeeds. Keeping the prior payload through
     // both transitions prevents that "disappears then comes back" flicker.
-    case loading(sessionID: ClaudeSessionSummary.ID, messages: [TranscriptMessage])
-    case loaded(sessionID: ClaudeSessionSummary.ID, messages: [TranscriptMessage])
-    case failed(sessionID: ClaudeSessionSummary.ID, messages: [TranscriptMessage], message: String)
+    case loading(sessionID: SessionSummary.ID, messages: [TranscriptMessage])
+    case loaded(sessionID: SessionSummary.ID, messages: [TranscriptMessage])
+    case failed(sessionID: SessionSummary.ID, messages: [TranscriptMessage], message: String)
 
-    var sessionID: ClaudeSessionSummary.ID? {
+    var sessionID: SessionSummary.ID? {
         switch self {
         case .none:
             return nil
@@ -33,11 +33,11 @@ enum TranscriptState: Equatable {
         }
     }
 
-    func messages(for sessionID: ClaudeSessionSummary.ID) -> [TranscriptMessage] {
+    func messages(for sessionID: SessionSummary.ID) -> [TranscriptMessage] {
         self.sessionID == sessionID ? messages : []
     }
 
-    func isLoading(for sessionID: ClaudeSessionSummary.ID) -> Bool {
+    func isLoading(for sessionID: SessionSummary.ID) -> Bool {
         if case let .loading(currentSessionID, _) = self {
             return currentSessionID == sessionID
         }
@@ -45,7 +45,7 @@ enum TranscriptState: Equatable {
         return false
     }
 
-    func errorMessage(for sessionID: ClaudeSessionSummary.ID) -> String? {
+    func errorMessage(for sessionID: SessionSummary.ID) -> String? {
         if case let .failed(currentSessionID, _, message) = self,
            currentSessionID == sessionID {
             return message

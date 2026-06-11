@@ -45,7 +45,7 @@ enum ClaudeTranscriptParser {
         fileURL: URL,
         modifiedAt: Date,
         projectMetadataIndex: ProjectMetadataIndex
-    ) -> ClaudeSessionSummary? {
+    ) -> SessionSummary? {
         let decoder = JSONDecoder()
         let dateParsers = ISO8601DateParsers()
         var sessionID = fileURL.deletingPathExtension().lastPathComponent
@@ -116,7 +116,7 @@ enum ClaudeTranscriptParser {
             ?? normalized(sessionMetadata?.summary)
             ?? summarizedPrompt(firstPrompt, fallback: sessionID)
 
-        return ClaudeSessionSummary(
+        return SessionSummary(
             id: sessionID,
             summary: resolvedSummary,
             firstPrompt: firstPrompt,

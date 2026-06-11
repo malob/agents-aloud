@@ -149,7 +149,7 @@ Sources/
   See: [script/build_and_run.sh](script/build_and_run.sh)
 
 - **`URL.resourceValues` is cached on the URL instance.** After the
-  `ClaudeSessionSummary.transcriptURL: URL` refactor we had to add
+  `SessionSummary.transcriptURL: URL` refactor we had to add
   `removeAllCachedResourceValues()` before re-reading mtime/fileSize,
   or the incremental-tail path sees stale values and skips newly-
   appended content. The existing test

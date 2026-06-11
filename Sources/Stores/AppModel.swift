@@ -56,11 +56,11 @@ final class AppModel {
     // The visible session list, after applying the sidebar filter.
     // Sidebar binds to this, not to sessionsState.sessions, so
     // toggling the filter chip is a pure-view change.
-    var visibleSessions: [ClaudeSessionSummary] {
+    var visibleSessions: [SessionSummary] {
         guard let filter = sidebarSourceFilter else { return sessions }
         return sessions.filter { $0.source == filter }
     }
-    var selectedSessionID: ClaudeSessionSummary.ID? {
+    var selectedSessionID: SessionSummary.ID? {
         didSet {
             guard oldValue != selectedSessionID else {
                 return
@@ -102,7 +102,7 @@ final class AppModel {
     }
     var transcriptState: TranscriptState = .none
     var errorMessage: String?
-    var liveReadSessionID: ClaudeSessionSummary.ID? {
+    var liveReadSessionID: SessionSummary.ID? {
         didSet {
             guard oldValue != liveReadSessionID else { return }
             reconcileLiveReadWatcher()
@@ -305,12 +305,12 @@ final class AppModel {
     // this watcher keeps A's file monitored for new assistant
     // messages to auto-enqueue.
     @ObservationIgnored private let liveReadTranscriptWatcher: any TranscriptFileWatching
-    @ObservationIgnored private var transcriptMessagesBySession: [ClaudeSessionSummary.ID: [TranscriptMessage]] = [:]
+    @ObservationIgnored private var transcriptMessagesBySession: [SessionSummary.ID: [TranscriptMessage]] = [:]
     // Owned strong so it lives for the app's lifetime. Holds a weak
     // back-reference to AppModel and observes speech-controller
     // state via Observation tracking.
     @ObservationIgnored private var nowPlayingCoordinator: NowPlayingCoordinator?
-    @ObservationIgnored private var knownAssistantMessageIDsBySession: [ClaudeSessionSummary.ID: Set<TranscriptMessage.ID>] = [:]
+    @ObservationIgnored private var knownAssistantMessageIDsBySession: [SessionSummary.ID: Set<TranscriptMessage.ID>] = [:]
 
     init(
         storageService: ClaudeStorageService = ClaudeStorageService(),
@@ -553,11 +553,11 @@ final class AppModel {
         }
     }
 
-    var selectedSession: ClaudeSessionSummary? {
+    var selectedSession: SessionSummary? {
         sessions.first { $0.id == selectedSessionID }
     }
 
-    var sessions: [ClaudeSessionSummary] {
+    var sessions: [SessionSummary] {
         sessionsState.sessions
     }
 
@@ -700,7 +700,7 @@ final class AppModel {
             async let claudeTask = storageService.loadSessions(since: since)
             async let codexTask = codexStorageService.loadSessions(since: since)
 
-            var aggregated: [ClaudeSessionSummary] = []
+            var aggregated: [SessionSummary] = []
             var aggregatedError: Error?
 
             do {
@@ -770,7 +770,7 @@ final class AppModel {
     // known-assistant set past messages that should have been
     // auto-enqueued, silently swallowing the first Live Speak message.
     private func refreshTranscript(
-        for sessionID: ClaudeSessionSummary.ID,
+        for sessionID: SessionSummary.ID,
         showLoadingState: Bool = false
     ) async {
         let start = CFAbsoluteTimeGetCurrent()
@@ -958,7 +958,7 @@ final class AppModel {
         scheduleLiveReadTranscriptRefresh(for: watchedID)
     }
 
-    private func scheduleLiveReadTranscriptRefresh(for sessionID: ClaudeSessionSummary.ID) {
+    private func scheduleLiveReadTranscriptRefresh(for sessionID: SessionSummary.ID) {
         liveReadTranscriptRefreshTask?.cancel()
         liveReadTranscriptRefreshTask = Task { [weak self] in
             guard let self else { return }
@@ -970,7 +970,7 @@ final class AppModel {
         }
     }
 
-    private func scheduleSelectedTranscriptRefresh(for sessionID: ClaudeSessionSummary.ID) {
+    private func scheduleSelectedTranscriptRefresh(for sessionID: SessionSummary.ID) {
         selectedTranscriptRefreshTask?.cancel()
         selectedTranscriptRefreshTask = Task { [weak self] in
             guard let self else {
@@ -991,7 +991,7 @@ final class AppModel {
         }
     }
 
-    private func cachedTranscriptMessages(for sessionID: ClaudeSessionSummary.ID) -> [TranscriptMessage] {
+    private func cachedTranscriptMessages(for sessionID: SessionSummary.ID) -> [TranscriptMessage] {
         transcriptMessagesBySession[sessionID] ?? []
     }
 
@@ -1000,7 +1000,7 @@ final class AppModel {
     // engine is currently playing. Cross-session because the queue
     // can span sessions (manual clicks from any session land in the
     // same queue alongside Live Speak arrivals).
-    func findMessage(id: TranscriptMessage.ID) -> (message: TranscriptMessage, session: ClaudeSessionSummary)? {
+    func findMessage(id: TranscriptMessage.ID) -> (message: TranscriptMessage, session: SessionSummary)? {
         for session in sessions {
             if let messages = transcriptMessagesBySession[session.id],
                let message = messages.first(where: { $0.id == id }) {

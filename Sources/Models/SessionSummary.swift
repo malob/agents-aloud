@@ -1,6 +1,6 @@
 import Foundation
 
-struct ClaudeSessionSummary: Identifiable, Hashable {
+struct SessionSummary: Identifiable, Hashable {
     // Where this transcript came from. Drives sidebar visuals (per-row
     // source icon, filter chip behavior) and lets the unified
     // storage layer route loadTranscript() to the right backend.

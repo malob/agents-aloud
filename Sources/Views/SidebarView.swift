@@ -165,7 +165,7 @@ struct SidebarView: View {
 }
 
 private struct SessionRowView: View {
-    let session: ClaudeSessionSummary
+    let session: SessionSummary
     let isSelected: Bool
     let isLiveSpeakSession: Bool
 

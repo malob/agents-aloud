@@ -27,7 +27,7 @@ actor ClaudeStorageService {
     func loadSessions(
         since: Date = .distantPast,
         minimumCount: Int = 5
-    ) async throws -> [ClaudeSessionSummary] {
+    ) async throws -> [SessionSummary] {
         try await PerfLog.time("Storage.loadSessions") {
             try await _loadSessions(since: since, minimumCount: minimumCount)
         }
@@ -46,7 +46,7 @@ actor ClaudeStorageService {
     // If this ever becomes a bottleneck the right fix is probably an
     // incremental / streaming parser that allocates less per line, not
     // parallelization.
-    private func _loadSessions(since: Date, minimumCount: Int) async throws -> [ClaudeSessionSummary] {
+    private func _loadSessions(since: Date, minimumCount: Int) async throws -> [SessionSummary] {
         let sortedCandidates = try enumerateCandidates()  // sorted mtime desc
 
         // Walk-until-enough policy:
@@ -63,7 +63,7 @@ actor ClaudeStorageService {
         // force the loop to walk far into old history making up the
         // difference. Instead, the stop condition reads the accreted
         // `sessions.count` directly against `minimumCount`.
-        var sessions: [ClaudeSessionSummary] = []
+        var sessions: [SessionSummary] = []
         var walkedPaths: [String] = []
         for candidate in sortedCandidates {
             let withinWindow = candidate.modifiedAt >= since
@@ -184,7 +184,7 @@ actor ClaudeStorageService {
     private nonisolated static func summarize(
         candidate: TranscriptCandidate,
         metadata: ProjectMetadataIndex
-    ) async throws -> ClaudeSessionSummary? {
+    ) async throws -> SessionSummary? {
         var headLines: [String] = []
         for try await line in candidate.url.lines {
             headLines.append(line)
@@ -230,7 +230,7 @@ actor ClaudeStorageService {
     }
 
     func loadTranscript(
-        for session: ClaudeSessionSummary,
+        for session: SessionSummary,
         filterToFinalOnly: Bool
     ) throws -> [TranscriptMessage] {
         try PerfLog.time("Storage.loadTranscript") {
@@ -506,7 +506,7 @@ private struct CachedSessionSummary {
     // sessions-index.json without touching the JSONL.)
     let sessionCacheModifiedAt: Date?
     let sessionsIndexModifiedAt: Date?
-    let summary: ClaudeSessionSummary
+    let summary: SessionSummary
 }
 
 private struct CachedTranscript {

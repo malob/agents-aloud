@@ -1,7 +1,7 @@
 import Foundation
 
 // Identifies which CLI's session log a transcript came from. Threaded
-// through ClaudeSessionSummary so the sidebar can render per-source
+// through SessionSummary so the sidebar can render per-source
 // icons and the user can filter the unified feed by source.
 //
 // Keeping this enum separate from `SpeechBackend` and from the

@@ -1,11 +1,11 @@
 import Foundation
 
 enum SessionsState: Equatable {
-    case loading([ClaudeSessionSummary])
-    case loaded([ClaudeSessionSummary])
-    case failed([ClaudeSessionSummary], message: String)
+    case loading([SessionSummary])
+    case loaded([SessionSummary])
+    case failed([SessionSummary], message: String)
 
-    var sessions: [ClaudeSessionSummary] {
+    var sessions: [SessionSummary] {
         switch self {
         case let .loading(sessions), let .loaded(sessions), let .failed(sessions, _):
             return sessions
