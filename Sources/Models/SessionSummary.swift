@@ -13,6 +13,12 @@ struct SessionSummary: Identifiable, Hashable {
     let modifiedAt: Date?
     let projectPath: String
     let transcriptURL: URL
+    // Whether a running CLI process currently owns this session.
+    // Drives the sidebar status dot and exempts the session from the
+    // recency window (an open-but-idle session stays visible however
+    // old its transcript's mtime is). Defaults to .notLive so Codex
+    // and walk-fallback construction sites don't change.
+    let liveness: SessionLiveness
 
     init(
         source: TranscriptSource = .claude,
@@ -21,7 +27,8 @@ struct SessionSummary: Identifiable, Hashable {
         firstPrompt: String?,
         modifiedAt: Date?,
         projectPath: String,
-        transcriptURL: URL
+        transcriptURL: URL,
+        liveness: SessionLiveness = .notLive
     ) {
         self.source = source
         self.id = id
@@ -30,6 +37,7 @@ struct SessionSummary: Identifiable, Hashable {
         self.modifiedAt = modifiedAt
         self.projectPath = projectPath
         self.transcriptURL = transcriptURL
+        self.liveness = liveness
     }
 
     var projectName: String {

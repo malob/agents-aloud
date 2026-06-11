@@ -319,6 +319,14 @@ final class AppModel {
     // state via Observation tracking.
     @ObservationIgnored private var nowPlayingCoordinator: NowPlayingCoordinator?
     @ObservationIgnored private var knownAssistantMessageIDsBySession: [SessionSummary.ID: Set<TranscriptMessage.ID>] = [:]
+    // Live-session registry (~/.claude/sessions) + a watcher on its
+    // directory so launches/exits of claude processes appear in the
+    // sidebar immediately instead of on the next 5s poll. Status
+    // flips (busy/idle) rewrite files in place, which directory-level
+    // vnode events don't see — the poll covers those.
+    @ObservationIgnored private let liveSessionRegistry: ClaudeSessionRegistry
+    @ObservationIgnored private let registryWatcher: any TranscriptFileWatching
+    @ObservationIgnored private var registryRefreshTask: Task<Void, Never>?
 
     init(
         storageService: ClaudeStorageService = ClaudeStorageService(),
@@ -327,6 +335,12 @@ final class AppModel {
         userDefaults: UserDefaults = .standard,
         selectedTranscriptWatcher: any TranscriptFileWatching = TranscriptFileWatcher(),
         liveReadTranscriptWatcher: any TranscriptFileWatching = TranscriptFileWatcher(),
+        // Live-session registry (~/.claude/sessions). Tests MUST point
+        // this at a sandboxed (usually nonexistent) directory or the
+        // sidebar will reflect the dev machine's actually-running
+        // claude processes instead of the test fixtures.
+        liveSessionRegistry: ClaudeSessionRegistry = ClaudeSessionRegistry(),
+        registryWatcher: any TranscriptFileWatching = TranscriptFileWatcher(),
         keychain: KeychainStorage = KeychainStorage(service: AppModel.defaultKeychainService),
         // Tests can inject an explicit processor to control latency /
         // behavior. nil = derive from the persisted setting at init
@@ -339,6 +353,8 @@ final class AppModel {
         self.userDefaults = userDefaults
         self.selectedTranscriptWatcher = selectedTranscriptWatcher
         self.liveReadTranscriptWatcher = liveReadTranscriptWatcher
+        self.liveSessionRegistry = liveSessionRegistry
+        self.registryWatcher = registryWatcher
         self.keychain = keychain
         let explicitProcessor = speechTextProcessor
         self.speechTextProcessor = explicitProcessor ?? PassthroughSpeechProcessor()
@@ -591,6 +607,7 @@ final class AppModel {
         selectedTranscriptRefreshTask?.cancel()
         liveReadTranscriptRefreshTask?.cancel()
         elevenLabsVoiceRefreshTask?.cancel()
+        registryRefreshTask?.cancel()
     }
 
     func start() async {
@@ -616,6 +633,35 @@ final class AppModel {
                 try? await Task.sleep(for: .seconds(5))
                 await self.refreshSessions()
             }
+        }
+
+        // Watch the live-session registry directory so a claude
+        // process starting or exiting updates the sidebar immediately.
+        // Failures are log-only: the registry is an optional signal
+        // (older CLI versions don't maintain one) and the 5s poll
+        // keeps working without it.
+        registryWatcher.startWatching(
+            fileURL: liveSessionRegistry.directory,
+            onChange: { [weak self] in
+                self?.scheduleRegistryRefresh()
+            },
+            onFailure: { [weak self] error in
+                self?.logger.info(
+                    "Live-session registry watcher unavailable: \(error.localizedDescription, privacy: .public)"
+                )
+            }
+        )
+    }
+
+    private func scheduleRegistryRefresh() {
+        registryRefreshTask?.cancel()
+        registryRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            // Brief debounce: a session launch touches the directory
+            // more than once (create + first heartbeat).
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled else { return }
+            await refreshSessions()
         }
     }
 
@@ -712,15 +758,28 @@ final class AppModel {
         let existingSessions = sessionsState.sessions
 
         let since = Date().addingTimeInterval(-Self.sessionLookback)
+        // The Claude side is live-only: the sidebar shows conversations
+        // the user is actively having, sourced from the live-session
+        // registry (running claude processes), not a recency window of
+        // transcript files. The walk is the fallback for claude
+        // versions that don't maintain a registry (loadLiveSessions()
+        // returns nil only when the directory doesn't exist).
+        let liveSessions = liveSessionRegistry.loadLiveSessions()
+
         // Load both sources in parallel. A single-source failure stays
         // log-only while the other source still produces sessions — a
         // populated sidebar beats a banner on every poll tick. It
         // becomes user-facing only when the sidebar would otherwise be
         // empty, with nothing on screen to explain why.
-        async let claudeTask = storageService.loadSessions(
-            since: since,
-            minimumCount: Self.minimumSessionCount
-        )
+        async let claudeTask: [SessionSummary] = {
+            if let liveSessions {
+                return try await storageService.loadSessions(live: liveSessions)
+            }
+            return try await storageService.loadSessions(
+                since: since,
+                minimumCount: Self.minimumSessionCount
+            )
+        }()
         async let codexTask = codexStorageService.loadSessions(
             since: since,
             minimumCount: Self.minimumSessionCount
@@ -758,7 +817,12 @@ final class AppModel {
         let sortedCandidates = aggregated.sorted {
             ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast)
         }
-        let inWindow = sortedCandidates.filter { ($0.modifiedAt ?? .distantPast) >= since }
+        // Live sessions bypass the recency window: a conversation
+        // that's open-but-idle for days is still a conversation the
+        // user is having, whatever its transcript's mtime says.
+        let inWindow = sortedCandidates.filter {
+            $0.liveness.isLive || ($0.modifiedAt ?? .distantPast) >= since
+        }
         let loadedSessions = inWindow.count >= Self.minimumSessionCount
             ? inWindow
             : Array(sortedCandidates.prefix(Self.minimumSessionCount))

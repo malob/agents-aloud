@@ -2,6 +2,13 @@ import Foundation
 import Testing
 @testable import ClaudeCodeVoice
 
+// The completion-based tests await the renderer's media-time boundary
+// observer, which only fires while the audio device clock advances.
+// In environments without real audio output (sandboxed background
+// tasks, some CI) the clock stalls and the await would hang the suite
+// forever — Swift Testing has no default per-test timeout. The time
+// limit converts that hang into a diagnosable failure.
+@Suite(.timeLimit(.minutes(1)))
 struct StreamingAudioPlayerTests {
     // 0.1s of 44.1kHz mono 16-bit silence. Audibly nothing; safe to run
     // during `swift test` without speaker noise.

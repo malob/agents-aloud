@@ -22,7 +22,8 @@ Sources/
 │   ├── TranscriptDisplayLimits the 50-message rolling-window cap
 │   └── ...
 ├── Services/             I/O and actors
-│   ├── ClaudeStorageService      actor; walks ~/.claude/projects/, parses JSONL, mtime/size-cached
+│   ├── ClaudeSessionRegistry     reads ~/.claude/sessions/ (live CLI processes; sidebar source)
+│   ├── ClaudeStorageService      actor; summarizes live sessions' JSONL (walk fallback), mtime/size-cached
 │   ├── ClaudeTranscriptParser    nonisolated; Claude JSONL → TranscriptMessage[]
 │   ├── CodexStorageService       actor; reads ~/.codex/sessions/, mtime-cached
 │   ├── CodexThreadDatabase       SQLite reader over ~/.codex/state_5.sqlite (session index)
@@ -100,10 +101,39 @@ Sources/
   seen in the wild as five ancient Codex sessions at the bottom of
   the sidebar.
 
-- **Claude has no authoritative session index** — the JSONL filesystem
-  IS the source of truth. We've checked: Anthropic GitHub issues
-  #9898, #29150, #14124 confirm there's no equivalent of Codex's
-  `state_5.sqlite`. Don't go looking for one.
+- **Claude has no authoritative HISTORICAL session index** — the JSONL
+  filesystem is the source of truth for past sessions. We've checked:
+  Anthropic GitHub issues #9898, #29150, #14124 confirm there's no
+  equivalent of Codex's `state_5.sqlite`. But there IS a live-process
+  registry (next bullet), and the sidebar's Claude side is built on
+  it.
+
+- **The Claude sidebar is live-only, sourced from
+  `~/.claude/sessions/`** (one JSON file per running process — the
+  same data `claude agents --json` prints, read directly). Product
+  decision: the app is a companion for conversations the user is
+  actively having; a recency window of closed sessions is noise. The
+  24h walk survives only as the fallback when the registry directory
+  doesn't exist (older CLI versions). Hard-won registry facts,
+  verified empirically (claude CLI 2.1.17x, 2026-06):
+  - `entrypoint` is the discriminator, NOT `kind`: terminal sessions
+    are "cli", the desktop app is "claude-desktop", and
+    `claude --print` runs register as "sdk-cli" while still claiming
+    `kind: "interactive"`. This app's own rewriter spawns
+    `claude --print` per message — without the sdk-cli exclusion the
+    sidebar flashes a phantom session on every rewrite.
+  - Terminal `/name` lands in the entry's `name`; desktop-app names
+    do NOT propagate (the desktop entry has no name field). Fall back
+    to transcript-derived titles.
+  - Entries can outlive crashed processes; validate with
+    `kill(pid, 0)` before trusting.
+  - cwd → `~/.claude/projects/` directory mapping replaces every
+    non-alphanumeric with '-' (so `/.config` produces a double dash).
+  - Live sessions bypass the recency window in AppModel's floor
+    logic, and a registry-directory watcher makes launches/exits
+    appear instantly; busy/idle flips rewrite files in place (no
+    directory vnode event) and ride the 5s poll instead.
+  See: [ClaudeSessionRegistry.swift](Sources/Services/ClaudeSessionRegistry.swift)
 
 - **Transcript tail-signature check before incremental parse.** Claude
   Code writes JSONL append-only but rewind / edit / session-fork can

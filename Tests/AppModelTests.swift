@@ -38,6 +38,18 @@ private final class FakeTranscriptFileWatcher: TranscriptFileWatching {
 // would use the default DB at ~/.codex/state_5.sqlite and tests
 // would see real Codex sessions show up in the model.
 @MainActor
+private func sandboxedLiveSessionRegistry() -> ClaudeSessionRegistry {
+    // Nonexistent directory => loadLiveSessions() returns nil and
+    // AppModel falls back to the transcript walk, preserving the
+    // fixture-driven behavior these tests pin. Without this, the
+    // sidebar would reflect the dev machine's actually-running
+    // claude processes.
+    ClaudeSessionRegistry(
+        directory: URL(fileURLWithPath: "/var/empty/claude-tests-no-registry-\(UUID().uuidString)", isDirectory: true)
+    )
+}
+
+@MainActor
 private func sandboxedCodexStorageService() -> CodexStorageService {
     let nonexistent = URL(fileURLWithPath: "/var/empty/codex-tests-no-sessions-\(UUID().uuidString)", isDirectory: true)
     let nonexistentDB = URL(fileURLWithPath: "/var/empty/codex-tests-no-db-\(UUID().uuidString).sqlite", isDirectory: false)
@@ -191,6 +203,7 @@ private func makeTestAppModel(
         userDefaults: userDefaults,
         selectedTranscriptWatcher: watcher,
         liveReadTranscriptWatcher: liveReadWatcher,
+        liveSessionRegistry: sandboxedLiveSessionRegistry(),
         keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"),
         speechTextProcessor: speechTextProcessor
     )
@@ -247,6 +260,7 @@ struct AppModelTests {
             speechController: SpeechController(),
             userDefaults: userDefaults,
             selectedTranscriptWatcher: watcher,
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
             keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
         )
 
@@ -299,6 +313,7 @@ struct AppModelTests {
             speechController: SpeechController(),
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
             keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
         )
 
@@ -341,6 +356,7 @@ struct AppModelTests {
             speechController: SpeechController(),
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
             keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
         )
 
@@ -349,6 +365,110 @@ struct AppModelTests {
         #expect(model.sessions.map(\.id) == ["codex-thread-1"])
         #expect(model.sessions.first?.source == .codex)
         #expect(model.errorMessage == nil)
+    }
+
+    // MARK: - Live-session registry
+
+    @Test
+    @MainActor
+    func sidebarShowsOnlyLiveClaudeSessionsWhenRegistryPresent() async throws {
+        // Two recent transcripts on disk, but only one has a running
+        // process in the registry. Live-only: the dead one must not
+        // appear, however fresh its mtime; the live one carries the
+        // registry's name and busy status.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        // Live session's project dir uses the real munged-cwd naming so
+        // the exact-path construction (not just the fallback sweep) is
+        // exercised.
+        let liveCWD = "/Users/malo/Code/demo-project"
+        let liveProjectDirectory = projectsRoot.appendingPathComponent(
+            ClaudeSessionRegistry.projectDirectoryName(forCWD: liveCWD),
+            isDirectory: true
+        )
+        let deadProjectDirectory = projectsRoot.appendingPathComponent("other-project", isDirectory: true)
+        try fileManager.createDirectory(at: liveProjectDirectory, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: deadProjectDirectory, withIntermediateDirectories: true)
+        try fourMessageTranscript
+            .replacingOccurrences(of: "session-1", with: "live-session")
+            .write(to: liveProjectDirectory.appendingPathComponent("live-session.jsonl"), atomically: true, encoding: .utf8)
+        try fourMessageTranscript
+            .replacingOccurrences(of: "session-1", with: "dead-session")
+            .write(to: deadProjectDirectory.appendingPathComponent("dead-session.jsonl"), atomically: true, encoding: .utf8)
+
+        let registryDirectory = temporaryRoot.appendingPathComponent("registry", isDirectory: true)
+        try fileManager.createDirectory(at: registryDirectory, withIntermediateDirectories: true)
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let entry = "{\"pid\":\(pid),\"sessionId\":\"live-session\",\"cwd\":\"\(liveCWD)\",\"startedAt\":\(Int64(Date().timeIntervalSince1970 * 1000)),\"kind\":\"interactive\",\"entrypoint\":\"cli\",\"name\":\"Registry name wins\",\"status\":\"busy\"}"
+        try entry.write(to: registryDirectory.appendingPathComponent("\(pid).json"), atomically: true, encoding: .utf8)
+
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            codexStorageService: sandboxedCodexStorageService(),
+            speechController: SpeechController(),
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            liveSessionRegistry: ClaudeSessionRegistry(directory: registryDirectory),
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+        )
+
+        await model.start()
+
+        #expect(model.sessions.map(\.id) == ["live-session"])
+        #expect(model.sessions.first?.summary == "Registry name wins")
+        #expect(model.sessions.first?.liveness == .liveBusy)
+    }
+
+    @Test
+    @MainActor
+    func liveSessionWithoutTranscriptYetGetsPlaceholderRow() async throws {
+        // A just-launched session has a registry entry before Claude
+        // writes any JSONL. It should still appear immediately, with
+        // registry metadata standing in for the transcript-derived
+        // title.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        try fileManager.createDirectory(at: projectsRoot, withIntermediateDirectories: true)
+        let registryDirectory = temporaryRoot.appendingPathComponent("registry", isDirectory: true)
+        try fileManager.createDirectory(at: registryDirectory, withIntermediateDirectories: true)
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let entry = "{\"pid\":\(pid),\"sessionId\":\"fresh-session\",\"cwd\":\"/tmp/somewhere\",\"startedAt\":\(Int64(Date().timeIntervalSince1970 * 1000)),\"kind\":\"interactive\",\"entrypoint\":\"cli\",\"status\":\"idle\"}"
+        try entry.write(to: registryDirectory.appendingPathComponent("\(pid).json"), atomically: true, encoding: .utf8)
+
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            codexStorageService: sandboxedCodexStorageService(),
+            speechController: SpeechController(),
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            liveSessionRegistry: ClaudeSessionRegistry(directory: registryDirectory),
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+        )
+
+        await model.start()
+
+        #expect(model.sessions.map(\.id) == ["fresh-session"])
+        #expect(model.sessions.first?.summary == "New session")
+        #expect(model.sessions.first?.liveness == .liveIdle)
+        #expect(model.sessions.first?.projectName == "somewhere")
     }
 
     // MARK: - Unified sidebar floor
@@ -405,6 +525,7 @@ struct AppModelTests {
             speechController: SpeechController(),
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
             keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
         )
 
@@ -462,6 +583,7 @@ struct AppModelTests {
             speechController: SpeechController(),
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
             keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
         )
 
@@ -580,6 +702,7 @@ struct AppModelTests {
             speechController: controller,
             userDefaults: userDefaults,
             selectedTranscriptWatcher: watcher,
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
             keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
         )
         defer {
@@ -650,6 +773,7 @@ struct AppModelTests {
             speechController: controller,
             userDefaults: userDefaults,
             selectedTranscriptWatcher: watcher,
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
             keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
         )
         defer {
@@ -968,6 +1092,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: selectedWatcher,
             liveReadTranscriptWatcher: liveReadWatcher,
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
             keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
         )
         defer {
@@ -1177,6 +1302,7 @@ struct AppModelTests {
             speechController: controller,
             userDefaults: userDefaults,
             selectedTranscriptWatcher: watcher,
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
             keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"),
             speechTextProcessor: processor
         )

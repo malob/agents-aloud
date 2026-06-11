@@ -74,33 +74,10 @@ actor ClaudeStorageService {
             }
             walkedPaths.append(candidate.url.path)
 
-            let projectURL = candidate.url.deletingLastPathComponent()
-            let sessionCacheModifiedAt = fileModificationDate(
-                for: projectURL.appendingPathComponent(".session_cache.json", isDirectory: false)
-            )
-            let sessionsIndexModifiedAt = fileModificationDate(
-                for: projectURL.appendingPathComponent("sessions-index.json", isDirectory: false)
-            )
-
-            if let cached = sessionSummaryCache[candidate.url.path],
-               cached.modifiedAt == candidate.modifiedAt,
-               cached.sessionCacheModifiedAt == sessionCacheModifiedAt,
-               cached.sessionsIndexModifiedAt == sessionsIndexModifiedAt {
-                sessions.append(cached.summary)
-                continue
+            if let summary = try await cachedOrComputedSummary(for: candidate) {
+                sessions.append(summary)
             }
-
-            let metadata = try loadProjectMetadataIndex(for: projectURL)
-            guard let summary = try await Self.summarize(candidate: candidate, metadata: metadata) else {
-                continue  // artifact — walk past it
-            }
-            sessionSummaryCache[candidate.url.path] = CachedSessionSummary(
-                modifiedAt: candidate.modifiedAt,
-                sessionCacheModifiedAt: sessionCacheModifiedAt,
-                sessionsIndexModifiedAt: sessionsIndexModifiedAt,
-                summary: summary
-            )
-            sessions.append(summary)
+            // nil = artifact — walk past it
         }
 
         let validPaths = Set(walkedPaths)
@@ -110,6 +87,148 @@ actor ClaudeStorageService {
         projectMetadataCache = projectMetadataCache.filter { validProjectPaths.contains($0.key) }
 
         return sessions
+    }
+
+    // Live-registry path: summarize exactly the running sessions —
+    // no directory walking, no recency window. The transcript path is
+    // constructed from the registry's cwd + sessionID; a session whose
+    // JSONL doesn't exist yet (brand-new, nothing said) still gets a
+    // placeholder summary so it appears in the sidebar immediately.
+    // Summary-cache entries are shared with the walk path (the cache
+    // stores base summaries; live name/liveness overrides are applied
+    // after retrieval) and deliberately NOT evicted here — live mode
+    // sees only a handful of paths per refresh, and evicting to that
+    // set would cold-start the walk fallback.
+    func loadSessions(live liveSessions: [LiveClaudeSession]) async throws -> [SessionSummary] {
+        try await PerfLog.time("Storage.loadSessionsLive") {
+            var summaries: [SessionSummary] = []
+            for live in liveSessions {
+                summaries.append(try await summaryForLiveSession(live))
+            }
+            return summaries.sorted {
+                ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast)
+            }
+        }
+    }
+
+    private func summaryForLiveSession(_ live: LiveClaudeSession) async throws -> SessionSummary {
+        let expectedURL = projectsRoot
+            .appendingPathComponent(
+                ClaudeSessionRegistry.projectDirectoryName(forCWD: live.cwd),
+                isDirectory: true
+            )
+            .appendingPathComponent("\(live.sessionID).jsonl", isDirectory: false)
+
+        // The munged-cwd guess can miss (the registry reports the
+        // process cwd, which can drift from where the transcript was
+        // created). One cheap directory-name sweep for the session's
+        // file before falling back to a placeholder.
+        let transcriptURL: URL
+        if fileManager.fileExists(atPath: expectedURL.path) {
+            transcriptURL = expectedURL
+        } else if let found = findTranscript(sessionID: live.sessionID) {
+            transcriptURL = found
+        } else {
+            // No JSONL on disk yet. Show the session anyway — it's
+            // live — with the registry's own metadata. The transcript
+            // view's watcher retries ENOENT, so the row becomes
+            // readable as soon as Claude writes the first line.
+            return SessionSummary(
+                id: live.sessionID,
+                summary: live.name ?? "New session",
+                firstPrompt: nil,
+                modifiedAt: live.startedAt,
+                projectPath: live.cwd,
+                transcriptURL: expectedURL,
+                liveness: Self.liveness(for: live)
+            )
+        }
+
+        let modifiedAt = fileModificationDate(for: transcriptURL) ?? live.startedAt
+        let candidate = TranscriptCandidate(url: transcriptURL, modifiedAt: modifiedAt)
+        guard let summary = try await cachedOrComputedSummary(for: candidate) else {
+            // The artifact filter rejected the file's content (e.g.
+            // nothing speakable yet) — but a live session is never an
+            // artifact; placeholder until real content lands.
+            return SessionSummary(
+                id: live.sessionID,
+                summary: live.name ?? "New session",
+                firstPrompt: nil,
+                modifiedAt: modifiedAt,
+                projectPath: live.cwd,
+                transcriptURL: transcriptURL,
+                liveness: Self.liveness(for: live)
+            )
+        }
+
+        return SessionSummary(
+            source: summary.source,
+            id: summary.id,
+            summary: live.name ?? summary.summary,
+            firstPrompt: summary.firstPrompt,
+            modifiedAt: summary.modifiedAt,
+            projectPath: summary.projectPath,
+            transcriptURL: summary.transcriptURL,
+            liveness: Self.liveness(for: live)
+        )
+    }
+
+    private nonisolated static func liveness(for live: LiveClaudeSession) -> SessionLiveness {
+        switch live.activity {
+        case .busy: return .liveBusy
+        case .idle: return .liveIdle
+        case nil: return .liveUnknown
+        }
+    }
+
+    private func findTranscript(sessionID: String) -> URL? {
+        guard let projectURLs = try? fileManager.contentsOfDirectory(
+            at: projectsRoot,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+        for projectURL in projectURLs {
+            let candidate = projectURL.appendingPathComponent("\(sessionID).jsonl", isDirectory: false)
+            if fileManager.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    // Shared summary lookup for the walk and live paths: cache hit
+    // keyed on (transcript mtime, project metadata mtimes), else a
+    // fresh head+tail summarize. Returns nil for artifact files (the
+    // ai-title-only JSONLs the CLI rewriter leaves behind).
+    private func cachedOrComputedSummary(for candidate: TranscriptCandidate) async throws -> SessionSummary? {
+        let projectURL = candidate.url.deletingLastPathComponent()
+        let sessionCacheModifiedAt = fileModificationDate(
+            for: projectURL.appendingPathComponent(".session_cache.json", isDirectory: false)
+        )
+        let sessionsIndexModifiedAt = fileModificationDate(
+            for: projectURL.appendingPathComponent("sessions-index.json", isDirectory: false)
+        )
+
+        if let cached = sessionSummaryCache[candidate.url.path],
+           cached.modifiedAt == candidate.modifiedAt,
+           cached.sessionCacheModifiedAt == sessionCacheModifiedAt,
+           cached.sessionsIndexModifiedAt == sessionsIndexModifiedAt {
+            return cached.summary
+        }
+
+        let metadata = try loadProjectMetadataIndex(for: projectURL)
+        guard let summary = try await Self.summarize(candidate: candidate, metadata: metadata) else {
+            return nil
+        }
+        sessionSummaryCache[candidate.url.path] = CachedSessionSummary(
+            modifiedAt: candidate.modifiedAt,
+            sessionCacheModifiedAt: sessionCacheModifiedAt,
+            sessionsIndexModifiedAt: sessionsIndexModifiedAt,
+            summary: summary
+        )
+        return summary
     }
 
     private func enumerateCandidates() throws -> [TranscriptCandidate] {
