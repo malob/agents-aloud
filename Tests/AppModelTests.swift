@@ -589,6 +589,66 @@ struct AppModelTests {
         #expect(model.sessions.map(\.id) == ["fresh-claude"])
     }
 
+    // MARK: - Unseen-activity badge
+
+    @Test
+    @MainActor
+    func unseenActivityBadgesFollowSelectionAndActivity() async throws {
+        let sessionTwoTranscript = fourMessageTranscript.replacingOccurrences(of: "session-1", with: "session-2")
+        let fixture = try makeTestAppModel(transcripts: [
+            "session-1.jsonl": fourMessageTranscript,
+            "session-2.jsonl": sessionTwoTranscript,
+        ])
+        defer { fixture.cleanup() }
+        let model = fixture.model
+
+        func appendLine(to name: String, uuid: String) throws {
+            let url = fixture.projectsRoot
+                .appendingPathComponent("demo-project", isDirectory: true)
+                .appendingPathComponent(name, isDirectory: false)
+            let line = "{\"type\":\"assistant\",\"uuid\":\"\(uuid)\",\"timestamp\":\"2026-04-17T17:00:09Z\",\"sessionId\":\"session-2\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"More.\"}]}}\n"
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(line.utf8))
+            try handle.close()
+        }
+
+        await model.start()
+        #expect(model.sessions.count == 2)
+        // Launch baseline: nothing is unseen.
+        #expect(model.sessions.allSatisfy { !model.hasUnseenActivity($0) })
+
+        let sessionOneID = "session-1"
+        model.selectedSessionID = sessionOneID
+
+        // Activity lands on the UNSELECTED session-2 → badge.
+        try await Task.sleep(for: .milliseconds(50))  // ensure mtime advances
+        try appendLine(to: "session-2.jsonl", uuid: "assistant-3")
+        await model.refreshSessions()
+
+        let sessionTwo = try #require(model.sessions.first(where: { $0.id == "session-2" }))
+        let sessionOne = try #require(model.sessions.first(where: { $0.id == sessionOneID }))
+        #expect(model.hasUnseenActivity(sessionTwo))
+        #expect(!model.hasUnseenActivity(sessionOne))
+
+        // Selecting session-2 clears its badge immediately.
+        model.selectedSessionID = sessionTwo.id
+        #expect(!model.hasUnseenActivity(sessionTwo))
+
+        // Activity on the SELECTED session never badges — its updates
+        // render live in the transcript view.
+        try await Task.sleep(for: .milliseconds(50))
+        try appendLine(to: "session-2.jsonl", uuid: "assistant-4")
+        await model.refreshSessions()
+        let refreshedTwo = try #require(model.sessions.first(where: { $0.id == "session-2" }))
+        #expect(!model.hasUnseenActivity(refreshedTwo))
+
+        // Switching away afterwards stays clear until NEW activity.
+        model.selectedSessionID = sessionOneID
+        let backgroundTwo = try #require(model.sessions.first(where: { $0.id == "session-2" }))
+        #expect(!model.hasUnseenActivity(backgroundTwo))
+    }
+
     // MARK: - playMessagesFromHere
 
     @Test

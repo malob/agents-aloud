@@ -75,6 +75,12 @@ final class AppModel {
             }
 
             PerfLog.mark("AppModel.selectedSessionID change id=\(selectedSessionID ?? "nil")")
+            // Selecting a session is what "seeing" it means — the
+            // unseen-activity badge clears here, immediately.
+            if let id = selectedSessionID,
+               let summary = sessions.first(where: { $0.id == id }) {
+                lastSeenModifiedAtBySession[id] = summary.modifiedAt ?? .distantPast
+            }
             selectionRefreshTask?.cancel()
             selectedTranscriptRefreshTask?.cancel()
             // Playback continues across session navigation. The queue
@@ -319,6 +325,13 @@ final class AppModel {
     // state via Observation tracking.
     @ObservationIgnored private var nowPlayingCoordinator: NowPlayingCoordinator?
     @ObservationIgnored private var knownAssistantMessageIDsBySession: [SessionSummary.ID: Set<TranscriptMessage.ID>] = [:]
+    // Per-session "what mtime had this session when the user last had
+    // it on screen" — drives the sidebar's unseen-activity badge.
+    // In-memory only: at launch everything baselines as seen, matching
+    // "show me what changed since I opened the app." NOT
+    // @ObservationIgnored: hasUnseenActivity(_:) reads through this in
+    // SidebarView rows, and badge changes must trigger re-render.
+    private var lastSeenModifiedAtBySession: [SessionSummary.ID: Date] = [:]
     // Live-session registry (~/.claude/sessions) + a watcher on its
     // directory so launches/exits of claude processes appear in the
     // sidebar immediately instead of on the next 5s poll. Status
@@ -754,7 +767,22 @@ final class AppModel {
         errorMessage = nil
     }
 
-    private func refreshSessions() async {
+    // Whether `session` has activity (an mtime advance) the user
+    // hasn't had on screen. Deliberately mtime-based, not parsed-
+    // message-based: the sidebar never parses unselected transcripts,
+    // so "activity" can include tool chatter or the user's own prompt
+    // typed in a terminal — acceptable for "something changed since
+    // you looked." The selected session is never unseen: its updates
+    // render live in the transcript view.
+    func hasUnseenActivity(_ session: SessionSummary) -> Bool {
+        guard session.id != selectedSessionID else { return false }
+        guard let lastSeen = lastSeenModifiedAtBySession[session.id] else { return false }
+        return (session.modifiedAt ?? .distantPast) > lastSeen
+    }
+
+    // Internal (not private) so tests can drive a sidebar refresh
+    // directly instead of waiting out the 5s poll tick.
+    func refreshSessions() async {
         let existingSessions = sessionsState.sessions
 
         // The Claude side is live-only: the sidebar shows conversations
@@ -823,9 +851,23 @@ final class AppModel {
         if sessionsState != .loaded(loadedSessions) {
             sessionsState = .loaded(loadedSessions)
         }
+
+        // Seen-state bookkeeping for the unseen-activity badge: the
+        // selected session stays continuously seen (its updates render
+        // live in the transcript view), and a session entering the
+        // sidebar for the first time baselines as seen — at launch
+        // nothing is "new", and a session the user just started in a
+        // terminal contains only what they themselves just typed.
+        for session in loadedSessions {
+            if session.id == selectedSessionID || lastSeenModifiedAtBySession[session.id] == nil {
+                lastSeenModifiedAtBySession[session.id] = session.modifiedAt ?? .distantPast
+            }
+        }
+
         let currentSessionIDs = Set(loadedSessions.map(\.id))
         transcriptMessagesBySession = transcriptMessagesBySession.filter { currentSessionIDs.contains($0.key) }
         knownAssistantMessageIDsBySession = knownAssistantMessageIDsBySession.filter { currentSessionIDs.contains($0.key) }
+        lastSeenModifiedAtBySession = lastSeenModifiedAtBySession.filter { currentSessionIDs.contains($0.key) }
 
         // If the Live Speak session disappeared from the sidebar
         // (deleted, aged out of the lookback window), clear it.

@@ -14,7 +14,8 @@ struct SidebarView: View {
                     SessionRowView(
                         session: session,
                         isSelected: model.selectedSessionID == session.id,
-                        isLiveSpeakSession: model.liveReadSessionID == session.id
+                        isLiveSpeakSession: model.liveReadSessionID == session.id,
+                        hasUnseenActivity: model.hasUnseenActivity(session)
                     )
                     .tag(Optional(session.id))
                 }
@@ -168,6 +169,7 @@ private struct SessionRowView: View {
     let session: SessionSummary
     let isSelected: Bool
     let isLiveSpeakSession: Bool
+    let hasUnseenActivity: Bool
 
     // Width of the source-icon column on the title row. We pin this
     // explicitly so the project text on row 2 can use the same value
@@ -198,6 +200,18 @@ private struct SessionRowView: View {
                     .lineLimit(2)
 
                 Spacer(minLength: 8)
+
+                // Unseen-activity badge, Mail-style: the session's
+                // file advanced since the user last had it selected.
+                // Clears the moment the row is clicked (selection is
+                // what "seen" means).
+                if hasUnseenActivity {
+                    Circle()
+                        .fill(unseenBadgeColor)
+                        .frame(width: 7, height: 7)
+                        .help("New activity since you last viewed this session.")
+                        .accessibilityLabel("New activity")
+                }
 
                 if let modifiedAt = session.modifiedAt {
                     // TimelineView so the label ticks while the app idles.
@@ -257,5 +271,9 @@ private struct SessionRowView: View {
         }
 
         return Color.accentColor
+    }
+
+    private var unseenBadgeColor: Color {
+        isSelected ? .primary : .accentColor
     }
 }
