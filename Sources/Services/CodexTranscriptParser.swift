@@ -67,12 +67,11 @@ final class CodexTranscriptParser {
 
     nonisolated static func parseTranscript(data: Data, sessionID: String) -> [TranscriptMessage] {
         var messages: [TranscriptMessage] = []
-        var index = 0
+        var occurrences: [String: Int] = [:]
         forEachLine(in: data) { line in
             guard let dict = decodeJSON(line) else { return }
-            if let extracted = extractMessage(from: dict, sessionID: sessionID, index: index) {
+            if let extracted = extractMessage(from: dict, sessionID: sessionID, occurrences: &occurrences) {
                 messages.append(extracted)
-                index += 1
             }
         }
         return messages
@@ -106,7 +105,8 @@ final class CodexTranscriptParser {
                     }
                 }
             case "response_item":
-                if let extracted = extractMessage(from: dict, sessionID: sessionID, index: 0) {
+                var occurrences: [String: Int] = [:]  // summarize never uses the IDs
+                if let extracted = extractMessage(from: dict, sessionID: sessionID, occurrences: &occurrences) {
                     hasContent = true
                     if firstUserPrompt == nil, extracted.role == .user {
                         firstUserPrompt = extracted.text
@@ -140,7 +140,7 @@ final class CodexTranscriptParser {
     private nonisolated static func extractMessage(
         from dict: [String: Any],
         sessionID: String,
-        index: Int
+        occurrences: inout [String: Int]
     ) -> TranscriptMessage? {
         guard let type = dict["type"] as? String else { return nil }
         let timestamp = (dict["timestamp"] as? String).flatMap(parseTimestamp) ?? Date()
@@ -151,25 +151,60 @@ final class CodexTranscriptParser {
                 payload: dict["payload"] as? [String: Any],
                 timestamp: timestamp,
                 sessionID: sessionID,
-                index: index
+                occurrences: &occurrences
             )
         case "compacted":
             return extractCompacted(
                 payload: dict["payload"] as? [String: Any],
                 timestamp: timestamp,
                 sessionID: sessionID,
-                index: index
+                occurrences: &occurrences
             )
         default:
             return nil
         }
     }
 
+    // Identity derives from CONTENT (kind + role + timestamp + text),
+    // not from position in the parsed window. The storage layer
+    // re-parses a sliding ~256 KB tail of the rollout, so a positional
+    // index renumbers every existing message whenever file growth moves
+    // the window start — and Live Speak's "is this message new?"
+    // known-set, the queue's dedup, and per-row UI state all key off
+    // these IDs. Positional IDs made old messages look new (re-spoken
+    // by Live Speak) and reset row state on every append.
+    //
+    // Hasher is process-seeded, so IDs are stable within a run but not
+    // across launches — fine: every consumer is in-memory state.
+    // Identical (kind, role, timestamp, text) duplicates are
+    // disambiguated by an occurrence counter scoped to one parse; that
+    // counter is positional among exact duplicates, which is the
+    // remaining (vanishingly rare: identical text in the same
+    // millisecond) identity instability.
+    private nonisolated static func stableMessageID(
+        sessionID: String,
+        kind: String,
+        role: TranscriptMessage.Role,
+        timestamp: Date,
+        text: String,
+        occurrences: inout [String: Int]
+    ) -> String {
+        var hasher = Hasher()
+        hasher.combine(kind)
+        hasher.combine(role)
+        hasher.combine(timestamp)
+        hasher.combine(text)
+        let key = "\(Int(timestamp.timeIntervalSince1970 * 1000))-\(hasher.finalize())"
+        let occurrence = occurrences[key, default: 0]
+        occurrences[key] = occurrence + 1
+        return occurrence == 0 ? "\(sessionID)-\(key)" : "\(sessionID)-\(key)-\(occurrence)"
+    }
+
     private nonisolated static func extractResponseItem(
         payload: [String: Any]?,
         timestamp: Date,
         sessionID: String,
-        index: Int
+        occurrences: inout [String: Int]
     ) -> TranscriptMessage? {
         guard let payload, payload["type"] as? String == "message",
               let role = payload["role"] as? String else { return nil }
@@ -203,7 +238,14 @@ final class CodexTranscriptParser {
         if mappedRole == .user, isBoilerplate(text) { return nil }
 
         return TranscriptMessage(
-            id: "\(sessionID)-\(index)",
+            id: stableMessageID(
+                sessionID: sessionID,
+                kind: "message",
+                role: mappedRole,
+                timestamp: timestamp,
+                text: text,
+                occurrences: &occurrences
+            ),
             role: mappedRole,
             text: text,
             timestamp: timestamp,
@@ -216,12 +258,19 @@ final class CodexTranscriptParser {
         payload: [String: Any]?,
         timestamp: Date,
         sessionID: String,
-        index: Int
+        occurrences: inout [String: Int]
     ) -> TranscriptMessage? {
         guard let payload, let message = payload["message"] as? String,
               !message.isEmpty else { return nil }
         return TranscriptMessage(
-            id: "\(sessionID)-compacted-\(index)",
+            id: stableMessageID(
+                sessionID: sessionID,
+                kind: "compacted",
+                role: .assistant,
+                timestamp: timestamp,
+                text: message,
+                occurrences: &occurrences
+            ),
             role: .assistant,
             text: message,
             timestamp: timestamp,
