@@ -130,6 +130,16 @@ final class StreamingAudioPlayer {
         // equivalent to stretching the one utterance.
         engine.connect(engine.mainMixerNode, to: timePitch, format: nil)
         engine.connect(timePitch, to: engine.outputNode, format: nil)
+        // Max out STFT frame overlap (range 3–32, default 8). The unit
+        // is a phase-vocoder stretcher, whose signature artifact at
+        // 2x+ rates is "phasiness" — hollow / tinny / phone-line
+        // coloration from harmonics losing phase lock. More overlap
+        // means finer phase tracking and audibly less of it; the CPU
+        // cost is irrelevant for one mono speech stream. If this still
+        // isn't good enough, the next step is AVSampleBufferAudioRenderer
+        // with AVAudioTimePitchAlgorithm.timeDomain — a voice-optimized
+        // time-domain stretcher that avoids phasiness entirely.
+        timePitch.overlap = 32
     }
 
     // Throws synchronously on format/engine setup failure; otherwise
