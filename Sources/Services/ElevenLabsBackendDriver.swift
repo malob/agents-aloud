@@ -23,7 +23,14 @@ import OSLog
 @MainActor
 @Observable
 final class ElevenLabsBackendDriver: SpeechBackendDriver {
-    static let defaultModelID = "eleven_turbo_v2_5"
+    // eleven_flash_v2_5 is ElevenLabs' named migration target for the
+    // deprecated eleven_turbo_v2_5 we shipped with (their docs,
+    // 2026-06: "functionally equivalent... except the latency"), and
+    // it's cheaper per character. The lifelike-tier models
+    // (eleven_multilingual_v2 / eleven_v3) cost more and add latency;
+    // worth a Settings picker if flash quality ever disappoints at
+    // listening speed.
+    static let defaultModelID = "eleven_flash_v2_5"
 
     // var because AppModel swaps it via replaceClient() when the API key changes.
     @ObservationIgnored private var client: ElevenLabsClientType
