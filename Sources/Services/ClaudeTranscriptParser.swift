@@ -254,25 +254,6 @@ struct SessionMetadata {
     let source: Source
 }
 
-private struct ISO8601DateParsers {
-    let fractionalSeconds: ISO8601DateFormatter
-    let standard: ISO8601DateFormatter
-
-    init() {
-        let fractionalSeconds = ISO8601DateFormatter()
-        fractionalSeconds.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        self.fractionalSeconds = fractionalSeconds
-
-        let standard = ISO8601DateFormatter()
-        standard.formatOptions = [.withInternetDateTime]
-        self.standard = standard
-    }
-
-    func date(from value: String) -> Date? {
-        fractionalSeconds.date(from: value) ?? standard.date(from: value)
-    }
-}
-
 private struct TranscriptLine: Decodable {
     let type: String?
     let uuid: String?

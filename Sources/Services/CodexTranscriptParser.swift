@@ -68,9 +68,15 @@ final class CodexTranscriptParser {
     nonisolated static func parseTranscript(data: Data, sessionID: String) -> [TranscriptMessage] {
         var messages: [TranscriptMessage] = []
         var occurrences: [String: Int] = [:]
+        let dateParsers = ISO8601DateParsers()
         forEachLine(in: data) { line in
             guard let dict = decodeJSON(line) else { return }
-            if let extracted = extractMessage(from: dict, sessionID: sessionID, occurrences: &occurrences) {
+            if let extracted = extractMessage(
+                from: dict,
+                sessionID: sessionID,
+                occurrences: &occurrences,
+                dateParsers: dateParsers
+            ) {
                 messages.append(extracted)
             }
         }
@@ -82,6 +88,7 @@ final class CodexTranscriptParser {
         var isSubagent = false
         var firstUserPrompt: String?
         var hasContent = false
+        let dateParsers = ISO8601DateParsers()
 
         forEachLine(in: data) { line in
             guard let dict = decodeJSON(line) else { return }
@@ -106,7 +113,12 @@ final class CodexTranscriptParser {
                 }
             case "response_item":
                 var occurrences: [String: Int] = [:]  // summarize never uses the IDs
-                if let extracted = extractMessage(from: dict, sessionID: sessionID, occurrences: &occurrences) {
+                if let extracted = extractMessage(
+                    from: dict,
+                    sessionID: sessionID,
+                    occurrences: &occurrences,
+                    dateParsers: dateParsers
+                ) {
                     hasContent = true
                     if firstUserPrompt == nil, extracted.role == .user {
                         firstUserPrompt = extracted.text
@@ -140,10 +152,11 @@ final class CodexTranscriptParser {
     private nonisolated static func extractMessage(
         from dict: [String: Any],
         sessionID: String,
-        occurrences: inout [String: Int]
+        occurrences: inout [String: Int],
+        dateParsers: ISO8601DateParsers
     ) -> TranscriptMessage? {
         guard let type = dict["type"] as? String else { return nil }
-        let timestamp = (dict["timestamp"] as? String).flatMap(parseTimestamp) ?? Date()
+        let timestamp = (dict["timestamp"] as? String).flatMap(dateParsers.date(from:)) ?? Date()
 
         switch type {
         case "response_item":
@@ -339,14 +352,6 @@ final class CodexTranscriptParser {
             return last5
         }
         return stem
-    }
-
-    private nonisolated static func parseTimestamp(_ s: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: s) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: s)
     }
 
     private nonisolated static func decodeJSON(_ line: String) -> [String: Any]? {
