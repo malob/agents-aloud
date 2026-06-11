@@ -199,14 +199,6 @@ private struct SessionRowView: View {
 
                 Spacer(minLength: 8)
 
-                if session.liveness.isLive {
-                    Circle()
-                        .fill(liveDotColor)
-                        .frame(width: 7, height: 7)
-                        .help(liveDotHelp)
-                        .accessibilityLabel(liveDotHelp)
-                }
-
                 if let modifiedAt = session.modifiedAt {
                     // TimelineView so the label ticks while the app idles.
                     // Rows only re-render when sessionsState actually
@@ -265,25 +257,5 @@ private struct SessionRowView: View {
         }
 
         return Color.accentColor
-    }
-
-    // Green = the agent is working right now; gray = open but idle;
-    // a session with unknown activity (desktop-app entries carry no
-    // status) reads as live-but-quiet rather than claiming busy.
-    private var liveDotColor: Color {
-        switch session.liveness {
-        case .liveBusy: return .green
-        case .liveIdle, .liveUnknown: return .secondary.opacity(0.6)
-        case .notLive: return .clear
-        }
-    }
-
-    private var liveDotHelp: String {
-        switch session.liveness {
-        case .liveBusy: return "Session is running — the agent is working."
-        case .liveIdle: return "Session is running and idle."
-        case .liveUnknown: return "Session is running."
-        case .notLive: return ""
-        }
     }
 }
