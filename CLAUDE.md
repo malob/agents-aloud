@@ -91,15 +91,18 @@ Sources/
   See: [CodexThreadDatabase.swift](Sources/Services/CodexThreadDatabase.swift),
   [CodexStorageService.swift](Sources/Services/CodexStorageService.swift)
 
-- **The 5-session sidebar floor applies to the unified list, not per
-  source.** Each storage service still pads its own result up to 5
-  past the 24-hour window (that guarantees enough candidates reach
-  the merge), but `AppModel.refreshSessions` keeps only in-window
-  sessions unless the unified in-window count is under the floor.
-  Applying the floor per-source let a quiet source drag its 5 most
-  recent stale sessions into a sidebar already full of fresh ones —
-  seen in the wild as five ancient Codex sessions at the bottom of
-  the sidebar.
+- **No sidebar floor, no padding — sparse is correct.** The old
+  minimum-5 floor padded quiet periods with stale relics (seen in the
+  wild as five ancient Codex sessions at the bottom of the sidebar);
+  it's gone on purpose. Each source enforces its own window and the
+  merge is a pure sort: Claude is live-only (registry; windowless by
+  construction, 24h walk window only as the no-registry fallback),
+  Codex gets a tight 1-hour window — researched 2026-06: there is no
+  Codex live-process signal (the app-server protocol only covers
+  threads a client itself owns; every third-party viewer falls back
+  to recency), so a short window is the honest approximation of
+  "live". The services' `minimumCount` walk-floor parameters survive
+  for API compatibility but AppModel passes 0.
 
 - **Claude has no authoritative HISTORICAL session index** — the JSONL
   filesystem is the source of truth for past sessions. We've checked:

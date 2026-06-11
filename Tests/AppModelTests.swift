@@ -471,17 +471,15 @@ struct AppModelTests {
         #expect(model.sessions.first?.projectName == "somewhere")
     }
 
-    // MARK: - Unified sidebar floor
+    // MARK: - Sidebar recency windows (no padding)
 
     @Test
     @MainActor
-    func unifiedFloorTrimsStaleSourcePaddingWhenWindowIsFull() async throws {
-        // Five fresh Codex sessions fill the 24h window; Claude has
-        // only a stale session. Per-source padding still hands that
-        // stale session to the merge as a candidate, but the unified
-        // floor must trim it — the sidebar already has enough fresh
-        // content. This is the "five ancient Codex sessions at the
-        // bottom of the sidebar" bug, with the sources swapped.
+    func staleSessionsNeverPadTheSidebar() async throws {
+        // Five fresh Codex sessions; Claude (walk fallback) has only a
+        // 10-day-old session. The stale session must not appear — no
+        // floor, no padding. This is the "five ancient Codex sessions
+        // at the bottom of the sidebar" bug, with the sources swapped.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
             .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
@@ -537,11 +535,10 @@ struct AppModelTests {
 
     @Test
     @MainActor
-    func unifiedFloorPadsWithMostRecentStaleSessionsWhenWindowIsSparse() async throws {
+    func sparseWindowStaysSparseInsteadOfPaddingWithRelics() async throws {
         // One fresh Claude session, one stale Claude session, one
-        // stale Codex thread. The window alone (1) is under the
-        // floor, so the stale sessions should pad the sidebar —
-        // newest first, across sources.
+        // stale Codex thread. Only the fresh session shows: a sparse
+        // sidebar that reflects reality beats one padded with relics.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
             .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
@@ -589,7 +586,7 @@ struct AppModelTests {
 
         await model.start()
 
-        #expect(model.sessions.map(\.id) == ["fresh-claude", "stale-codex", "stale-claude"])
+        #expect(model.sessions.map(\.id) == ["fresh-claude"])
     }
 
     // MARK: - playMessagesFromHere

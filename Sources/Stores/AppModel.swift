@@ -26,18 +26,18 @@ final class AppModel {
     // upper "still understandable" range — past that it's a chipmunk.
     static let minimumWordsPerMinute = 100
     static let maximumWordsPerMinute = 500
-    // How far back to show sessions in the sidebar. The session list is for
-    // recent work — anything older you can still dig up, but we don't try to
-    // keep weeks of history in the main view.
-    private static let sessionLookback: TimeInterval = 24 * 60 * 60  // 24 hours
-    // Sidebar floor: if the lookback window holds fewer than this many
-    // sessions ACROSS BOTH SOURCES, pad with the most recent older ones
-    // so the sidebar never looks empty. The floor is a property of the
-    // unified list — each source also pads per-source (that guarantees
-    // enough candidates reach the merge), but applying the floor only
-    // per-source let a quiet source drag its 5 most recent stale
-    // sessions into a sidebar already full of fresh ones.
-    private static let minimumSessionCount = 5
+    // Sidebar recency windows. There is deliberately NO floor padding
+    // anymore: a sparse (even empty) sidebar that reflects reality
+    // beats one padded with stale relics — the app is a companion for
+    // conversations the user is actively having. Codex, which has no
+    // live-process signal (researched 2026-06: the field universally
+    // falls back to recency, and the app-server protocol only covers
+    // threads a client itself owns), gets a tight 1-hour window as the
+    // honest approximation of "live". The 24-hour window survives only
+    // for the Claude walk fallback (claude versions without a
+    // live-session registry).
+    private static let claudeFallbackLookback: TimeInterval = 24 * 60 * 60
+    private static let codexLookback: TimeInterval = 60 * 60
 
     private let storageService: ClaudeStorageService
     private let codexStorageService: CodexStorageService
@@ -757,7 +757,6 @@ final class AppModel {
     private func refreshSessions() async {
         let existingSessions = sessionsState.sessions
 
-        let since = Date().addingTimeInterval(-Self.sessionLookback)
         // The Claude side is live-only: the sidebar shows conversations
         // the user is actively having, sourced from the live-session
         // registry (running claude processes), not a recency window of
@@ -766,23 +765,25 @@ final class AppModel {
         // returns nil only when the directory doesn't exist).
         let liveSessions = liveSessionRegistry.loadLiveSessions()
 
-        // Load both sources in parallel. A single-source failure stays
-        // log-only while the other source still produces sessions — a
-        // populated sidebar beats a banner on every poll tick. It
-        // becomes user-facing only when the sidebar would otherwise be
-        // empty, with nothing on screen to explain why.
+        // Load both sources in parallel; each enforces its own window
+        // (minimumCount: 0 = no padding past it), so the merge below
+        // is a pure sort. A single-source failure stays log-only while
+        // the other source still produces sessions — a populated
+        // sidebar beats a banner on every poll tick. It becomes
+        // user-facing only when the sidebar would otherwise be empty,
+        // with nothing on screen to explain why.
         async let claudeTask: [SessionSummary] = {
             if let liveSessions {
                 return try await storageService.loadSessions(live: liveSessions)
             }
             return try await storageService.loadSessions(
-                since: since,
-                minimumCount: Self.minimumSessionCount
+                since: Date().addingTimeInterval(-Self.claudeFallbackLookback),
+                minimumCount: 0
             )
         }()
         async let codexTask = codexStorageService.loadSessions(
-            since: since,
-            minimumCount: Self.minimumSessionCount
+            since: Date().addingTimeInterval(-Self.codexLookback),
+            minimumCount: 0
         )
 
         var aggregated: [SessionSummary] = []
@@ -809,23 +810,15 @@ final class AppModel {
             return
         }
 
-        // Merge sort by mtime descending — gives the unified
-        // "what was I working on lately" view that's the whole
-        // point of the unified feed. In-window sessions sort ahead
-        // of any out-of-window padding the sources supplied, so the
-        // floor below reduces to a prefix.
-        let sortedCandidates = aggregated.sorted {
+        // Merge sort by mtime descending — gives the unified "what am
+        // I working on right now" view. Each source already enforced
+        // its own window (and live Claude sessions are windowless by
+        // construction: an open-but-idle session is still a
+        // conversation the user is having), so no filtering or
+        // padding happens here.
+        let loadedSessions = aggregated.sorted {
             ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast)
         }
-        // Live sessions bypass the recency window: a conversation
-        // that's open-but-idle for days is still a conversation the
-        // user is having, whatever its transcript's mtime says.
-        let inWindow = sortedCandidates.filter {
-            $0.liveness.isLive || ($0.modifiedAt ?? .distantPast) >= since
-        }
-        let loadedSessions = inWindow.count >= Self.minimumSessionCount
-            ? inWindow
-            : Array(sortedCandidates.prefix(Self.minimumSessionCount))
 
         if sessionsState != .loaded(loadedSessions) {
             sessionsState = .loaded(loadedSessions)
