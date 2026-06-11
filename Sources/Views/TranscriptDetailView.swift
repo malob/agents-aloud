@@ -73,6 +73,15 @@ struct TranscriptDetailView: View {
                     // anchor APIs work reliably.
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(transcriptMessages) { message in
+                            // "Where you left off" line, Slack-model:
+                            // position frozen at selection time (the
+                            // marker only changes on session switch),
+                            // so arrivals during the visit land below
+                            // it without moving it, and scrolling
+                            // never interacts with it at all.
+                            if message.id == model.firstNewMessageID {
+                                NewMessagesDivider()
+                            }
                             MessageRowView(
                                 message: message,
                                 source: session.source,
@@ -214,5 +223,29 @@ struct TranscriptDetailView: View {
         withTransaction(transaction) {
             proxy.scrollTo(targetID, anchor: .bottom)
         }
+    }
+}
+
+// Full-width "everything below is new" rule with a small label.
+private struct NewMessagesDivider: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            divider
+            Text("New")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+            divider
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("New messages below")
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.accentColor.opacity(0.45))
+            .frame(height: 1)
+            .frame(maxWidth: .infinity)
     }
 }

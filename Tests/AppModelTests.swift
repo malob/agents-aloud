@@ -649,6 +649,70 @@ struct AppModelTests {
         #expect(!model.hasUnseenActivity(backgroundTwo))
     }
 
+    // MARK: - New-messages marker
+
+    @Test
+    @MainActor
+    func newMessagesMarkerFreezesAtSelectionAndSplitsTranscript() async throws {
+        let sessionTwoTranscript = fourMessageTranscript.replacingOccurrences(of: "session-1", with: "session-2")
+        let fixture = try makeTestAppModel(transcripts: [
+            "session-1.jsonl": fourMessageTranscript,
+            "session-2.jsonl": sessionTwoTranscript,
+        ])
+        defer { fixture.cleanup() }
+        let model = fixture.model
+
+        // Wall-clock fractional timestamps, like production: a
+        // message's content timestamp is written just before the file
+        // mtime advances, so it lands after the previous visit's
+        // frontier and at-or-before the pinned-while-viewing one.
+        func appendAssistantLine(uuid: String) throws {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            let timestamp = formatter.string(from: Date())
+            let line = "{\"type\":\"assistant\",\"uuid\":\"\(uuid)\",\"timestamp\":\"\(timestamp)\",\"sessionId\":\"session-2\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"More.\"}]}}\n"
+            let url = fixture.projectsRoot
+                .appendingPathComponent("demo-project", isDirectory: true)
+                .appendingPathComponent("session-2.jsonl", isDirectory: false)
+            let handle = try FileHandle(forWritingTo: url)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(line.utf8))
+            try handle.close()
+        }
+
+        await model.start()
+        model.selectedSessionID = "session-1"
+
+        // New content lands on session-2 while session-1 is selected.
+        try await Task.sleep(for: .milliseconds(100))
+        try appendAssistantLine(uuid: "new-1")
+        await model.refreshSessions()
+
+        // Visiting session-2 freezes the marker at the pre-append
+        // frontier: the line lands above the appended message.
+        model.selectedSessionID = "session-2"
+        try await waitUntil { model.transcriptState.messages(for: "session-2").count == 5 }
+        #expect(model.firstNewMessageID == "new-1")
+
+        // Arrivals DURING the visit go below the line; the line
+        // doesn't move.
+        try appendAssistantLine(uuid: "new-2")
+        fixture.watcher.emitChange()
+        try await waitUntil { model.transcriptState.messages(for: "session-2").count == 6 }
+        #expect(model.firstNewMessageID == "new-1")
+
+        // Session-1 had no arrivals — no line there.
+        model.selectedSessionID = "session-1"
+        try await waitUntil { model.transcriptState.messages(for: "session-1").count == 4 }
+        #expect(model.firstNewMessageID == nil)
+
+        // Re-visiting session-2: everything was on screen during the
+        // previous visit, so the line is gone.
+        model.selectedSessionID = "session-2"
+        try await waitUntil { model.transcriptState.messages(for: "session-2").count == 6 }
+        #expect(model.firstNewMessageID == nil)
+    }
+
     // MARK: - playMessagesFromHere
 
     @Test

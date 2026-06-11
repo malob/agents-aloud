@@ -76,10 +76,18 @@ final class AppModel {
 
             PerfLog.mark("AppModel.selectedSessionID change id=\(selectedSessionID ?? "nil")")
             // Selecting a session is what "seeing" it means — the
-            // unseen-activity badge clears here, immediately.
+            // unseen-activity badge clears here, immediately. The
+            // PRIOR frontier is captured first as the new-messages
+            // marker: everything that arrived after it is "new" for
+            // this visit, and the marker stays frozen until the next
+            // selection change (Slack-model line: it marks where you
+            // left off, it doesn't chase arrivals or scrolling).
             if let id = selectedSessionID,
                let summary = sessions.first(where: { $0.id == id }) {
+                newMessagesMarkerDate = lastSeenModifiedAtBySession[id]
                 lastSeenModifiedAtBySession[id] = summary.modifiedAt ?? .distantPast
+            } else {
+                newMessagesMarkerDate = nil
             }
             selectionRefreshTask?.cancel()
             selectedTranscriptRefreshTask?.cancel()
@@ -767,6 +775,28 @@ final class AppModel {
         errorMessage = nil
     }
 
+    // Where you left off in the currently-selected session: the
+    // unseen-activity frontier captured at the moment of selection.
+    // Set only in selectedSessionID.didSet, so it's frozen for the
+    // duration of a visit.
+    private(set) var newMessagesMarkerDate: Date?
+
+    // The first visible message that arrived after the user's previous
+    // visit to the selected session — where the transcript view draws
+    // its "new messages" line. nil when nothing visible is newer than
+    // the marker (e.g. only tool chatter advanced the file), or when
+    // there's no older message above it to make a boundary worth
+    // drawing (a line above an all-new transcript says nothing).
+    var firstNewMessageID: TranscriptMessage.ID? {
+        guard let marker = newMessagesMarkerDate else { return nil }
+        let messages = transcriptMessages
+        guard let index = messages.firstIndex(where: { $0.timestamp > marker }),
+              index > 0 else {
+            return nil
+        }
+        return messages[index].id
+    }
+
     // Whether `session` has activity (an mtime advance) the user
     // hasn't had on screen. Deliberately mtime-based, not parsed-
     // message-based: the sidebar never parses unselected transcripts,
@@ -957,6 +987,16 @@ final class AppModel {
                 } else {
                     alreadyCurrent = false
                 }
+
+                // Committing content to the screen is what makes it
+                // SEEN — pin the frontier here, not just on the 5s
+                // sessions poll, or leaving within the poll gap would
+                // leave a stale "new" line/badge for messages the user
+                // already watched arrive. Pinning to now() is safe in
+                // the mtime domain: commit time upper-bounds the mtime
+                // of everything just rendered, and mtimes are never in
+                // the future.
+                lastSeenModifiedAtBySession[sessionID] = Date()
 
                 if !alreadyCurrent {
                     PerfLog.mark("AppModel.refreshTranscript commit count=\(loadedTranscript.count)")
