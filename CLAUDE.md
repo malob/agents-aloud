@@ -2,7 +2,7 @@
 
 macOS SwiftUI app that reads agent transcripts aloud. Surfaces a
 unified sidebar of recent Claude Code (`~/.claude/projects/`) and
-Codex (`~/.codex/sessions/`, indexed via `~/.codex/state_5.sqlite`)
+Codex (`~/.codex/sessions/`, indexed via `~/.codex/sqlite/state_5.sqlite`)
 sessions, renders the selected session as a chat-style transcript
 view, and speaks assistant messages through one of two TTS backends
 (macOS system `say`, or ElevenLabs streaming). An optional rewriter
@@ -26,7 +26,7 @@ Sources/
 │   ├── ClaudeStorageService      actor; summarizes live sessions' JSONL (walk fallback), mtime/size-cached
 │   ├── ClaudeTranscriptParser    nonisolated; Claude JSONL → TranscriptMessage[]
 │   ├── CodexStorageService       actor; reads ~/.codex/sessions/, mtime-cached
-│   ├── CodexThreadDatabase       SQLite reader over ~/.codex/state_5.sqlite (session index)
+│   ├── CodexThreadDatabase       SQLite reader over ~/.codex/sqlite/state_5.sqlite (session index; legacy ~/.codex/state_5.sqlite fallback)
 │   ├── CodexTranscriptParser     nonisolated; Codex rollout JSONL → TranscriptMessage[]
 │   ├── TranscriptFileWatcher     DispatchSource on the selected file + retry on ENOENT
 │   ├── SpeechController          @Observable; queue + routing across drivers
@@ -65,10 +65,18 @@ Sources/
   top-of-file comment.
 
 - **Codex sessions are indexed via SQLite, snapshotted before every
-  read.** `~/.codex/state_5.sqlite`'s `threads` table is the
-  authoritative session list; titles and archive state live ONLY
-  there (the rollout JSONL has no title field), so we can't fall back
-  to walking the filesystem for sidebar parity with `codex` itself.
+  read.** The `threads` table is the authoritative session list;
+  titles and archive state live ONLY there (the rollout JSONL has no
+  title field), so we can't fall back to walking the filesystem for
+  sidebar parity with `codex` itself. **The DB path is version-
+  dependent**: Codex.app v149 relocated it from `~/.codex/state_5.sqlite`
+  to `~/.codex/sqlite/state_5.sqlite`, leaving the old file behind to
+  go stale. `CodexThreadDatabase.preferredDatabaseURL` picks the
+  relocated path when present, else the legacy one — without this the
+  sidebar silently froze at the pre-update sessions (the old file
+  still opened fine, it just stopped receiving writes). If the Codex
+  sidebar ever goes stale again after a Codex update, check whether
+  the DB moved again before suspecting anything else.
   We can't read the live DB directly either — plain
   `SQLITE_OPEN_READONLY` fails with `SQLITE_CANTOPEN` because SQLite
   needs to write the -shm file for WAL lock coordination and Codex's

@@ -19,6 +19,34 @@ struct CodexThreadDatabaseTests {
         #expect(rows.map(\.id) == ["normal"])
     }
 
+    // Codex v149 relocated state_5.sqlite into a `sqlite/`
+    // subdirectory; the old top-level path lingers and goes stale.
+    // Prefer the relocated DB when it exists, else the legacy path.
+    @Test
+    func preferredDatabaseURLPrefersRelocatedThenLegacy() throws {
+        let codexDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-CodexPathTests-\(UUID().uuidString)", isDirectory: true)
+        let sqliteDir = codexDir.appendingPathComponent("sqlite", isDirectory: true)
+        try FileManager.default.createDirectory(at: sqliteDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: codexDir) }
+
+        let legacy = codexDir.appendingPathComponent("state_5.sqlite", isDirectory: false)
+        let relocated = sqliteDir.appendingPathComponent("state_5.sqlite", isDirectory: false)
+
+        // Neither present yet → falls back to the legacy path (so the
+        // missing-file path still triggers the filesystem-walk fallback
+        // exactly as before).
+        #expect(CodexThreadDatabase.preferredDatabaseURL(codexDirectory: codexDir) == legacy)
+
+        // Legacy only.
+        try Data().write(to: legacy)
+        #expect(CodexThreadDatabase.preferredDatabaseURL(codexDirectory: codexDir) == legacy)
+
+        // Both present (the post-update reality) → relocated wins.
+        try Data().write(to: relocated)
+        #expect(CodexThreadDatabase.preferredDatabaseURL(codexDirectory: codexDir) == relocated)
+    }
+
     // Regression: Codex leaves the DB in WAL journal mode. When it
     // exits cleanly, SQLite checkpoints and DELETES the -wal/-shm
     // sidecars, leaving a bare main file whose header still says WAL.

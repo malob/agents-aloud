@@ -65,11 +65,31 @@ final class CodexThreadDatabase: Sendable {
 
     private let path: URL
 
-    init(path: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".codex", isDirectory: true)
-        .appendingPathComponent("state_5.sqlite", isDirectory: false)
-    ) {
+    init(path: URL = CodexThreadDatabase.defaultDatabaseURL) {
         self.path = path
+    }
+
+    // Codex relocated its state DB from `~/.codex/state_5.sqlite` to
+    // `~/.codex/sqlite/state_5.sqlite` (observed with Codex.app v149,
+    // schema migration 35, 2026-06). The old path is left behind and
+    // goes stale on update — reading it silently froze the sidebar at
+    // the pre-update sessions while the live threads table moved. Pick
+    // the new path when present, else fall back to the old one for
+    // Codex versions that still use it.
+    static var defaultDatabaseURL: URL {
+        preferredDatabaseURL(
+            codexDirectory: FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".codex", isDirectory: true)
+        )
+    }
+
+    static func preferredDatabaseURL(codexDirectory: URL) -> URL {
+        let relocated = codexDirectory
+            .appendingPathComponent("sqlite", isDirectory: true)
+            .appendingPathComponent("state_5.sqlite", isDirectory: false)
+        let legacy = codexDirectory
+            .appendingPathComponent("state_5.sqlite", isDirectory: false)
+        return FileManager.default.fileExists(atPath: relocated.path) ? relocated : legacy
     }
 
     // The single query we run. Returns the 50 most-recent non-archived
