@@ -202,7 +202,7 @@ private func makeTestAppModel(
         speechController: speechController,
         userDefaults: userDefaults,
         selectedTranscriptWatcher: watcher,
-        liveReadTranscriptWatcher: liveReadWatcher,
+        liveReadWatcherFactory: { liveReadWatcher },
         liveSessionRegistry: sandboxedLiveSessionRegistry(),
         keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"),
         speechTextProcessor: speechTextProcessor
@@ -1212,7 +1212,7 @@ struct AppModelTests {
             speechController: controller,
             userDefaults: userDefaults,
             selectedTranscriptWatcher: selectedWatcher,
-            liveReadTranscriptWatcher: liveReadWatcher,
+            liveReadWatcherFactory: { liveReadWatcher },
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
             keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
         )
@@ -1230,10 +1230,10 @@ struct AppModelTests {
         model.selectedSessionID = aID
         try await waitUntil { model.transcriptState.messages(for: aID).count == 1 }
         model.setLiveReadEnabled(true)
-        #expect(model.liveReadSessionID == aID)
+        #expect(model.liveReadSessionIDs.contains(aID))
 
         model.selectedSessionID = bID
-        #expect(model.liveReadSessionID == aID)  // survives navigation
+        #expect(model.liveReadSessionIDs.contains(aID))  // survives navigation
         try await waitUntil { model.transcriptState.messages(for: bID).count == 1 }
 
         // Append an assistant message to A's file. liveReadWatcher is
@@ -1253,11 +1253,102 @@ struct AppModelTests {
 
     @Test
     @MainActor
-    func enablingLiveSpeakOnNewSessionTransfersWithoutDrainingQueue() async throws {
-        // The "transfer" case: A has Live Speak with auto items in
-        // the queue. User navigates to B and enables Live Speak for
-        // B. Ownership moves; A's queued auto items stay (just no
-        // new A arrivals).
+    func enablingLiveSpeakOnTwoSessionsReadsArrivalsFromBoth() async throws {
+        // Multi-session Live Speak is additive: enabling B does not
+        // disable A. A new assistant message on EITHER session's file
+        // auto-enqueues — A via its dedicated live-read watcher (it's
+        // non-selected), B via the selected watcher.
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+
+        let sessionA = projectDirectory.appendingPathComponent("session-a.jsonl", isDirectory: false)
+        let sessionB = projectDirectory.appendingPathComponent("session-b.jsonl", isDirectory: false)
+        try """
+        {"type":"user","uuid":"u-a","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-a","cwd":"/x","message":{"role":"user","content":"A's prompt."}}
+
+        """.write(to: sessionA, atomically: true, encoding: .utf8)
+        try """
+        {"type":"user","uuid":"u-b","timestamp":"2026-04-17T17:00:00Z","sessionId":"session-b","cwd":"/x","message":{"role":"user","content":"B's prompt."}}
+
+        """.write(to: sessionB, atomically: true, encoding: .utf8)
+
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+        let selectedWatcher = FakeTranscriptFileWatcher()
+        let liveReadWatcher = FakeTranscriptFileWatcher()
+        let fakeDriver = FakeSpeechBackendDriver(
+            availableVoices: [SpeechVoiceOption(id: "system.voice", name: "System", language: "en-US")]
+        )
+        let controller = SpeechController(systemVoiceDriver: fakeDriver)
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            codexStorageService: sandboxedCodexStorageService(),
+            speechController: controller,
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: selectedWatcher,
+            liveReadWatcherFactory: { liveReadWatcher },
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+        )
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        await model.start()
+        try await waitUntil { model.sessions.count == 2 }
+        let aID = try #require(model.sessions.first(where: { $0.id == "session-a" })?.id)
+        let bID = try #require(model.sessions.first(where: { $0.id == "session-b" })?.id)
+
+        // Enable Live Speak on A, navigate to B, enable it there too.
+        model.selectedSessionID = aID
+        try await waitUntil { model.transcriptState.messages(for: aID).count == 1 }
+        model.setLiveReadEnabled(true)
+        model.selectedSessionID = bID
+        try await waitUntil { model.transcriptState.messages(for: bID).count == 1 }
+        model.setLiveReadEnabled(true)
+        #expect(model.liveReadSessionIDs == [aID, bID])
+
+        // New reply on A (non-selected → its live-read watcher fires).
+        let aReply = "{\"type\":\"assistant\",\"uuid\":\"a-reply\",\"timestamp\":\"2026-04-17T17:00:02Z\",\"sessionId\":\"session-a\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"A reply.\"}]}}\n"
+        let aHandle = try FileHandle(forWritingTo: sessionA)
+        try aHandle.seekToEnd()
+        try aHandle.write(contentsOf: Data(aReply.utf8))
+        try aHandle.close()
+        liveReadWatcher.emitChange()
+
+        // New reply on B (selected → the selected watcher fires).
+        let bReply = "{\"type\":\"assistant\",\"uuid\":\"b-reply\",\"timestamp\":\"2026-04-17T17:00:03Z\",\"sessionId\":\"session-b\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"B reply.\"}]}}\n"
+        let bHandle = try FileHandle(forWritingTo: sessionB)
+        try bHandle.seekToEnd()
+        try bHandle.write(contentsOf: Data(bReply.utf8))
+        try bHandle.close()
+        selectedWatcher.emitChange()
+
+        // Both sessions' arrivals entered the speech pipeline. One is
+        // playing and the other queued behind it (the fake driver never
+        // finishes, so we don't require both to have *started* — only
+        // that both were auto-enqueued, which is the multi-session
+        // guarantee under test).
+        func enteredPipeline(_ id: String) -> Bool {
+            controller.currentMessageID == id
+                || controller.queue.contains(where: { $0.id == id })
+                || fakeDriver.startedRequests.contains(where: { $0.messageID == id })
+        }
+        try await waitUntil { enteredPipeline("a-reply") && enteredPipeline("b-reply") }
+    }
+
+    @Test
+    @MainActor
+    func reEnablingLiveSpeakOnSameSessionKeepsItsQueuedAutoItems() async throws {
+        // Re-enabling Live Speak on a session that already has it is a
+        // no-op — it must NOT drain that session's already-queued auto
+        // items. (Navigating away and back, then re-toggling, is a path
+        // users hit when reorganising windows.)
         let processor = ControllableSpeechTextProcessor()
         let fixture = try makeTestAppModel(
             transcripts: ["session-1.jsonl": fourMessageTranscript],
@@ -1278,13 +1369,13 @@ struct AppModelTests {
             sessionID: firstSession.id
         )
         fixture.model.setLiveReadEnabled(true)
-        #expect(fixture.model.liveReadSessionID == firstSession.id)
+        #expect(fixture.model.liveReadSessionIDs.contains(firstSession.id))
 
         // Simulate viewing a different session (for test purposes we
         // just set selectedSessionID to nil — represents navigation
-        // away). liveReadSessionID stays.
+        // away). The live set retains it.
         fixture.model.selectedSessionID = nil
-        #expect(fixture.model.liveReadSessionID == firstSession.id)
+        #expect(fixture.model.liveReadSessionIDs.contains(firstSession.id))
 
         // Re-enter the session and re-toggle — equivalent to
         // "transfer to same session" which should be a no-op.

@@ -14,7 +14,9 @@ struct SidebarView: View {
                     SessionRowView(
                         session: session,
                         isSelected: model.selectedSessionID == session.id,
-                        isLiveSpeakSession: model.liveReadSessionID == session.id,
+                        isLiveSpeakSession: model.liveReadSessionIDs.contains(session.id),
+                        isCurrentlySpeaking: model.speechController.isSpeaking
+                            && model.speechController.currentSessionID == session.id,
                         hasUnseenActivity: model.hasUnseenActivity(session)
                     )
                     .tag(Optional(session.id))
@@ -169,6 +171,7 @@ private struct SessionRowView: View {
     let session: SessionSummary
     let isSelected: Bool
     let isLiveSpeakSession: Bool
+    let isCurrentlySpeaking: Bool
     let hasUnseenActivity: Bool
 
     // Width of the source-icon column on the title row. We pin this
@@ -229,11 +232,24 @@ private struct SessionRowView: View {
                     .help(modifiedAt.formatted(date: .abbreviated, time: .shortened))
                 }
 
-                if isLiveSpeakSession {
-                    Image(systemName: "speaker.wave.2.fill")
+                // Speaker icon marks Live-Speak-enabled sessions and
+                // animates on whichever session is producing audio right
+                // now — a glanceable "who's talking" cue for when the
+                // spoken "From <session>" callout was missed. Shown for
+                // the speaking session even without Live Speak (manual
+                // playback): the question it answers is "which session is
+                // speaking," not "which will auto-read."
+                if isLiveSpeakSession || isCurrentlySpeaking {
+                    // Matches the per-message pill (MessageRowView):
+                    // two waves when idle, three + a forward variable-
+                    // color sweep while actually speaking.
+                    Image(systemName: isCurrentlySpeaking ? "speaker.wave.3.fill" : "speaker.wave.2.fill")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(liveIndicatorColor)
-                        .help("Live Speak is enabled for this session.")
+                        .symbolEffect(.variableColor.iterative, isActive: isCurrentlySpeaking)
+                        .help(isCurrentlySpeaking
+                            ? "Now speaking this session's messages."
+                            : "Live Speak is enabled for this session.")
                 }
             }
 

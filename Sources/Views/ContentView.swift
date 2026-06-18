@@ -5,7 +5,7 @@ struct ContentView: View {
 
     private var liveReadIsOnForSelectedSession: Bool {
         guard let selectedID = model.selectedSession?.id else { return false }
-        return model.liveReadSessionID == selectedID
+        return model.liveReadSessionIDs.contains(selectedID)
     }
 
     var body: some View {

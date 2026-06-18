@@ -14,6 +14,33 @@ This is a lightweight holding pen for non-urgent issues that are real enough to 
 
 - Revisit the sidebar toolbar issue only if it becomes more noticeable or if a broader AppKit/window-chrome pass happens anyway.
 
+- **"Listening stream" roadmap — steering playback across multiple sessions.** The
+  queue is already cross-session (every `PendingSpeechItem` carries `sessionID`); these
+  build on that to make the app a multi-source stream you steer rather than a
+  one-conversation reader. Sequenced so each step ships independently:
+  - **A2 — cross-session attribution cue. DONE (2026-06-18).** SpeechController prepends
+    "From <session>." when the next item's session differs from the last spoken one.
+    Zero-noise single-session (no cue on stream start, within a session, or after stop()).
+    Ear-test pending: tune wording / label source / whether to announce the first
+    utterance. See `attributedText` in SpeechController + `attributionLabel` in AppModel.
+  - **A1 — multi-session Live Speak. DONE (2026-06-18), ear-test pending.** Live Speak
+    is now non-exclusive: `liveReadSessionIDs: Set<ID>`; sidebar icon + toolbar toggle
+    use `.contains`; enabling is additive (no transfer). The single live-read watcher
+    became a per-session pool via `liveReadWatcherFactory`, with per-session debounce
+    tasks so two chatty sessions can't cancel each other's refresh. Cold-start
+    attribution edge handled: `shouldAttributeFirstUtteranceProvider` attributes the
+    first utterance only when >1 session is live. No new UI. Shipped alone (B deferred
+    until the amplified interruption is shown to actually bite).
+  - **B — Hold / interruption gate.** Explicit Hold where `.auto` items still enqueue
+    but don't auto-promote; manual still plays; a "N waiting" badge; flush on Resume.
+    Optional opt-in: a manual Speak auto-engages Hold. Reframed away from the
+    window-focus idea (fiddly + surprising) toward an explicit, predictable gate.
+  - **C — control without leaving the terminal.** `MenuBarExtra` (`.window` style) with
+    transport + the live queue + a unified reverse-chronological, session-tagged
+    "pick-to-speak" list across all live sessions; global hotkeys for transport via
+    Carbon `RegisterEventHotKey` (no Accessibility prompt, works over full-screen);
+    optional floating non-activating `NSPanel` HUD as the ambitious follow-on.
+
 - **Local TTS backend (researched 2026-06-11; see commit history for the time-stretch groundwork).**
   - Best current option: Qwen3-TTS (Apache 2.0, Jan 2026) — 0.6B/1.7B, voice design from text descriptions, 3 s cloning, streaming. MLX numbers on M4-class: 1.7B ≈ 1.6× realtime generation, ~60 ms TTFB, 3.5 GB resident (4-bit); 0.6B ≈ 2× faster at ~2 GB. Kokoro-82M remains the speed floor (~350 MB, flatter prosody). At 400 wpm playback (2.35×), the 0.6B comfortably outruns consumption; the 1.7B relies on buffer-ahead.
   - Integration paths: (a) `mlx-audio` Python sidecar (MIT, 7k+ stars, active; HTTP server; also serves Kokoro/MOSS for ear-testing) — recommended first; (b) `swift-qwen3-tts` SwiftPM package (native MLX Swift, streaming API that feeds straight into `StreamingAudioPlayer`) — blocked on the repo having NO license file as of 2026-06; ask the author or port from mlx-audio ourselves before shipping anything.

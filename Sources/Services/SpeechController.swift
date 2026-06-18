@@ -31,6 +31,7 @@ final class SpeechController {
         let request: SpeechRequest
         let backend: SpeechBackend
         let messageID: String
+        let sessionID: String
     }
 
     private enum PlaybackState {
@@ -79,6 +80,29 @@ final class SpeechController {
     // and preferredSpeechRate properties.
     @ObservationIgnored var voiceIdentifierProvider: @MainActor () -> String? = { nil }
     @ObservationIgnored var wordsPerMinuteProvider: @MainActor () -> Int = { 400 }
+
+    // Resolves a sessionID to a short, spoken-friendly label for the
+    // cross-session attribution cue ("From <label>."). Looked up at
+    // speak() time so a renamed session announces its current name.
+    // AppModel wires this to its session list; nil ⇒ no cue (unknown
+    // session, or caller didn't wire a provider).
+    @ObservationIgnored var sessionLabelProvider: @MainActor (String) -> String? = { _ in nil }
+
+    // Whether the FIRST utterance of a stream (no prior session
+    // context) should still be attributed. Normally false — you don't
+    // need "From X" before the only thing playing. AppModel wires this
+    // to "more than one session has Live Speak on," so a cold start
+    // with several live sources orients the listener instead of leaving
+    // the first message anonymous.
+    @ObservationIgnored var shouldAttributeFirstUtteranceProvider: @MainActor () -> Bool = { false }
+
+    // The session whose message was last sent to a driver. Drives the
+    // attribution cue: a new item whose sessionID differs from this
+    // gets a "From <label>." preamble. nil at the start of a stream
+    // (launch, or after stop()) so the first utterance is never
+    // prefixed — only genuine transitions are announced, which keeps
+    // single-session listening completely cue-free.
+    @ObservationIgnored private var lastPlayedSessionID: String?
 
     private var playbackState: PlaybackState = .idle
     // The ordered queue of items waiting to play. Items enter via
@@ -137,6 +161,12 @@ final class SpeechController {
     var isSpeaking: Bool { playbackState.isSpeaking }
     var isPaused: Bool { playbackState.isPaused }
     var currentMessageID: String? { playbackState.activePlayback?.messageID }
+    // Session that owns the currently-active utterance (playing OR
+    // paused), nil when idle. Lets the UI show which session is
+    // speaking right now — distinct from liveReadSessionIDs (which
+    // sessions WILL auto-read) and from lastPlayedSessionID (which
+    // persists past the end of playback for the attribution cue).
+    var currentSessionID: String? { playbackState.activePlayback?.sessionID }
 
     // Everything the UI needs to render per-row status for a given
     // message. One enum instead of a grab-bag of booleans so the row
@@ -274,6 +304,9 @@ final class SpeechController {
     func stop() {
         (activeDriver ?? currentDriver).stop()
         playbackState = .idle
+        // End the attribution stream: the next message is a fresh
+        // start, not a transition from whatever was last heard.
+        lastPlayedSessionID = nil
         clearQueueAndRewriter()
     }
 
@@ -447,10 +480,12 @@ final class SpeechController {
     // backend switches and rate changes take effect for the next
     // item without needing to invalidate the queue.
     private func speak(text: String, item: PendingSpeechItem) {
+        // messageID stays the real ID (event routing, Now Playing,
+        // dedup all key on it); only the spoken text carries the cue.
         let request = SpeechRequest(
             playbackID: UUID(),
             messageID: item.id,
-            text: text,
+            text: attributedText(text, for: item),
             voiceIdentifier: voiceIdentifierProvider(),
             wordsPerMinute: wordsPerMinuteProvider()
         )
@@ -458,7 +493,8 @@ final class SpeechController {
         let activePlayback = ActivePlayback(
             request: request,
             backend: backend,
-            messageID: item.id
+            messageID: item.id,
+            sessionID: item.sessionID
         )
 
         do {
@@ -466,6 +502,11 @@ final class SpeechController {
                 request: request,
                 eventHandler: handleDriverEvent(_:)
             )
+            // Advance the attribution frontier only once playback has
+            // actually started — a failed start never reached the ear,
+            // so the next item should still transition from the prior
+            // session, not this one.
+            lastPlayedSessionID = item.sessionID
             playbackState = .speaking(activePlayback)
         } catch {
             logger.error(
@@ -477,6 +518,30 @@ final class SpeechController {
             // next queued ready item instead of stranding the rest.
             promoteHeadIfReady()
         }
+    }
+
+    // Prepend "From <label>." when this item comes from a different
+    // session than the last thing spoken, so a listener can follow a
+    // queue that interleaves sessions. No cue on the first utterance
+    // of a stream (lastPlayedSessionID == nil) or within one session.
+    private func attributedText(_ text: String, for item: PendingSpeechItem) -> String {
+        guard shouldAttribute(item) else { return text }
+        guard let label = sessionLabelProvider(item.sessionID)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !label.isEmpty else {
+            return text
+        }
+        return "From \(label). \(text)"
+    }
+
+    private func shouldAttribute(_ item: PendingSpeechItem) -> Bool {
+        guard let previous = lastPlayedSessionID else {
+            // No prior context (stream start, or just after stop()).
+            // Only orient the listener when the source is genuinely
+            // ambiguous — more than one session can auto-speak.
+            return shouldAttributeFirstUtteranceProvider()
+        }
+        return previous != item.sessionID
     }
 
     private var currentDriver: any SpeechBackendDriver {

@@ -500,4 +500,103 @@ struct SpeechControllerTests {
         fakeDriver.emit(.didResume(playbackID))
         #expect(controller.isSpeaking)
     }
+
+    // MARK: - Currently-speaking session
+
+    @Test
+    @MainActor
+    func currentSessionIDTracksActivePlaybackAndClearsOnIdle() async throws {
+        let (controller, fakeDriver) = makeController()
+        #expect(controller.currentSessionID == nil)
+
+        controller.insertAuto(messageID: "m1", sourceText: "Hi", sessionID: "sX")
+        try await waitUntil { controller.currentMessageID == "m1" }
+        #expect(controller.currentSessionID == "sX")
+
+        let playbackID = try #require(fakeDriver.startedRequests.first?.playbackID)
+        fakeDriver.emit(.didFinish(playbackID))
+        try await waitUntil { controller.currentMessageID == nil }
+        #expect(controller.currentSessionID == nil)
+    }
+
+    // MARK: - Cross-session attribution cue
+
+    @Test
+    @MainActor
+    func attributionPrefixSpokenWhenSessionChanges() async throws {
+        let (controller, fakeDriver) = makeController()
+        controller.sessionLabelProvider = { id in
+            switch id {
+            case "sA": return "Project A"
+            case "sB": return "Project B"
+            default: return nil
+            }
+        }
+
+        // First utterance of a fresh stream: no prior context, so no
+        // attribution — only genuine transitions get announced.
+        controller.insertAuto(messageID: "m1", sourceText: "Hello from A", sessionID: "sA")
+        try await waitUntil { controller.currentMessageID == "m1" }
+        let first = try #require(fakeDriver.startedRequests.first)
+        #expect(first.text == "Hello from A")
+
+        // A message from a DIFFERENT session plays next → prefixed.
+        controller.insertAuto(messageID: "m2", sourceText: "Hello from B", sessionID: "sB")
+        fakeDriver.emit(.didFinish(first.playbackID))
+        try await waitUntil { controller.currentMessageID == "m2" }
+        let second = try #require(fakeDriver.startedRequests.last)
+        #expect(second.text == "From Project B. Hello from B")
+    }
+
+    @Test
+    @MainActor
+    func noAttributionPrefixWithinSameSession() async throws {
+        let (controller, fakeDriver) = makeController()
+        controller.sessionLabelProvider = { _ in "Project A" }
+
+        controller.insertAuto(messageID: "m1", sourceText: "First", sessionID: "s")
+        try await waitUntil { controller.currentMessageID == "m1" }
+        let first = try #require(fakeDriver.startedRequests.first)
+        fakeDriver.emit(.didFinish(first.playbackID))
+
+        controller.insertAuto(messageID: "m2", sourceText: "Second", sessionID: "s")
+        try await waitUntil { controller.currentMessageID == "m2" }
+        let second = try #require(fakeDriver.startedRequests.last)
+        #expect(second.text == "Second")
+    }
+
+    @Test
+    @MainActor
+    func firstUtteranceAttributedWhenMultipleSourcesLive() async throws {
+        // With more than one session able to auto-speak, even the first
+        // utterance of a cold stream is ambiguous — so it gets a cue,
+        // unlike the single-source case (which the test above pins).
+        let (controller, fakeDriver) = makeController()
+        controller.sessionLabelProvider = { _ in "Project A" }
+        controller.shouldAttributeFirstUtteranceProvider = { true }
+
+        controller.insertAuto(messageID: "m1", sourceText: "Hello", sessionID: "sA")
+        try await waitUntil { controller.currentMessageID == "m1" }
+        let first = try #require(fakeDriver.startedRequests.first)
+        #expect(first.text == "From Project A. Hello")
+    }
+
+    @Test
+    @MainActor
+    func stopResetsAttributionContext() async throws {
+        let (controller, fakeDriver) = makeController()
+        controller.sessionLabelProvider = { id in id == "sB" ? "Project B" : "Project A" }
+
+        controller.insertAuto(messageID: "m1", sourceText: "A", sessionID: "sA")
+        try await waitUntil { controller.currentMessageID == "m1" }
+        controller.stop()
+
+        // A full stop ends the stream. The next message — even from a
+        // different session — is the start of a new stream, so there's
+        // no prior context to transition from and no prefix.
+        controller.insertAuto(messageID: "m2", sourceText: "B", sessionID: "sB")
+        try await waitUntil { controller.currentMessageID == "m2" }
+        let last = try #require(fakeDriver.startedRequests.last)
+        #expect(last.text == "B")
+    }
 }

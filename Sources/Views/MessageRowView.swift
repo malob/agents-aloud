@@ -272,8 +272,13 @@ struct MessageRowView: View, Equatable {
     private func pillContent(mode: PillMode) -> some View {
         HStack(spacing: 6) {
             Image(systemName: pillIcon(mode: mode))
+                // Forward-only (no .reversing): the highlight sweeps
+                // outward from the speaker like sound radiating, rather
+                // than sweeping back in. Kept identical to the sidebar's
+                // speaking indicator (SessionRowView) so both surfaces
+                // animate the same way.
                 .symbolEffect(
-                    .variableColor.iterative.reversing,
+                    .variableColor.iterative,
                     isActive: pillShouldAnimateIcon(mode: mode)
                 )
                 .foregroundStyle(pillPrimaryColor(mode: mode))
