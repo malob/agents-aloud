@@ -375,7 +375,20 @@ private enum TranscriptContent: Decodable {
         switch self {
         case let .string(value):
             return value
-        case .items, .unsupported:
+        case let .items(items):
+            // Image-bearing user prompts arrive as a content array
+            // (text block(s) + image block(s)) instead of a bare
+            // string. Join the text blocks so the message still renders.
+            // A tool_result envelope is also array content but carries
+            // no text block, so it correctly yields nil and stays hidden
+            // (as do image-only blocks).
+            let text = items
+                .filter { $0.type == "text" }
+                .compactMap(\.text)
+                .joined(separator: "\n\n")
+                .trimmed
+            return text.isEmpty ? nil : text
+        case .unsupported:
             return nil
         }
     }

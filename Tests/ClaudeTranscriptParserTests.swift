@@ -28,6 +28,27 @@ struct ClaudeTranscriptParserTests {
     }
 
     @Test
+    func parseTranscriptRendersImageBearingUserMessagesFromArrayContent() {
+        // A user prompt with attached images is stored as an array of
+        // content blocks (text + image) rather than a bare string. The
+        // text must still render. Sibling records must not surface as
+        // user bubbles: the isMeta "[Image: source: …]" annotation and
+        // a tool_result envelope (also array content, but no text block).
+        let rawTranscript = """
+        {"type":"user","uuid":"user-img","timestamp":"2026-04-17T17:00:00Z","sessionId":"s","message":{"role":"user","content":[{"type":"text","text":"Here's a screenshot, any idea?"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}]}}
+        {"type":"user","uuid":"meta-img","timestamp":"2026-04-17T17:00:01Z","sessionId":"s","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"[Image: source: /tmp/shot.png]"}]}}
+        {"type":"user","uuid":"tool-res","timestamp":"2026-04-17T17:00:02Z","sessionId":"s","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"output"}]}}
+        {"type":"assistant","uuid":"a-1","timestamp":"2026-04-17T17:00:03Z","sessionId":"s","message":{"role":"assistant","content":[{"type":"text","text":"Looking now."}]}}
+        """
+
+        let messages = ClaudeTranscriptParser.parseTranscript(rawTranscript)
+
+        #expect(messages.map(\.id) == ["user-img", "a-1"])
+        #expect(messages.map(\.role) == [.user, .assistant])
+        #expect(messages.first?.text == "Here's a screenshot, any idea?")
+    }
+
+    @Test
     func parseTranscriptAcceptsFractionalAndStandardISO8601Timestamps() {
         let rawTranscript = """
         {"type":"user","uuid":"user-1","timestamp":"2026-04-17T17:00:00.250Z","sessionId":"session-123","message":{"role":"user","content":"Fractional time"}}
