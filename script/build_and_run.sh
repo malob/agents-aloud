@@ -60,8 +60,27 @@ shopt -u nullglob
 PACKAGE_RESOURCE_BUNDLE="$APP_RESOURCES/${APP_NAME}_${APP_NAME}.bundle"
 ASSET_CATALOG="$ROOT_DIR/Sources/Resources/Assets.xcassets"
 if [[ -d "$ASSET_CATALOG" && -d "$PACKAGE_RESOURCE_BUNDLE" ]]; then
+  # Custom SF Symbols are loaded via Bundle.module, so they must live in
+  # the SwiftPM resource bundle's Assets.car.
   xcrun actool "$ASSET_CATALOG" \
     --compile "$PACKAGE_RESOURCE_BUNDLE" \
+    --platform macosx \
+    --minimum-deployment-target "$MIN_SYSTEM_VERSION" \
+    --target-device mac \
+    --output-format human-readable-text
+fi
+
+# The app icon must live in the MAIN bundle (the system resolves
+# CFBundleIconName against Contents/Resources, not the nested SwiftPM
+# resource bundle). Compile the Liquid Glass .icon authored in Icon
+# Composer into the app's Resources: actool emits Assets.car (glass
+# data for macOS 26+) plus Icon.icns (fallback for earlier releases).
+ICON_FILE="$ROOT_DIR/icon/Icon.icon"
+if [[ -d "$ICON_FILE" ]]; then
+  xcrun actool "$ICON_FILE" \
+    --compile "$APP_RESOURCES" \
+    --app-icon Icon \
+    --output-partial-info-plist "$DIST_DIR/actool-icon.plist" \
     --platform macosx \
     --minimum-deployment-target "$MIN_SYSTEM_VERSION" \
     --target-device mac \
@@ -79,6 +98,10 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
+  <key>CFBundleIconName</key>
+  <string>Icon</string>
+  <key>CFBundleIconFile</key>
+  <string>Icon</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>

@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22C7B8"/>
+      <stop offset="1" stop-color="#5B5BE6"/>
+    </linearGradient>
+  </defs>
+  <!-- Full-bleed squircle background (Signal gradient). -->
+  <rect x="0" y="0" width="100" height="100" rx="22.4" fill="url(#bg)"/>
+  <!-- Form B glyph: antenna + eyes + asymmetric voice waveform, white,
+       scaled to sit at dock proportions within the tile. -->
+  <g transform="translate(9,11) scale(0.82)">
+    <line x1="50" y1="27" x2="50" y2="17" stroke="#fff" stroke-width="7" stroke-linecap="round"/>
+    <circle cx="50" cy="12" r="5.5" fill="#fff"/>
+    <circle cx="32" cy="37" r="8.5" fill="#fff"/>
+    <circle cx="68" cy="37" r="8.5" fill="#fff"/>
+    <g fill="#fff">
+      <rect x="11" y="62" width="9.5" height="15" rx="4.75"/>
+      <rect x="28" y="49.5" width="9.5" height="40" rx="4.75"/>
+      <rect x="45.25" y="58.5" width="9.5" height="22" rx="4.75"/>
+      <rect x="62.5" y="54.5" width="9.5" height="30" rx="4.75"/>
+      <rect x="79.5" y="63" width="9.5" height="13" rx="4.75"/>
+    </g>
+  </g>
+</svg>
