@@ -288,6 +288,58 @@ struct AppModelTests {
         #expect(model.errorMessage == nil)
     }
 
+    @Test
+    @MainActor
+    func newSessionWithNoTranscriptFileShowsEmptyNotError() async throws {
+        // A live session can be listed (from the registry) before its
+        // JSONL exists — started but no message sent yet. Selecting it
+        // must read as an empty session, NOT a load error or banner.
+        // (Contrast transcriptFailurePreservesLastKnownMessages: there a
+        // file vanished AFTER content loaded, so the error is kept.)
+        let fileManager = FileManager.default
+        let temporaryRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
+        let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
+        let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
+        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
+
+        try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
+        try initialTranscript.write(to: transcriptURL, atomically: true, encoding: .utf8)
+        defer {
+            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            try? fileManager.removeItem(at: temporaryRoot)
+        }
+
+        let model = AppModel(
+            storageService: ClaudeStorageService(projectsRoot: projectsRoot),
+            codexStorageService: sandboxedCodexStorageService(),
+            speechController: SpeechController(),
+            userDefaults: userDefaults,
+            selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
+            liveSessionRegistry: sandboxedLiveSessionRegistry(),
+            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+        )
+
+        await model.start()
+        let session = try #require(model.sessions.first)
+
+        // Delete the file BEFORE selecting: the session is listed but has
+        // no transcript on disk and nothing was ever loaded — exactly the
+        // "started, no message yet" shape.
+        try fileManager.removeItem(at: transcriptURL)
+        model.selectedSessionID = session.id
+
+        try await waitUntil {
+            if case let .loaded(sid, _) = model.transcriptState { return sid == session.id }
+            return false
+        }
+        #expect(model.transcriptState.messages(for: session.id).isEmpty)
+        #expect(model.transcriptState.errorMessage(for: session.id) == nil)
+        #expect(model.errorMessage == nil)
+    }
+
     // MARK: - Session load failures
 
     @Test

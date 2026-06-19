@@ -1050,11 +1050,24 @@ final class AppModel {
             return
         } catch {
             if selectedSessionID == sessionID {
-                transcriptState = .failed(
-                    sessionID: sessionID,
-                    messages: existingMessages,
-                    message: transcriptLoadErrorMessage(for: error)
-                )
+                // A live session can be selected before its JSONL exists
+                // (started, no message sent yet). With nothing to
+                // preserve and no file on disk, that's an empty session,
+                // not a failure — show it as empty so it doesn't look
+                // broken. A file that vanished AFTER we had content
+                // (existingMessages non-empty) still falls through to
+                // .failed, keeping the last-known messages and the error
+                // on screen.
+                if existingMessages.isEmpty,
+                   !FileManager.default.fileExists(atPath: session.transcriptURL.path) {
+                    transcriptState = .loaded(sessionID: sessionID, messages: [])
+                } else {
+                    transcriptState = .failed(
+                        sessionID: sessionID,
+                        messages: existingMessages,
+                        message: transcriptLoadErrorMessage(for: error)
+                    )
+                }
             }
             logger.error("Failed to refresh transcript \(sessionID, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
@@ -1080,6 +1093,17 @@ final class AppModel {
             },
             onFailure: { [weak self] error in
                 guard let self, self.selectedSessionID == sessionID else {
+                    return
+                }
+
+                // A live session can be selected before its JSONL
+                // exists (started, no message sent yet). The watcher
+                // reports ENOENT after its rename-race retries — not an
+                // error to surface: the 5s sessions poll re-arms this
+                // watcher once the file appears. Stay quiet so a
+                // brand-new session reads as empty, not broken.
+                if case let .openFailed(_, errorNumber) = error, errorNumber == ENOENT {
+                    self.logger.debug("Transcript not present yet for \(transcriptURL.path, privacy: .public); will re-arm when it appears")
                     return
                 }
 
