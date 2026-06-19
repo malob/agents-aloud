@@ -2,6 +2,10 @@ import SwiftUI
 
 struct SidebarView: View {
     @Bindable var model: AppModel
+    // Drives the source-filter highlight's emphasis so it desaturates
+    // with the rest of the window when it resigns key — the hand-rolled
+    // button can't inherit the automatic muting native controls get.
+    @Environment(\.controlActiveState) private var controlActiveState
 
     var body: some View {
         VStack(spacing: 0) {
@@ -118,18 +122,26 @@ struct SidebarView: View {
         @ViewBuilder label: () -> Label
     ) -> some View {
         let isSelected = model.sidebarSourceFilter == source
+        // Match the List row selection: accent fill + white glyph while
+        // the window is key, muted gray + primary glyph once it goes
+        // inactive. unemphasizedSelectedContentBackgroundColor is the
+        // same gray AppKit paints behind an inactive table selection.
+        let isEmphasized = controlActiveState != .inactive
+        let selectedFill = isEmphasized
+            ? Color.accentColor
+            : Color(nsColor: .unemphasizedSelectedContentBackgroundColor)
 
         return Button {
             model.sidebarSourceFilter = source
         } label: {
             label()
-                .foregroundStyle(isSelected ? .white : .primary)
+                .foregroundStyle(isSelected && isEmphasized ? .white : .primary)
                 .frame(width: 28, height: 24)
                 .contentShape(Rectangle())
                 .background {
                     if isSelected {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.accentColor)
+                            .fill(selectedFill)
                     }
                 }
         }
