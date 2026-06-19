@@ -42,13 +42,13 @@ struct SourceBrandIcon: View {
 
     // SwiftPM's auto-generated `Bundle.module` accessor doesn't find
     // the resource bundle when the executable runs from our hand-built
-    // .app wrapper (Contents/Resources/ClaudeCodeVoice_ClaudeCodeVoice.bundle/)
+    // .app wrapper (Contents/Resources/AgentsAloud_AgentsAloud.bundle/)
     // because SwiftPM expects its own runtime bundle layout. Try the
     // wrapper layout first, fall back to Bundle.module for `swift run`
     // / `swift test`. The bundle name string here must match the
     // PackageName_TargetName.bundle convention SwiftPM emits.
     private static var symbolBundle: Bundle {
-        let resourceBundleName = "ClaudeCodeVoice_ClaudeCodeVoice.bundle"
+        let resourceBundleName = "AgentsAloud_AgentsAloud.bundle"
         if let appResourceURL = Bundle.main.resourceURL?.appendingPathComponent(resourceBundleName),
             let appResourceBundle = Bundle(url: appResourceURL)
         {

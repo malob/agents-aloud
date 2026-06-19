@@ -1,13 +1,13 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 struct KeychainStorageTests {
     // Tests write to a unique service name per run so they don't collide
     // with the real app's Keychain entries (or with each other if run in
     // parallel).
     private func makeStorage() -> KeychainStorage {
-        KeychainStorage(service: "local.claudecodevoice.tests.\(UUID().uuidString)")
+        KeychainStorage(service: "me.malob.agentsaloud.tests.\(UUID().uuidString)")
     }
 
     @Test

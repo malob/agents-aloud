@@ -1,7 +1,7 @@
 import Foundation
 import SQLite3
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 @MainActor
 private final class FakeTranscriptFileWatcher: TranscriptFileWatching {
@@ -157,7 +157,7 @@ private func makeTestAppModel(
 ) throws -> TestAppModelFixture {
     let fileManager = FileManager.default
     let temporaryRoot = fileManager.temporaryDirectory
-        .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+        .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
     let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
     let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
     try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
@@ -167,7 +167,7 @@ private func makeTestAppModel(
         try contents.write(to: transcriptURL, atomically: true, encoding: .utf8)
     }
 
-    let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+    let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
     let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
     let watcher = FakeTranscriptFileWatcher()
     let liveReadWatcher = FakeTranscriptFileWatcher()
@@ -204,7 +204,7 @@ private func makeTestAppModel(
         selectedTranscriptWatcher: watcher,
         liveReadWatcherFactory: { liveReadWatcher },
         liveSessionRegistry: sandboxedLiveSessionRegistry(),
-        keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"),
+        keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)"),
         speechTextProcessor: speechTextProcessor
     )
 
@@ -234,12 +234,12 @@ struct AppModelTests {
     func transcriptFailurePreservesLastKnownMessages() async throws {
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
         let watcher = FakeTranscriptFileWatcher()
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
 
         try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
@@ -252,7 +252,7 @@ struct AppModelTests {
         // Pass a test-scoped Keychain service so AppModel.init doesn't
         // read from the real app's Keychain item. Without this, every
         // `swift test` run prompts "swiftpm-testing-helper wants to
-        // access local.claudecodevoice" because the test binary's
+        // access me.malob.agentsaloud" because the test binary's
         // identity doesn't match the real app's ACL.
         let model = AppModel(
             storageService: ClaudeStorageService(projectsRoot: projectsRoot),
@@ -261,7 +261,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: watcher,
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
 
         await model.start()
@@ -298,11 +298,11 @@ struct AppModelTests {
         // file vanished AFTER content loaded, so the error is kept.)
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
 
         try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
@@ -319,7 +319,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
 
         await model.start()
@@ -347,12 +347,12 @@ struct AppModelTests {
     func sessionLoadFailureWithEmptySidebarReportsFailingSource() async throws {
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
         // Never created — ClaudeStorageService throws on the missing
         // directory, and the sandboxed Codex service returns [].
         let projectsRoot = temporaryRoot.appendingPathComponent("missing-projects", isDirectory: true)
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
             userDefaults.removePersistentDomain(forName: defaultsSuiteName)
@@ -366,7 +366,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
 
         await model.start()
@@ -382,7 +382,7 @@ struct AppModelTests {
     func singleSourceFailureKeepsSurvivingSourcesSessions() async throws {
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
         // Claude's projects root is never created → that source throws.
         // Codex serves one thread from its state DB → the sidebar
@@ -391,7 +391,7 @@ struct AppModelTests {
         let codexDBPath = temporaryRoot.appendingPathComponent("codex-state.sqlite", isDirectory: false)
         try makeCodexStateDatabase(at: codexDBPath, threads: [(id: "codex-thread-1", updatedAt: Date())])
         let missingCodexRoot = temporaryRoot.appendingPathComponent("missing-codex-sessions", isDirectory: true)
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
             userDefaults.removePersistentDomain(forName: defaultsSuiteName)
@@ -409,7 +409,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
 
         await model.start()
@@ -430,7 +430,7 @@ struct AppModelTests {
         // registry's name and busy status.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         // Live session's project dir uses the real munged-cwd naming so
         // the exact-path construction (not just the fallback sweep) is
@@ -456,7 +456,7 @@ struct AppModelTests {
         let entry = "{\"pid\":\(pid),\"sessionId\":\"live-session\",\"cwd\":\"\(liveCWD)\",\"startedAt\":\(Int64(Date().timeIntervalSince1970 * 1000)),\"kind\":\"interactive\",\"entrypoint\":\"cli\",\"name\":\"Registry name wins\",\"status\":\"busy\"}"
         try entry.write(to: registryDirectory.appendingPathComponent("\(pid).json"), atomically: true, encoding: .utf8)
 
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
             userDefaults.removePersistentDomain(forName: defaultsSuiteName)
@@ -470,7 +470,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
             liveSessionRegistry: ClaudeSessionRegistry(directory: registryDirectory),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
 
         await model.start()
@@ -489,7 +489,7 @@ struct AppModelTests {
         // title.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         try fileManager.createDirectory(at: projectsRoot, withIntermediateDirectories: true)
         let registryDirectory = temporaryRoot.appendingPathComponent("registry", isDirectory: true)
@@ -498,7 +498,7 @@ struct AppModelTests {
         let entry = "{\"pid\":\(pid),\"sessionId\":\"fresh-session\",\"cwd\":\"/tmp/somewhere\",\"startedAt\":\(Int64(Date().timeIntervalSince1970 * 1000)),\"kind\":\"interactive\",\"entrypoint\":\"cli\",\"status\":\"idle\"}"
         try entry.write(to: registryDirectory.appendingPathComponent("\(pid).json"), atomically: true, encoding: .utf8)
 
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
             userDefaults.removePersistentDomain(forName: defaultsSuiteName)
@@ -512,7 +512,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
             liveSessionRegistry: ClaudeSessionRegistry(directory: registryDirectory),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
 
         await model.start()
@@ -534,11 +534,11 @@ struct AppModelTests {
         // at the bottom of the sidebar" bug, with the sources swapped.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
             userDefaults.removePersistentDomain(forName: defaultsSuiteName)
@@ -576,7 +576,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
 
         await model.start()
@@ -593,11 +593,11 @@ struct AppModelTests {
         // sidebar that reflects reality beats one padded with relics.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
             userDefaults.removePersistentDomain(forName: defaultsSuiteName)
@@ -633,7 +633,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: FakeTranscriptFileWatcher(),
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
 
         await model.start()
@@ -855,14 +855,14 @@ struct AppModelTests {
         // messages. New arrivals after the load should still speak.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
         try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
         try fourMessageTranscript.write(to: transcriptURL, atomically: true, encoding: .utf8)
 
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         let watcher = FakeTranscriptFileWatcher()
         let fakeDriver = FakeSpeechBackendDriver(
@@ -876,7 +876,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: watcher,
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
         defer {
             userDefaults.removePersistentDomain(forName: defaultsSuiteName)
@@ -920,7 +920,7 @@ struct AppModelTests {
         // incorrectly skip this first message and mark it "known" forever.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
@@ -933,7 +933,7 @@ struct AppModelTests {
         """
         try initialContent.write(to: transcriptURL, atomically: true, encoding: .utf8)
 
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         let watcher = FakeTranscriptFileWatcher()
         let fakeDriver = FakeSpeechBackendDriver(
@@ -947,7 +947,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: watcher,
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
         defer {
             userDefaults.removePersistentDomain(forName: defaultsSuiteName)
@@ -1233,7 +1233,7 @@ struct AppModelTests {
         // watcher, independent of which session the user is viewing.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
@@ -1250,7 +1250,7 @@ struct AppModelTests {
 
         """.write(to: sessionB, atomically: true, encoding: .utf8)
 
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         let selectedWatcher = FakeTranscriptFileWatcher()
         let liveReadWatcher = FakeTranscriptFileWatcher()
@@ -1266,7 +1266,7 @@ struct AppModelTests {
             selectedTranscriptWatcher: selectedWatcher,
             liveReadWatcherFactory: { liveReadWatcher },
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
         defer {
             userDefaults.removePersistentDomain(forName: defaultsSuiteName)
@@ -1312,7 +1312,7 @@ struct AppModelTests {
         // non-selected), B via the selected watcher.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
@@ -1328,7 +1328,7 @@ struct AppModelTests {
 
         """.write(to: sessionB, atomically: true, encoding: .utf8)
 
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         let selectedWatcher = FakeTranscriptFileWatcher()
         let liveReadWatcher = FakeTranscriptFileWatcher()
@@ -1344,7 +1344,7 @@ struct AppModelTests {
             selectedTranscriptWatcher: selectedWatcher,
             liveReadWatcherFactory: { liveReadWatcher },
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)")
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
         defer {
             userDefaults.removePersistentDomain(forName: defaultsSuiteName)
@@ -1540,7 +1540,7 @@ struct AppModelTests {
         // 5–10s CLI wait instead of feeling like the click was dropped.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-AppModelTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
@@ -1552,7 +1552,7 @@ struct AppModelTests {
         """
         try initialContent.write(to: transcriptURL, atomically: true, encoding: .utf8)
 
-        let defaultsSuiteName = "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"
+        let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         let watcher = FakeTranscriptFileWatcher()
         let fakeDriver = FakeSpeechBackendDriver(
@@ -1567,7 +1567,7 @@ struct AppModelTests {
             userDefaults: userDefaults,
             selectedTranscriptWatcher: watcher,
             liveSessionRegistry: sandboxedLiveSessionRegistry(),
-            keychain: KeychainStorage(service: "ClaudeCodeVoice-AppModelTests-\(UUID().uuidString)"),
+            keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)"),
             speechTextProcessor: processor
         )
         defer {

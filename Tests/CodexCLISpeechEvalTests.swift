@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 // Eval harness for the Codex CLI speech rewriter. Two tests:
 //

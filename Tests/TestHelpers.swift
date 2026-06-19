@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 // Poll a @MainActor-isolated condition until it becomes true or the timeout
 // elapses. Preferred over a fixed `Task.sleep(for: .milliseconds(X))` when

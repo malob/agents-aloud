@@ -2,14 +2,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "ClaudeCodeVoice",
+    name: "AgentsAloud",
     platforms: [
         .macOS("26.0"),
     ],
     products: [
         .executable(
-            name: "ClaudeCodeVoice",
-            targets: ["ClaudeCodeVoice"]
+            name: "AgentsAloud",
+            targets: ["AgentsAloud"]
         ),
     ],
     dependencies: [
@@ -17,7 +17,7 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "ClaudeCodeVoice",
+            name: "AgentsAloud",
             dependencies: [
                 .product(name: "Textual", package: "textual"),
             ],
@@ -31,8 +31,8 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "ClaudeCodeVoiceTests",
-            dependencies: ["ClaudeCodeVoice"],
+            name: "AgentsAloudTests",
+            dependencies: ["AgentsAloud"],
             path: "Tests"
         ),
     ]

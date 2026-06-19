@@ -28,7 +28,7 @@ import OSLog
 //   desktop entry simply has no name field). Callers should fall
 //   back to transcript-derived titles.
 struct ClaudeSessionRegistry: Sendable {
-    private static let logger = Logger(subsystem: "local.claudecodevoice", category: "SessionRegistry")
+    private static let logger = Logger(subsystem: "me.malob.agentsaloud", category: "SessionRegistry")
 
     // Entrypoints that represent a conversation the user is actually
     // having. Exclude-by-default for anything else: the known

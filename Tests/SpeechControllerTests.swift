@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 // Helper: build a controller wired to a single fake driver (acting as
 // the SystemVoice driver, since that's the post-AVSpeech default

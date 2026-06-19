@@ -21,7 +21,7 @@ import OSLog
 // MPNowPlayingInfoCenter are sufficient on their own.
 @MainActor
 final class NowPlayingCoordinator {
-    private let logger = Logger(subsystem: "local.claudecodevoice", category: "NowPlaying")
+    private let logger = Logger(subsystem: "me.malob.agentsaloud", category: "NowPlaying")
     private weak var model: AppModel?
 
     init(model: AppModel) {

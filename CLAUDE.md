@@ -1,4 +1,4 @@
-# Claude Code Voice — Project Context
+# Agents Aloud — Project Context
 
 macOS SwiftUI app that reads agent transcripts aloud. Surfaces a
 unified sidebar of recent Claude Code (`~/.claude/projects/`) and
@@ -366,11 +366,11 @@ Sources/
   pattern (write a small JSONL into `FileManager.temporaryDirectory`,
   load via the service, `defer { try? fileManager.removeItem(...) }`);
   see `ClaudeStorageServiceTests` for the canonical shape.
-- **OSLog:** subsystem is `local.claudecodevoice`; one category per
+- **OSLog:** subsystem is `me.malob.agentsaloud`; one category per
   service (`Storage`, `CodexStorage`, `TranscriptParser`,
   `CodexTranscriptParser`, `Speech`, `ElevenLabsDriver`,
   `StreamingAudioPlayer`, `AppModel`, `Perf`, …). Stream with
-  `log stream --info --style compact --predicate 'subsystem == "local.claudecodevoice"'`,
+  `log stream --info --style compact --predicate 'subsystem == "me.malob.agentsaloud"'`,
   scope further with `&& category == "X"` as needed.
 - **Timing instrumentation:** wrap measurable hot-path work with
   `PerfLog.time("Service.operation") { … }` (sync or async; the

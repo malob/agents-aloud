@@ -50,7 +50,7 @@ import Synchronization
 // the user message); the message-to-rewrite is piped via stdin and
 // Codex appends it as a `<stdin>` block under the rules.
 final class CodexCLISpeechProcessor: SpeechTextProcessor {
-    private static let logger = Logger(subsystem: "local.claudecodevoice", category: "CodexCLISpeechProcessor")
+    private static let logger = Logger(subsystem: "me.malob.agentsaloud", category: "CodexCLISpeechProcessor")
 
     // Same pipe-drain rationale as Claude's processor: macOS pipe
     // buffers are ~64KB; without a concurrent drain a child can block

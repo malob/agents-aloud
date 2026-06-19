@@ -73,7 +73,7 @@ import Synchronization
 //   requires ANTHROPIC_API_KEY. A future opt-in setting could expose
 //   `--bare` with a user-provided API key.
 final class ClaudeCLISpeechProcessor: SpeechTextProcessor {
-    private static let logger = Logger(subsystem: "local.claudecodevoice", category: "ClaudeCLISpeechProcessor")
+    private static let logger = Logger(subsystem: "me.malob.agentsaloud", category: "ClaudeCLISpeechProcessor")
 
     // Thread-safe Data accumulator for pipe-reader callbacks. macOS pipe
     // buffers are only ~64KB; if we let the child's stdout or stderr fill

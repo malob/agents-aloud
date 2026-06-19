@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 // URLProtocol stub that answers requests with scripted responses. Each
 // test sets `handler` before triggering a request; URLSession calls into

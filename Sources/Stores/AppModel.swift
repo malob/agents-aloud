@@ -16,7 +16,7 @@ final class AppModel {
     private static let codexCLIEffortKey = "codexCLIEffort"
     private static let codexCLIVerbosityKey = "codexCLIVerbosity"
     private static let showOnlyFinalAssistantMessagesKey = "showOnlyFinalAssistantMessages"
-    static let defaultKeychainService = "local.claudecodevoice"
+    static let defaultKeychainService = "me.malob.agentsaloud"
     static let elevenLabsAPIKeyAccount = "elevenlabs_api_key"
     // Default rate when the user hasn't picked one. Matches what the
     // app shipped with when SystemVoice was hardcoded — anyone who
@@ -41,7 +41,7 @@ final class AppModel {
 
     private let storageService: ClaudeStorageService
     private let codexStorageService: CodexStorageService
-    private let logger = Logger(subsystem: "local.claudecodevoice", category: "AppModel")
+    private let logger = Logger(subsystem: "me.malob.agentsaloud", category: "AppModel")
     @ObservationIgnored private let userDefaults: UserDefaults
     @ObservationIgnored private let keychain: KeychainStorage
     @ObservationIgnored private var elevenLabsVoiceRefreshTask: Task<Void, Never>?

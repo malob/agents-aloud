@@ -57,7 +57,7 @@ final class SpeechController {
         }
     }
 
-    @ObservationIgnored private let logger = Logger(subsystem: "local.claudecodevoice", category: "Speech")
+    @ObservationIgnored private let logger = Logger(subsystem: "me.malob.agentsaloud", category: "Speech")
     @ObservationIgnored private var playbackErrorDismissTask: Task<Void, Never>?
     @ObservationIgnored private let systemVoiceDriver: any SpeechBackendDriver
     // Not @ObservationIgnored: the ElevenLabs driver is @Observable, and

@@ -3,7 +3,7 @@ import OSLog
 
 actor ClaudeStorageService {
     private let fileManager = FileManager.default
-    private let logger = Logger(subsystem: "local.claudecodevoice", category: "Storage")
+    private let logger = Logger(subsystem: "me.malob.agentsaloud", category: "Storage")
     private let projectsRoot: URL
     private var sessionSummaryCache: [String: CachedSessionSummary] = [:]
     private var transcriptCache: [String: CachedTranscript] = [:]

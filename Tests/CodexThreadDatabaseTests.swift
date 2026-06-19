@@ -1,13 +1,13 @@
 import Foundation
 import SQLite3
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 struct CodexThreadDatabaseTests {
     @Test
     func loadThreadsFiltersSourceSubagentsBeforeLimit() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-CodexThreadDatabaseTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-CodexThreadDatabaseTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
 
@@ -25,7 +25,7 @@ struct CodexThreadDatabaseTests {
     @Test
     func preferredDatabaseURLPrefersRelocatedThenLegacy() throws {
         let codexDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-CodexPathTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-CodexPathTests-\(UUID().uuidString)", isDirectory: true)
         let sqliteDir = codexDir.appendingPathComponent("sqlite", isDirectory: true)
         try FileManager.default.createDirectory(at: sqliteDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: codexDir) }
@@ -57,7 +57,7 @@ struct CodexThreadDatabaseTests {
     @Test
     func loadThreadsOpensCheckpointedWALDatabaseWithoutSidecars() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-CodexThreadDatabaseTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-CodexThreadDatabaseTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
 
@@ -87,7 +87,7 @@ struct CodexThreadDatabaseTests {
     @Test
     func loadThreadsSeesRowsStillInWALWhileWriterIsOpen() throws {
         let temporaryRoot = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-CodexThreadDatabaseTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-CodexThreadDatabaseTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: temporaryRoot, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
 

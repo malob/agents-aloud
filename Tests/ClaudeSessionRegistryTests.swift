@@ -1,11 +1,11 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 struct ClaudeSessionRegistryTests {
     private func makeRegistryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-RegistryTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-RegistryTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }

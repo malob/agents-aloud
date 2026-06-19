@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 // The completion-based tests await the renderer's media-time boundary
 // observer, which only fires while the audio device clock advances.

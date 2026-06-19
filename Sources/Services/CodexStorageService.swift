@@ -36,7 +36,7 @@ import OSLog
 //   if profiling ever shows the redundant tail-load on append events.
 actor CodexStorageService {
     private let fileManager = FileManager.default
-    private let logger = Logger(subsystem: "local.claudecodevoice", category: "CodexStorage")
+    private let logger = Logger(subsystem: "me.malob.agentsaloud", category: "CodexStorage")
     private let parser = CodexTranscriptParser()
     private let sessionsRoot: URL
     private let archivedSessionsRoot: URL

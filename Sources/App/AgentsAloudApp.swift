@@ -1,11 +1,11 @@
 import SwiftUI
 
 @main
-struct ClaudeCodeVoiceApp: App {
+struct AgentsAloudApp: App {
     @State private var model = AppModel()
 
     var body: some Scene {
-        WindowGroup("Claude Code Voice") {
+        WindowGroup("Agents Aloud") {
             ContentView(model: model)
                 .frame(minWidth: 1020, minHeight: 720)
                 .task {

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 @MainActor
 private final class WatcherRecorder {
@@ -22,7 +22,7 @@ struct TranscriptFileWatcherTests {
     func watcherRearmsAfterFileReplacement() async throws {
         let fileManager = FileManager.default
         let temporaryDirectory = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-TranscriptFileWatcherTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-TranscriptFileWatcherTests-\(UUID().uuidString)", isDirectory: true)
         let watchedFileURL = temporaryDirectory.appendingPathComponent("transcript.jsonl", isDirectory: false)
         let oldFileURL = temporaryDirectory.appendingPathComponent("transcript-old.jsonl", isDirectory: false)
         let watcher = TranscriptFileWatcher()
@@ -65,7 +65,7 @@ struct TranscriptFileWatcherTests {
     func watcherReportsOpenFailureAfterRetries() async throws {
         let fileManager = FileManager.default
         let temporaryDirectory = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-TranscriptFileWatcherTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-TranscriptFileWatcherTests-\(UUID().uuidString)", isDirectory: true)
         let missingFileURL = temporaryDirectory.appendingPathComponent("missing.jsonl", isDirectory: false)
         let watcher = TranscriptFileWatcher()
         let recorder = WatcherRecorder()

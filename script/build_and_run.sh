@@ -2,8 +2,8 @@
 set -euo pipefail
 
 MODE="${1:-run}"
-APP_NAME="ClaudeCodeVoice"
-BUNDLE_ID="local.claudecodevoice"
+APP_NAME="AgentsAloud"
+BUNDLE_ID="me.malob.agentsaloud"
 MIN_SYSTEM_VERSION="26.0"
 
 # Sign with a stable identity so the Keychain ACL stays valid across
@@ -75,11 +75,11 @@ fi
 # resource bundle). Compile the Liquid Glass .icon authored in Icon
 # Composer into the app's Resources: actool emits Assets.car (glass
 # data for macOS 26+) plus Icon.icns (fallback for earlier releases).
-ICON_FILE="$ROOT_DIR/icon/Icon.icon"
+ICON_FILE="$ROOT_DIR/icon/AgentsAloud.icon"
 if [[ -d "$ICON_FILE" ]]; then
   xcrun actool "$ICON_FILE" \
     --compile "$APP_RESOURCES" \
-    --app-icon Icon \
+    --app-icon AgentsAloud \
     --output-partial-info-plist "$DIST_DIR/actool-icon.plist" \
     --platform macosx \
     --minimum-deployment-target "$MIN_SYSTEM_VERSION" \
@@ -97,11 +97,13 @@ cat >"$INFO_PLIST" <<PLIST
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
   <key>CFBundleName</key>
-  <string>$APP_NAME</string>
+  <string>Agents Aloud</string>
+  <key>CFBundleDisplayName</key>
+  <string>Agents Aloud</string>
   <key>CFBundleIconName</key>
-  <string>Icon</string>
+  <string>AgentsAloud</string>
   <key>CFBundleIconFile</key>
-  <string>Icon</string>
+  <string>AgentsAloud</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>

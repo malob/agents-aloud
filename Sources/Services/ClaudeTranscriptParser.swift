@@ -2,7 +2,7 @@ import Foundation
 import OSLog
 
 enum ClaudeTranscriptParser {
-    private static let logger = Logger(subsystem: "local.claudecodevoice", category: "TranscriptParser")
+    private static let logger = Logger(subsystem: "me.malob.agentsaloud", category: "TranscriptParser")
 
     // NB: JSONDecoder is documented as NOT thread-safe. Each call creates its
     // own instance so this parser is safe to call concurrently. Allocation

@@ -2,7 +2,7 @@ import Foundation
 import OSLog
 
 enum PerfLog {
-    static let logger = Logger(subsystem: "local.claudecodevoice", category: "Perf")
+    static let logger = Logger(subsystem: "me.malob.agentsaloud", category: "Perf")
 
     @discardableResult
     static func time<T>(_ name: String, _ body: () throws -> T) rethrows -> T {

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 // Live integration tests that hit the real ElevenLabs API. Skipped unless
 // ELEVENLABS_API_KEY is set in the environment — so `swift test` in

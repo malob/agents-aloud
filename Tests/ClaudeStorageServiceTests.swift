@@ -1,13 +1,13 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 struct ClaudeStorageServiceTests {
     @Test
     func loadTranscriptIncorporatesAppendedJSONLLines() async throws {
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-StorageTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
@@ -52,7 +52,7 @@ struct ClaudeStorageServiceTests {
         // message IDs in the cached window).
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-StorageTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
@@ -103,7 +103,7 @@ struct ClaudeStorageServiceTests {
         // the appended tail and fall back to a full tail-load.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-StorageTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
@@ -148,7 +148,7 @@ struct ClaudeStorageServiceTests {
     func loadTranscriptFallsBackToFullParseWhenPrefixMutated() async throws {
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-StorageTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
@@ -182,7 +182,7 @@ struct ClaudeStorageServiceTests {
     func loadSessionsFiltersBySinceAndHonorsMinimumFloor() async throws {
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-StorageTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
 
@@ -229,7 +229,7 @@ struct ClaudeStorageServiceTests {
         // count, so artifacts don't inflate anything.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-StorageTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
 
@@ -299,7 +299,7 @@ struct ClaudeStorageServiceTests {
         // showing a stale summary until the transcript was re-touched.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-StorageTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
@@ -349,7 +349,7 @@ struct ClaudeStorageServiceTests {
         // chronologically (not the first cap, not a random slice).
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-StorageTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
@@ -380,7 +380,7 @@ struct ClaudeStorageServiceTests {
         // of the returned list so the visible window stays bounded.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-StorageTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)
@@ -432,7 +432,7 @@ struct ClaudeStorageServiceTests {
         // come back.
         let fileManager = FileManager.default
         let temporaryRoot = fileManager.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-StorageTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-StorageTests-\(UUID().uuidString)", isDirectory: true)
         let projectsRoot = temporaryRoot.appendingPathComponent("projects", isDirectory: true)
         let projectDirectory = projectsRoot.appendingPathComponent("demo-project", isDirectory: true)
         let transcriptURL = projectDirectory.appendingPathComponent("session-1.jsonl", isDirectory: false)

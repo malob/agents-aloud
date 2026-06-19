@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 private func rolloutLine(role: String, text: String, timestamp: String) -> String {
     let contentType = role == "user" ? "input_text" : "output_text"

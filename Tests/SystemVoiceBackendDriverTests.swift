@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 // Tests spawn /bin/sh with inline scripts in place of /usr/bin/say to
 // exercise lifecycle behavior (normal exit, error exit, stop-mid-run,
@@ -170,7 +170,7 @@ struct SystemVoiceBackendDriverTests {
         // trap writes a marker file only when the signal is actually
         // delivered; without the SIGCONT it never runs.
         let marker = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-term-marker-\(UUID().uuidString)")
+            .appendingPathComponent("AgentsAloud-term-marker-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: marker) }
 
         let driver = shellScriptDriver(

@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 // @unchecked Sendable: mutable fields are only touched from the
 // @MainActor-isolated test bodies in this file.

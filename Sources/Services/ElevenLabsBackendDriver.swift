@@ -36,7 +36,7 @@ final class ElevenLabsBackendDriver: SpeechBackendDriver {
     @ObservationIgnored private var client: ElevenLabsClientType
     @ObservationIgnored private let player: StreamingAudioPlayer
     @ObservationIgnored private let modelID: String
-    @ObservationIgnored private let logger = Logger(subsystem: "local.claudecodevoice", category: "ElevenLabsDriver")
+    @ObservationIgnored private let logger = Logger(subsystem: "me.malob.agentsaloud", category: "ElevenLabsDriver")
 
     private(set) var availableVoices: [SpeechVoiceOption] = []
 

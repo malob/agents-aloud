@@ -59,7 +59,7 @@ final class StreamingAudioPlayer {
     // subsequent playback until relaunch.
     private var renderer = AVSampleBufferAudioRenderer()
     private var synchronizer = AVSampleBufferRenderSynchronizer()
-    private let logger = Logger(subsystem: "local.claudecodevoice", category: "StreamingAudioPlayer")
+    private let logger = Logger(subsystem: "me.malob.agentsaloud", category: "StreamingAudioPlayer")
     private var rendererStatusObservation: NSKeyValueObservation?
 
     // Mutable bookkeeping for one playback session. Bundled into a

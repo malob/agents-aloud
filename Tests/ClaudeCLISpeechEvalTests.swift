@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import ClaudeCodeVoice
+@testable import AgentsAloud
 
 // Manual-eval harness for the Claude CLI speech rewriter. Runs one
 // realistic structure-heavy assistant message through each

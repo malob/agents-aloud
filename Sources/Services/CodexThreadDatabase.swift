@@ -38,7 +38,7 @@ import SQLite3
 // which is `let`. Calling actors (CodexStorageService) provide all
 // the serialization the rest of the system needs.
 final class CodexThreadDatabase: Sendable {
-    private static let logger = Logger(subsystem: "local.claudecodevoice", category: "CodexThreadDatabase")
+    private static let logger = Logger(subsystem: "me.malob.agentsaloud", category: "CodexThreadDatabase")
 
     // Lower bound on `_sqlx_migrations.version` we know works.
     // Migration 22 ("threads agent path") was the last addition we
@@ -135,7 +135,7 @@ final class CodexThreadDatabase: Sendable {
         // first invalid one. Worst case we miss the very latest
         // write; next refresh tick picks it up.
         let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("ClaudeCodeVoice-CodexDB-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("AgentsAloud-CodexDB-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: tempDir) }
 

@@ -32,7 +32,7 @@ import OSLog
 //     reasoning / tool-use chatter, not the final user-facing reply).
 @MainActor
 final class CodexTranscriptParser {
-    private let logger = Logger(subsystem: "local.claudecodevoice", category: "CodexTranscriptParser")
+    private let logger = Logger(subsystem: "me.malob.agentsaloud", category: "CodexTranscriptParser")
 
     // What we extract from a session file's metadata + first user
     // message, without doing the full transcript parse. Used by the
