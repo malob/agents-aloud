@@ -1,3 +1,4 @@
+import AppKit
 import AVFoundation
 import CoreMedia
 import Foundation
@@ -48,8 +49,16 @@ final class StreamingAudioPlayer {
     nonisolated static let minimumPlaybackRate = 0.5
     nonisolated static let maximumPlaybackRate = 4.0
 
-    private let renderer = AVSampleBufferAudioRenderer()
-    private let synchronizer = AVSampleBufferRenderSynchronizer()
+    // var, not let: the renderer + synchronizer are rebuilt fresh for
+    // every utterance (see rebuildPipeline). macOS silently invalidates
+    // an idle/paused AVSampleBufferAudioRenderer — after system sleep, an
+    // output-device power-down, or an automatic flush — and a wedged
+    // renderer keeps its synchronizer clock advancing (so playback
+    // "completes") while emitting nothing. A single renderer reused for
+    // the app's lifetime therefore meant one long pause wedged ALL
+    // subsequent playback until relaunch.
+    private var renderer = AVSampleBufferAudioRenderer()
+    private var synchronizer = AVSampleBufferRenderSynchronizer()
     private let logger = Logger(subsystem: "local.claudecodevoice", category: "StreamingAudioPlayer")
     private var rendererStatusObservation: NSKeyValueObservation?
 
@@ -71,6 +80,11 @@ final class StreamingAudioPlayer {
         // buffer's presentation timestamp and, once the stream ends,
         // the end-of-media time.
         var enqueuedSamples: Int64 = 0
+        // Every enqueued PCM chunk, retained in order so the utterance
+        // can be re-enqueued into a fresh renderer if macOS flushes the
+        // current one out from under us (sleep/wake, route change). One
+        // utterance's PCM only — released when the session ends.
+        var rawChunks: [Data] = []
         var boundaryObserver: Any?
         let onFinish: @MainActor () -> Void
         let onError: @MainActor (Error) -> Void
@@ -142,6 +156,14 @@ final class StreamingAudioPlayer {
     }
 
     init() {
+        configurePipeline()
+        registerSystemAudioObservers()
+    }
+
+    // Wire up the current renderer + synchronizer. Re-run after every
+    // rebuildPipeline() so the fresh renderer gets the time-domain
+    // stretcher and the failed-status observation.
+    private func configurePipeline() {
         renderer.audioTimePitchAlgorithm = .timeDomain
         synchronizer.addRenderer(renderer)
         // PCM essentially can't fail to decode, but surface a failed
@@ -155,6 +177,58 @@ final class StreamingAudioPlayer {
         }
     }
 
+    // Discard the current renderer/synchronizer and stand up a fresh
+    // pair. Called at the top of every play() so a renderer that macOS
+    // silently tore down during a prior pause can't poison the next
+    // utterance — the failure is contained to at most the one paused
+    // utterance instead of persisting until app relaunch.
+    private func rebuildPipeline() {
+        rendererStatusObservation?.invalidate()
+        rendererStatusObservation = nil
+        synchronizer.rate = 0
+        renderer = AVSampleBufferAudioRenderer()
+        synchronizer = AVSampleBufferRenderSynchronizer()
+        configurePipeline()
+    }
+
+    // Diagnostic only (no behavior): log the system events that
+    // silently invalidate an idle renderer, so a reproduced "resume →
+    // silence" can be tied to its trigger in Console. Closures capture
+    // only the Sendable logger — never self — so they're concurrency-
+    // safe and harmless if they outlive the player.
+    private func registerSystemAudioObservers() {
+        let log = logger
+        // Referenced by raw name: the Swift-imported symbol for this
+        // constant isn't stable across SDKs, but the notification name
+        // string is.
+        autoFlushObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name("AVSampleBufferAudioRendererWasFlushedAutomaticallyNotification"),
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            // Delivered on .main (queue: .main above), so assumeIsolated
+            // is valid. Carry only the renderer's identity across the
+            // actor hop (ObjectIdentifier is Sendable; the renderer
+            // itself isn't) so recovery can confirm the flush was for
+            // the renderer we're actively using.
+            let flushedID = (note.object as? AVSampleBufferAudioRenderer).map(ObjectIdentifier.init)
+            MainActor.assumeIsolated {
+                self?.handleAutomaticFlush(flushedRendererID: flushedID)
+            }
+        }
+        let workspace = NSWorkspace.shared.notificationCenter
+        sleepObserver = workspace.addObserver(
+            forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
+        ) { _ in log.info("System willSleep") }
+        wakeObserver = workspace.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { _ in log.info("System didWake") }
+    }
+
+    private var autoFlushObserver: NSObjectProtocol?
+    private var sleepObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+
     // Throws synchronously on format setup failure; otherwise returns
     // immediately and delivers completion via onFinish / onError.
     // `rate` is a playback-speed multiplier (1.0 = as generated),
@@ -167,6 +241,10 @@ final class StreamingAudioPlayer {
         onError: @escaping @MainActor (Error) -> Void
     ) throws {
         teardownWithoutCallback()
+        // Every utterance starts on a freshly-built renderer so a
+        // pipeline macOS invalidated during a prior pause can't make
+        // this one play silently.
+        rebuildPipeline()
 
         guard let formatDescription = Self.makePCMFormatDescription(sampleRate: sampleRate) else {
             throw PlayerError.unsupportedFormat(sampleRate: sampleRate)
@@ -205,6 +283,10 @@ final class StreamingAudioPlayer {
 
     func resume() {
         guard case let .paused(session) = state else { return }
+        // Diagnostic: a silent resume after a long pause originates
+        // here. status != .rendering or a preceding auto-flush log
+        // pinpoints the wedge.
+        logger.info("resume(): renderer status=\(self.renderer.status.rawValue, privacy: .public) clockStarted=\(session.clockStarted, privacy: .public)")
         state = .playing(session)
         if session.clockStarted {
             synchronizer.rate = Float(session.playbackRate)
@@ -251,6 +333,9 @@ final class StreamingAudioPlayer {
 
         renderer.enqueue(sampleBuffer)
         session.enqueuedSamples += Int64(frameCount)
+        // Retain in lockstep with enqueuedSamples so a flush-recovery
+        // can replay exactly these chunks and reproduce identical PTSs.
+        session.rawChunks.append(chunk)
         maybeStartClock(session)
     }
 
@@ -280,9 +365,17 @@ final class StreamingAudioPlayer {
             return
         }
 
-        // Fires when PLAYBACK reaches the end of the enqueued media —
-        // boundary observers run on media time, so rate changes and
-        // pauses are accounted for automatically.
+        armEndBoundaryObserver(session: session)
+    }
+
+    // Install the end-of-media boundary observer. Factored out of
+    // markStreamEnded so flush-recovery can re-arm it on the rebuilt
+    // synchronizer (the prior observer died with the discarded one).
+    // Caller must clear session.boundaryObserver first when the old
+    // synchronizer is gone. Boundary observers run on media time, so
+    // rate changes and pauses are accounted for automatically.
+    private func armEndBoundaryObserver(session: Session) {
+        let end = CMTime(value: session.enqueuedSamples, timescale: CMTimeScale(session.sampleRate))
         let id = session.id
         session.boundaryObserver = synchronizer.addBoundaryTimeObserver(
             forTimes: [NSValue(time: end)],
@@ -293,12 +386,58 @@ final class StreamingAudioPlayer {
             }
         }
 
-        // The clock may have crossed `end` between the check above and
-        // the observer landing; a boundary in the past never fires.
-        // boundaryReached / finishAndCallback are idempotent via the
-        // session-identity guard, so the double-call case is safe.
+        // A boundary already in the past never fires; boundaryReached is
+        // idempotent via the session-identity guard, so calling it
+        // directly here covers the clock-already-past-end case.
         if session.clockStarted, synchronizer.currentTime() >= end {
             boundaryReached(sessionID: id)
+        }
+    }
+
+    // macOS automatically flushes an idle/paused AVSampleBufferAudioRenderer
+    // (after sleep/wake or an output-device/route change) WITHOUT marking
+    // it .failed — the synchronizer's clock keeps advancing while the
+    // dropped buffers leave only silence, so a plain resume() plays
+    // nothing. Recover by rebuilding the pipeline, replaying the
+    // utterance's retained PCM, and restoring the clock to the position
+    // playback had reached — so resume continues instead of going silent.
+    private func handleAutomaticFlush(flushedRendererID: ObjectIdentifier?) {
+        guard let flushedRendererID, flushedRendererID == ObjectIdentifier(renderer) else { return }
+        guard let session = state.session else { return }
+
+        let wasPlaying = isPlaying
+        let resumeTime = session.clockStarted ? synchronizer.currentTime() : .zero
+        logger.warning("Recovering from automatic flush: replaying \(session.rawChunks.count, privacy: .public) chunks at \(resumeTime.seconds, privacy: .public)s (wasPlaying=\(wasPlaying, privacy: .public))")
+
+        rebuildPipeline()
+
+        var offset: Int64 = 0
+        for chunk in session.rawChunks {
+            let frameCount = chunk.count / MemoryLayout<Int16>.size
+            guard frameCount > 0,
+                  let buffer = Self.makeSampleBuffer(
+                      from: chunk,
+                      frameCount: frameCount,
+                      format: session.formatDescription,
+                      presentationSamples: offset,
+                      sampleRate: session.sampleRate
+                  ) else { continue }
+            renderer.enqueue(buffer)
+            offset += Int64(frameCount)
+        }
+
+        // Restore the timebase first so the re-armed boundary observer's
+        // past-end check sees the correct position.
+        if session.clockStarted {
+            synchronizer.setRate(wasPlaying ? Float(session.playbackRate) : 0, time: resumeTime)
+        } else if wasPlaying {
+            maybeStartClock(session)
+        }
+
+        // The prior observer was tied to the now-discarded synchronizer.
+        session.boundaryObserver = nil
+        if session.streamEnded {
+            armEndBoundaryObserver(session: session)
         }
     }
 

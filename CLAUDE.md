@@ -319,6 +319,31 @@ Sources/
   the same player surface.
   See: [StreamingAudioPlayer.swift](Sources/Services/StreamingAudioPlayer.swift)
 
+- **The renderer is rebuilt per utterance and recovers from macOS
+  auto-flushes — don't go back to one reused renderer.** macOS
+  silently flushes an idle/paused `AVSampleBufferAudioRenderer` on
+  sleep/wake and output-device/route changes; crucially its `status`
+  stays `.rendering` (NOT `.failed`), so the `.failed` KVO observer
+  never fires — the synchronizer clock keeps advancing and playback
+  "completes" while emitting pure silence. With a single renderer
+  reused for the app's lifetime (the original design) one such flush
+  wedged ALL subsequent playback until relaunch. Two defenses, both
+  load-bearing: (1) `play()` rebuilds the renderer + synchronizer
+  fresh each utterance, so a wedge can't outlive the current one;
+  (2) each utterance's PCM chunks are retained, and on the
+  `AVSampleBufferAudioRendererWasFlushedAutomaticallyNotification`
+  the player rebuilds, re-enqueues the retained audio, and restores
+  the timebase to the pre-flush position so a paused utterance
+  resumes from where it left off instead of going silent. Confirmed
+  empirically via `log stream` capture (the flush fires on sleep AND
+  wake; recovery replayed ~1531 chunks and re-seated the clock at the
+  27.1s pause point) plus listening — this layer can't be unit-tested
+  (needs real audio hardware; it's also why the audio-clock test
+  suite can't run headless). The notification is referenced by raw
+  name string because the Swift-imported symbol isn't stable across
+  SDKs.
+  See: [StreamingAudioPlayer.swift](Sources/Services/StreamingAudioPlayer.swift)
+
 - **Apple Dev signing also enables stable Keychain ACLs** — re-entering
   the API key once after switching from adhoc to Apple Dev is
   expected; future rebuilds don't prompt.
