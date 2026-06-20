@@ -4,3 +4,4 @@
 dist/
 .claude/scheduled_tasks.lock
 eval-output/
+.claude/settings.local.json
