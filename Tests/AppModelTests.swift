@@ -145,7 +145,7 @@ private struct TestAppModelFixture {
     let userDefaults: UserDefaults
 
     func cleanup() {
-        userDefaults.removePersistentDomain(forName: userDefaultsSuite)
+        removeDefaultsSuite(userDefaultsSuite)
         try? FileManager.default.removeItem(at: temporaryRoot)
     }
 }
@@ -245,7 +245,7 @@ struct AppModelTests {
         try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
         try initialTranscript.write(to: transcriptURL, atomically: true, encoding: .utf8)
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -308,7 +308,7 @@ struct AppModelTests {
         try fileManager.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
         try initialTranscript.write(to: transcriptURL, atomically: true, encoding: .utf8)
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -355,7 +355,7 @@ struct AppModelTests {
         let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -394,7 +394,7 @@ struct AppModelTests {
         let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -459,7 +459,7 @@ struct AppModelTests {
         let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -501,7 +501,7 @@ struct AppModelTests {
         let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -541,7 +541,7 @@ struct AppModelTests {
         let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -600,7 +600,7 @@ struct AppModelTests {
         let defaultsSuiteName = "AgentsAloud-AppModelTests-\(UUID().uuidString)"
         let userDefaults = try #require(UserDefaults(suiteName: defaultsSuiteName))
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -879,7 +879,7 @@ struct AppModelTests {
             keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -950,7 +950,7 @@ struct AppModelTests {
             keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -1269,7 +1269,7 @@ struct AppModelTests {
             keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -1347,7 +1347,7 @@ struct AppModelTests {
             keychain: KeychainStorage(service: "AgentsAloud-AppModelTests-\(UUID().uuidString)")
         )
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 
@@ -1571,7 +1571,7 @@ struct AppModelTests {
             speechTextProcessor: processor
         )
         defer {
-            userDefaults.removePersistentDomain(forName: defaultsSuiteName)
+            removeDefaultsSuite(defaultsSuiteName)
             try? fileManager.removeItem(at: temporaryRoot)
         }
 

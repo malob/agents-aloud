@@ -29,6 +29,18 @@ func waitUntil(
     Issue.record("Timed out after \(timeout) waiting for condition")
 }
 
+// Tear down a per-test UserDefaults suite COMPLETELY. removePersistentDomain
+// empties the domain's keys but cfprefsd leaves the backing file
+// (~/Library/Preferences/<suite>.plist) on disk, so each test run would
+// otherwise leak one plist per suite. Delete the file too — without this,
+// `swift test` litters ~/Library/Preferences with a file per UUID-named suite.
+func removeDefaultsSuite(_ suiteName: String) {
+    UserDefaults.standard.removePersistentDomain(forName: suiteName)
+    let plist = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Preferences/\(suiteName).plist", isDirectory: false)
+    try? FileManager.default.removeItem(at: plist)
+}
+
 // Shared fake driver for tests that need to drive SpeechController without
 // playing real audio. Records started requests + pause/resume/stop calls so
 // assertions can check what the controller routed to the driver.
