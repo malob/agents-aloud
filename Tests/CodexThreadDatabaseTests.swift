@@ -23,28 +23,39 @@ struct CodexThreadDatabaseTests {
     // subdirectory; the old top-level path lingers and goes stale.
     // Prefer the relocated DB when it exists, else the legacy path.
     @Test
-    func preferredDatabaseURLPrefersRelocatedThenLegacy() throws {
-        let codexDir = FileManager.default.temporaryDirectory
+    func preferredDatabaseURLPicksFreshestNotLocation() throws {
+        let fileManager = FileManager.default
+        let codexDir = fileManager.temporaryDirectory
             .appendingPathComponent("AgentsAloud-CodexPathTests-\(UUID().uuidString)", isDirectory: true)
         let sqliteDir = codexDir.appendingPathComponent("sqlite", isDirectory: true)
-        try FileManager.default.createDirectory(at: sqliteDir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: codexDir) }
+        try fileManager.createDirectory(at: sqliteDir, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: codexDir) }
 
         let legacy = codexDir.appendingPathComponent("state_5.sqlite", isDirectory: false)
         let relocated = sqliteDir.appendingPathComponent("state_5.sqlite", isDirectory: false)
 
-        // Neither present yet → falls back to the legacy path (so the
-        // missing-file path still triggers the filesystem-walk fallback
-        // exactly as before).
+        func write(_ url: URL, modified: Date) throws {
+            try Data().write(to: url)
+            try fileManager.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+        }
+
+        // Neither present yet → legacy (Codex's current default home; also
+        // keeps triggering the filesystem-walk fallback as before).
         #expect(CodexThreadDatabase.preferredDatabaseURL(codexDirectory: codexDir) == legacy)
 
         // Legacy only.
-        try Data().write(to: legacy)
+        try write(legacy, modified: Date(timeIntervalSince1970: 1_000_000))
         #expect(CodexThreadDatabase.preferredDatabaseURL(codexDirectory: codexDir) == legacy)
 
-        // Both present (the post-update reality) → relocated wins.
-        try Data().write(to: relocated)
+        // Both present, relocated newer (the v149 era) → relocated wins.
+        try write(relocated, modified: Date(timeIntervalSince1970: 2_000_000))
         #expect(CodexThreadDatabase.preferredDatabaseURL(codexDirectory: codexDir) == relocated)
+
+        // The reported regression: Codex moved BACK to legacy, leaving a
+        // STALE relocated file behind. Freshness must win over location —
+        // the newer legacy DB is chosen despite the subdir file existing.
+        try write(legacy, modified: Date(timeIntervalSince1970: 3_000_000))
+        #expect(CodexThreadDatabase.preferredDatabaseURL(codexDirectory: codexDir) == legacy)
     }
 
     // Regression: Codex leaves the DB in WAL journal mode. When it

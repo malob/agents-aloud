@@ -69,14 +69,19 @@ Sources/
   titles and archive state live ONLY there (the rollout JSONL has no
   title field), so we can't fall back to walking the filesystem for
   sidebar parity with `codex` itself. **The DB path is version-
-  dependent**: Codex.app v149 relocated it from `~/.codex/state_5.sqlite`
-  to `~/.codex/sqlite/state_5.sqlite`, leaving the old file behind to
-  go stale. `CodexThreadDatabase.preferredDatabaseURL` picks the
-  relocated path when present, else the legacy one — without this the
-  sidebar silently froze at the pre-update sessions (the old file
-  still opened fine, it just stopped receiving writes). If the Codex
-  sidebar ever goes stale again after a Codex update, check whether
-  the DB moved again before suspecting anything else.
+  dependent and has moved BOTH ways**: Codex.app v149 relocated it from
+  `~/.codex/state_5.sqlite` to `~/.codex/sqlite/state_5.sqlite` (2026-06),
+  then a later release moved it BACK to `~/.codex/state_5.sqlite`
+  (2026-06-19). Each move leaves the old file behind to go stale, so
+  LOCATION is an unreliable signal. `CodexThreadDatabase.preferredDatabaseURL`
+  therefore picks whichever candidate was **written most recently**
+  (max mtime of the `.sqlite` and its `-wal`), NOT a fixed preferred
+  path — an earlier "prefer the `sqlite/` subdir when present" heuristic
+  silently froze the sidebar on a 5-day-stale DB after the move-back,
+  since the stale subdir file still existed. If the Codex sidebar goes
+  stale again after a Codex update, first confirm
+  `preferredDatabaseURL` is resolving to the freshest file (the DB may
+  have moved to a brand-new third location not in the candidate list).
   We can't read the live DB directly either — plain
   `SQLITE_OPEN_READONLY` fails with `SQLITE_CANTOPEN` because SQLite
   needs to write the -shm file for WAL lock coordination and Codex's

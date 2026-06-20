@@ -69,13 +69,14 @@ final class CodexThreadDatabase: Sendable {
         self.path = path
     }
 
-    // Codex relocated its state DB from `~/.codex/state_5.sqlite` to
-    // `~/.codex/sqlite/state_5.sqlite` (observed with Codex.app v149,
-    // schema migration 35, 2026-06). The old path is left behind and
-    // goes stale on update — reading it silently froze the sidebar at
-    // the pre-update sessions while the live threads table moved. Pick
-    // the new path when present, else fall back to the old one for
-    // Codex versions that still use it.
+    // Codex has moved its state DB in BOTH directions across versions:
+    // `~/.codex/state_5.sqlite` → `~/.codex/sqlite/state_5.sqlite` (Codex.app
+    // v149, schema migration 35, 2026-06), then BACK to the legacy path in a
+    // later release (observed 2026-06-19). Each move leaves the old file
+    // behind to go stale, so LOCATION is an unreliable signal — preferring
+    // the `sqlite/` subdir whenever it exists silently froze the sidebar on
+    // a stale 5-day-old DB after the move back. Pick whichever candidate was
+    // written most recently instead.
     static var defaultDatabaseURL: URL {
         preferredDatabaseURL(
             codexDirectory: FileManager.default.homeDirectoryForCurrentUser
@@ -89,7 +90,23 @@ final class CodexThreadDatabase: Sendable {
             .appendingPathComponent("state_5.sqlite", isDirectory: false)
         let legacy = codexDirectory
             .appendingPathComponent("state_5.sqlite", isDirectory: false)
-        return FileManager.default.fileExists(atPath: relocated.path) ? relocated : legacy
+        let existing = [relocated, legacy].filter {
+            FileManager.default.fileExists(atPath: $0.path)
+        }
+        // Neither present yet: default to legacy (Codex's current home).
+        return existing.max(by: { freshness(of: $0) < freshness(of: $1) }) ?? legacy
+    }
+
+    // Most-recent write time for a SQLite DB, taking the max of the main
+    // file and its -wal sidecar — active writes can live only in the WAL
+    // until a checkpoint, so the bare .sqlite mtime can lag reality.
+    private static func freshness(of databaseURL: URL) -> Date {
+        let fileManager = FileManager.default
+        let walURL = URL(fileURLWithPath: databaseURL.path + "-wal")
+        let dates = [databaseURL, walURL].compactMap { url in
+            (try? fileManager.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+        }
+        return dates.max() ?? .distantPast
     }
 
     // The single query we run. Returns the 50 most-recent non-archived
