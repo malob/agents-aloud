@@ -276,13 +276,13 @@ final class AppModel {
     }
 
     // Whether to filter out intermediate (tool-use / non-final-phase)
-    // assistant messages from the transcript view. Default true: each
-    // visible row is then a complete user→assistant exchange handoff,
-    // which is much closer to "the conversation as the human
-    // experienced it" than the raw 90%-tool-use stream. The cap also
-    // shrinks (TranscriptDisplayLimits.messageCapFinalOnly = 10) to
-    // match the higher information density per row. Toggle off to see
-    // all assistant turns, including the work-in-progress chatter.
+    // assistant messages from the transcript view. Default FALSE — the
+    // full stream (all assistant turns, cap
+    // TranscriptDisplayLimits.messageCapIncludingIntermediates = 50) is
+    // what people expect to see on first run; the "final answers only"
+    // view is opt-in. Toggling it on drops intermediate turns so each
+    // visible row is a complete user→assistant handoff, and shrinks the
+    // cap (messageCapFinalOnly = 10) to match the higher density.
     var showOnlyFinalAssistantMessages: Bool {
         didSet {
             guard oldValue != showOnlyFinalAssistantMessages else { return }
@@ -413,14 +413,11 @@ final class AppModel {
         let storedWPM = userDefaults.integer(forKey: Self.preferredWordsPerMinuteKey)
         preferredWordsPerMinute = storedWPM > 0 ? storedWPM : Self.defaultWordsPerMinute
 
-        // showOnlyFinalAssistantMessages pref. Default true. UserDefaults
-        // returns false for a missing Bool key, so explicitly check for
-        // presence: if absent, use the default; if present, honor it.
-        if userDefaults.object(forKey: Self.showOnlyFinalAssistantMessagesKey) != nil {
-            showOnlyFinalAssistantMessages = userDefaults.bool(forKey: Self.showOnlyFinalAssistantMessagesKey)
-        } else {
-            showOnlyFinalAssistantMessages = true
-        }
+        // showOnlyFinalAssistantMessages pref. Default false (show the
+        // full stream; the final-answers-only view is opt-in) — which is
+        // exactly what UserDefaults.bool returns for a missing key, so a
+        // plain read yields the right default with no presence check.
+        showOnlyFinalAssistantMessages = userDefaults.bool(forKey: Self.showOnlyFinalAssistantMessagesKey)
 
         // ElevenLabs prefs. Log-then-swallow keychain read failures so init
         // still succeeds (e.g. sandboxed test run, user denied ACL). Without

@@ -162,10 +162,12 @@ Sources/
   miss) until they have enough post-filter messages — the whole file
   is never parsed regardless of session length. The filter is
   controlled by `AppModel.showOnlyFinalAssistantMessages` (default
-  true): when on, assistant messages with `stop_reason == "tool_use"`
+  FALSE — the full stream is the first-run experience; final-only is
+  opt-in): when on, assistant messages with `stop_reason == "tool_use"`
   (Claude) or `phase != "final_answer"` (Codex) are dropped, and the
-  cap is `messageCapFinalOnly = 10`. When off, all assistant turns
-  pass through and the cap is `messageCapIncludingIntermediates = 50`.
+  cap is `messageCapFinalOnly = 10`. When off (the default), all
+  assistant turns pass through and the cap is
+  `messageCapIncludingIntermediates = 50`.
   Both storage caches key on `(path, filterToFinalOnly)` so toggling
   the mode triggers a fresh tail-load. There is intentionally no
   "load earlier" affordance — the app's job is reading current
